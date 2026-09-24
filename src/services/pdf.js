@@ -86,6 +86,184 @@ export async function downloadStudentReportCardPDF({ mode, students, meta, subje
     
     doc.save(`ReportCard_${term}_${meta.cls}.pdf`);
 }
+export async function downloadStudentReportPDF(student, scores, meta) {
+    const doc = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4'
+    });
+
+    const subjects = meta?.subjects || [];
+
+    // Build school information in the format expected by the header
+    const school = {
+        schoolName: meta?.schoolName || 'TOPLINK EDU',
+        schoolAddress: meta?.schoolAddress || '',
+        schoolPhone: meta?.schoolPhone || '',
+        schoolLogo: meta?.schoolLogo || ''
+    };
+
+    await addSchoolHeader(
+        doc,
+        school,
+        'ACADEMIC PROGRESS REPORT',
+        1,
+        1
+    );
+
+    // Student information
+    doc.setFontSize(10);
+    doc.setTextColor(...PDF_COLORS.text);
+
+    doc.rect(10, 35, 190, 24);
+
+    doc.setFont('helvetica', 'bold');
+    doc.text(
+        `Name: ${student?.firstName || ''} ${student?.lastName || ''}`.trim(),
+        15,
+        42
+    );
+
+    doc.setFont('helvetica', 'normal');
+
+    doc.text(
+        `Adm No: ${student?.admissionNumber || student?.studentId || 'N/A'}`,
+        15,
+        49
+    );
+
+    doc.text(
+        `Class: ${meta?.cls || 'N/A'}`,
+        105,
+        42
+    );
+
+    doc.text(
+        `Level: ${meta?.level || 'N/A'}`,
+        105,
+        49
+    );
+
+    doc.text(
+        `Term: ${meta?.term || 'N/A'}`,
+        15,
+        56
+    );
+
+    doc.text(
+        `Assessment: ${meta?.assessmentType || 'N/A'}`,
+        105,
+        56
+    );
+
+    // Normalize scores
+    const studentScores = Array.isArray(scores) ? scores : [];
+
+    // Create subject rows
+    const tableData = subjects.map(subject => {
+        const subjectEntries = studentScores.filter(
+            score => score?.subject === subject
+        );
+
+        const latest = subjectEntries.length
+            ? subjectEntries[subjectEntries.length - 1]
+            : null;
+
+        const score = latest?.score ?? '-';
+
+        return [
+            subject,
+            score,
+            score !== '-' ? `${score}%` : '-',
+            score !== '-' ? getGradeFromScore(score) : '-'
+        ];
+    });
+
+    autoTable(doc, {
+        startY: 65,
+        head: [['Subject', 'Score', 'Percentage', 'Grade']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: {
+            fillColor: PDF_COLORS.primary,
+            textColor: 255,
+            fontSize: 10,
+            halign: 'center'
+        },
+        bodyStyles: {
+            fontSize: 9,
+            halign: 'center'
+        },
+        columnStyles: {
+            0: {
+                halign: 'left'
+            }
+        },
+        margin: {
+            left: 10,
+            right: 10
+        }
+    });
+
+    const finalY = doc.lastAutoTable?.finalY || 65;
+
+    // Overall average
+    const numericScores = studentScores
+        .map(s => Number(s?.score))
+        .filter(score => Number.isFinite(score));
+
+    const average = numericScores.length
+        ? Math.round(
+            numericScores.reduce((sum, score) => sum + score, 0) /
+            numericScores.length
+        )
+        : null;
+
+    const summaryY = Math.min(finalY + 12, 265);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(...PDF_COLORS.primary);
+
+    doc.text(
+        `Overall Average: ${average !== null ? `${average}%` : 'N/A'}`,
+        15,
+        summaryY
+    );
+
+    if (average !== null) {
+        doc.text(
+            `Overall Grade: ${getGradeFromScore(average)}`,
+            105,
+            summaryY
+        );
+    }
+
+    doc.setFont('helvetica', 'normal');
+
+    const studentName =
+        `${student?.firstName || ''}_${student?.lastName || ''}`
+            .trim()
+            .replace(/\s+/g, '_');
+
+    const safeName = studentName || 'Student';
+
+    doc.save(
+        `Student_Report_${safeName}_${meta?.term || 'Term'}.pdf`
+    );
+}
+
+function getGradeFromScore(score) {
+    const value = Number(score);
+
+    if (!Number.isFinite(value)) return '-';
+    if (value >= 80) return 'A';
+    if (value >= 70) return 'B';
+    if (value >= 60) return 'C';
+    if (value >= 50) return 'D';
+    return 'E';
+}
+
 
 // Placeholder implementations for others, to be updated similarly
 export async function downloadRankingPDF(students, meta) { console.log('Downloading ranking...'); }
