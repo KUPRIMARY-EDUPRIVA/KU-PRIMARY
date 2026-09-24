@@ -9,9 +9,8 @@ import {
     saveAssessmentConfig, requireSchoolId, findStudentByAdmission
 } from '../services/firestore';
 import { idbGet, idbSet } from '../services/cache';
-import { downloadStudentReportCardPDF, downloadRankingPDF } from '../services/pdf';
+import { downloadStudentReportCardPDF, downloadStudentReportPDF, downloadRankingPDF } from '../services/pdf';
 import { db } from '../firebase';
-import { downloadStudentReportPDF } from "../services/pdf";
 import { collection, query, where, getDocs, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
