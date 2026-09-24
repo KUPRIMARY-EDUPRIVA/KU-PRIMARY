@@ -15,10 +15,8 @@ import {
     LEVEL_SUBJECTS,
     getCBCGrade,
 } from '../utils/constants';
-import {
-    exportIndividualStudentReport,
-    downloadStudentReportCardPDF,
-} from '../services/studentReportPdf';
+import { exportIndividualStudentReport } from '../services/studentReportPdf';
+import { downloadStudentReportCardPDF } from '../services/pdf';
 
 
 // ---------------- Constants ----------------
