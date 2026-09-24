@@ -1,21 +1,52 @@
 // src/components/Auth/Login.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { getAuth, signInWithEmailAndPassword, sendPasswordResetEmail, createUserWithEmailAndPassword, updateProfile, sendEmailVerification } from 'firebase/auth';
+import {
+    getAuth, signInWithEmailAndPassword, sendPasswordResetEmail,
+    createUserWithEmailAndPassword, updateProfile, sendEmailVerification,
+} from 'firebase/auth';
 import { db } from '../../firebase';
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { useSync } from '../../context/SyncContext';
+
+// ---- Cloudinary config (from env) ----
+const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET;
+
+// ---- Unsigned upload to Cloudinary ----
+async function uploadToCloudinary(file) {
+    if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+        throw new Error(
+            'Cloudinary is not configured. Set REACT_APP_CLOUDINARY_CLOUD_NAME and REACT_APP_CLOUDINARY_UPLOAD_PRESET.'
+        );
+    }
+    const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    // Optional: put uploads in a folder
+    form.append('folder', 'edupriva/schools');
+
+    const res = await fetch(url, { method: 'POST', body: form });
+    if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.json())?.error?.message || ''; } catch {}
+        throw new Error(`Cloudinary upload failed (${res.status}) ${detail}`.trim());
+    }
+    const data = await res.json();
+    // secure_url is the https URL; url is http
+    return data.secure_url || data.url;
+}
 
 export default function Login() {
     const navigate = useNavigate();
     const { login } = useAuth();
     const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
-    
-    // Get auth instance
+
     const auth = getAuth();
-    
-    // State for form data
+
+    // ---- Login / signup form state ----
     const [loginEmail, setLoginEmail] = useState('');
     const [loginPassword, setLoginPassword] = useState('');
     const [signupSchoolName, setSignupSchoolName] = useState('');
@@ -24,8 +55,8 @@ export default function Login() {
     const [signupPassword, setSignupPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [termsAgreement, setTermsAgreement] = useState(false);
-    
-    // State for UI
+
+    // ---- UI state ----
     const [activeTab, setActiveTab] = useState('login');
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState({ text: '', type: '' });
@@ -36,21 +67,20 @@ export default function Login() {
     const [verificationEmail, setVerificationEmail] = useState('');
     const [verificationTimer, setVerificationTimer] = useState(30);
     const [showRegister, setShowRegister] = useState(false);
-    
-    // State for uploads
-    const [logoUrl, setLogoUrl] = useState('');
-    const [profileUrl, setProfileUrl] = useState('');
+
+    // ---- Upload state (File objects + previews) ----
+    const [logoFile, setLogoFile] = useState(null);
+    const [profileFile, setProfileFile] = useState(null);
     const [logoPreview, setLogoPreview] = useState(null);
     const [profilePreview, setProfilePreview] = useState(null);
     const [offlineMode, setOfflineMode] = useState(false);
     const [cachedUsers, setCachedUsers] = useState([]);
-    
-    // Refs
+
     const verificationIntervalRef = useRef(null);
     const timerIntervalRef = useRef(null);
     const fileInputRef = useRef(null);
-    
-    // Load cached users on mount
+
+    // ---- Lifecycle / network ----
     useEffect(() => {
         if (!isOnline) {
             setOfflineMode(true);
@@ -59,7 +89,6 @@ export default function Login() {
         }
     }, [isOnline]);
 
-    // Network detection
     useEffect(() => {
         const handleOnline = () => {
             setOfflineMode(false);
@@ -69,17 +98,14 @@ export default function Login() {
             setOfflineMode(true);
             showMessage('You are offline. Some features may be limited.', 'warning');
         };
-        
         window.addEventListener('online', handleOnline);
         window.addEventListener('offline', handleOffline);
-        
         return () => {
             window.removeEventListener('online', handleOnline);
             window.removeEventListener('offline', handleOffline);
         };
     }, []);
 
-    // Cleanup intervals on unmount
     useEffect(() => {
         return () => {
             if (verificationIntervalRef.current) clearInterval(verificationIntervalRef.current);
@@ -87,30 +113,25 @@ export default function Login() {
         };
     }, []);
 
-    // Load cached users from IndexedDB
+    // ---- Cache helpers ----
     const loadCachedUsers = async () => {
         try {
             const cached = await getFromIndexedDB('cached_users');
-            if (cached) {
-                setCachedUsers(cached);
-            }
+            if (cached) setCachedUsers(cached);
         } catch (error) {
             console.error('Error loading cached users:', error);
         }
     };
 
-    // Cache user data for offline use
     const cacheUserData = async (userData) => {
         try {
-            const cached = await getFromIndexedDB('cached_users') || [];
-            const existing = cached.findIndex(u => u.uid === userData.uid);
-            
+            const cached = (await getFromIndexedDB('cached_users')) || [];
+            const existing = cached.findIndex((u) => u.uid === userData.uid);
             if (existing >= 0) {
                 cached[existing] = { ...cached[existing], ...userData, cachedAt: new Date().toISOString() };
             } else {
                 cached.push({ ...userData, cachedAt: new Date().toISOString() });
             }
-            
             await saveToIndexedDB('cached_users', cached);
             setCachedUsers(cached);
         } catch (error) {
@@ -118,87 +139,65 @@ export default function Login() {
         }
     };
 
-    // Validate email
-    const validateEmail = (email) => {
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        return emailRegex.test(email);
-    };
+    // ---- Validation ----
+    const validateEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-    // Handle email validation for login
     const handleLoginEmailChange = (e) => {
         const email = e.target.value;
         setLoginEmail(email);
-        if (email === '') {
-            setEmailValid(null);
-        } else {
-            setEmailValid(validateEmail(email));
-        }
+        setEmailValid(email === '' ? null : validateEmail(email));
     };
 
-    // Handle email validation for signup
     const handleSignupEmailChange = (e) => {
         const email = e.target.value;
         setSignupEmail(email);
-        if (email === '') {
-            setSignupEmailValid(null);
-        } else {
-            setSignupEmailValid(validateEmail(email));
-        }
+        setSignupEmailValid(email === '' ? null : validateEmail(email));
     };
 
-    // Handle password confirmation
     const handleConfirmPasswordChange = (e) => {
         const confirm = e.target.value;
         setConfirmPassword(confirm);
-        if (confirm === '') {
-            setPasswordsMatch(null);
-        } else {
-            setPasswordsMatch(signupPassword === confirm);
-        }
+        setPasswordsMatch(confirm === '' ? null : signupPassword === confirm);
     };
 
-    // Handle image upload
+    // ---- Image picker (stores File + preview, no base64 in Firestore) ----
     const handleImageUpload = (type) => {
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = 'image/jpeg,image/png,image/gif,image/webp';
         input.onchange = (e) => {
             const file = e.target.files[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    const base64String = reader.result;
-                    if (type === 'logo') {
-                        setLogoUrl(base64String);
-                        setLogoPreview(base64String);
-                    } else {
-                        setProfileUrl(base64String);
-                        setProfilePreview(base64String);
-                    }
-                    showMessage('✅ Image uploaded successfully!', 'success');
-                };
-                reader.readAsDataURL(file);
+            if (!file) return;
+
+            if (file.size > 2 * 1024 * 1024) {
+                showMessage('Image must be under 2MB', 'error');
+                return;
             }
+
+            if (type === 'logo') setLogoFile(file);
+            else setProfileFile(file);
+
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                if (type === 'logo') setLogoPreview(reader.result);
+                else setProfilePreview(reader.result);
+                showMessage('✅ Image selected', 'success');
+            };
+            reader.readAsDataURL(file);
         };
         input.click();
     };
 
-    // Show message
+    // ---- Message helpers ----
     const showMessage = (text, type = 'info') => {
         setMessage({ text, type });
         if (type === 'success' && !text.includes('Redirecting')) {
-            setTimeout(() => {
-                setMessage({ text: '', type: '' });
-            }, 5000);
+            setTimeout(() => setMessage({ text: '', type: '' }), 5000);
         }
     };
+    const clearMessages = () => setMessage({ text: '', type: '' });
 
-    // Clear messages
-    const clearMessages = () => {
-        setMessage({ text: '', type: '' });
-    };
-
-    // Generate school ID
+    // ---- Misc ----
     const generateSchoolId = (schoolName) => {
         const timestamp = Date.now().toString(36);
         const randomStr = Math.random().toString(36).substring(2, 6);
@@ -206,28 +205,21 @@ export default function Login() {
         return `${nameCode}-${timestamp}-${randomStr}`;
     };
 
-    // Find user document across collections (with offline support)
     const findUserDocument = async (uid, email) => {
-        // Try online first if available
         if (isOnline) {
             try {
-                // Check users collection
                 const userDoc = await getDoc(doc(db, 'users', uid));
                 if (userDoc.exists()) {
                     const data = userDoc.data();
                     await cacheUserData({ uid, ...data, collection: 'users' });
                     return { collection: 'users', docId: uid, data };
                 }
-
-                // Check teachers collection
                 const teacherDoc = await getDoc(doc(db, 'teachers', uid));
                 if (teacherDoc.exists()) {
                     const data = teacherDoc.data();
                     await cacheUserData({ uid, ...data, collection: 'teachers' });
                     return { collection: 'teachers', docId: uid, data };
                 }
-
-                // Check students collection
                 const studentDoc = await getDoc(doc(db, 'students', uid));
                 if (studentDoc.exists()) {
                     const data = studentDoc.data();
@@ -238,108 +230,65 @@ export default function Login() {
                 console.error('Error checking collections:', error);
             }
         }
-
-        // Try offline cache
-        const cachedUser = cachedUsers.find(u => u.uid === uid || u.email === email);
+        const cachedUser = cachedUsers.find((u) => u.uid === uid || u.email === email);
         if (cachedUser) {
-            return {
-                collection: cachedUser.collection || 'users',
-                docId: cachedUser.uid,
-                data: cachedUser
-            };
+            return { collection: cachedUser.collection || 'users', docId: cachedUser.uid, data: cachedUser };
         }
-
         return null;
     };
 
-    // Send verification email
     const sendVerificationEmail = async (user) => {
-        try {
-            await sendEmailVerification(user);
-            return true;
-        } catch (error) {
-            console.error('Error sending verification email:', error);
-            return false;
-        }
+        try { await sendEmailVerification(user); return true; }
+        catch (error) { console.error('Error sending verification email:', error); return false; }
     };
 
-    // Check email verification status
     const checkEmailVerification = async () => {
         const user = auth.currentUser;
-        
         if (!user) {
             showMessage('Session expired. Please login again.', 'error');
             setShowVerification(false);
             return;
         }
-        
         try {
             await user.reload();
-            
             if (user.emailVerified) {
-                // Clear intervals
                 if (verificationIntervalRef.current) clearInterval(verificationIntervalRef.current);
                 if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-                
-                // Find user document
+
                 const userData = await findUserDocument(user.uid, user.email);
-                
                 if (userData) {
                     const { collection, docId, data } = userData;
-                    
                     if (isOnline) {
                         await updateDoc(doc(db, collection, docId), {
                             emailVerified: true,
                             verifiedAt: serverTimestamp(),
-                            updatedAt: serverTimestamp()
+                            updatedAt: serverTimestamp(),
                         });
                     }
-                    
-                    // Cache updated user data
                     await cacheUserData({
-                        ...data,
-                        uid: user.uid,
-                        email: user.email,
-                        emailVerified: true,
-                        collection: collection
+                        ...data, uid: user.uid, email: user.email,
+                        emailVerified: true, collection,
                     });
-                    
                     showMessage('✅ Email verified successfully! Redirecting to dashboard...', 'success');
-                    
-                    // Store user role in session
                     sessionStorage.setItem('userRole', collection);
                     sessionStorage.setItem('userId', docId);
-                    
-                    setTimeout(() => {
-                        navigateToDashboard(collection);
-                    }, 2000);
+                    setTimeout(() => navigateToDashboard(collection), 2000);
                 } else {
-                    // If no document found, create one
                     if (isOnline) {
                         await setDoc(doc(db, 'users', user.uid), {
-                            uid: user.uid,
-                            email: user.email,
-                            role: 'user',
+                            uid: user.uid, email: user.email, role: 'user',
                             emailVerified: true,
                             verifiedAt: serverTimestamp(),
                             createdAt: serverTimestamp(),
-                            updatedAt: serverTimestamp()
+                            updatedAt: serverTimestamp(),
                         });
                     }
-                    
-                    // Cache user data
                     await cacheUserData({
-                        uid: user.uid,
-                        email: user.email,
-                        role: 'user',
-                        emailVerified: true,
-                        collection: 'users'
+                        uid: user.uid, email: user.email, role: 'user',
+                        emailVerified: true, collection: 'users',
                     });
-                    
                     showMessage('✅ Email verified successfully! Redirecting to dashboard...', 'success');
-                    setTimeout(() => {
-                        navigateToDashboard('users');
-                    }, 2000);
+                    setTimeout(() => navigateToDashboard('users'), 2000);
                 }
             }
         } catch (error) {
@@ -348,30 +297,22 @@ export default function Login() {
         }
     };
 
-    // Navigate to appropriate dashboard based on role
     const navigateToDashboard = (collection) => {
         switch (collection) {
-            case 'teachers':
-                navigate('/teacher-dashboard');
-                break;
-            case 'students':
-                navigate('/student-dashboard');
-                break;
+            case 'teachers': navigate('/teacher-dashboard'); break;
+            case 'students': navigate('/student-dashboard'); break;
             case 'users':
-            default:
-                navigate('/dashboard');
-                break;
+            default: navigate('/dashboard'); break;
         }
     };
 
-    // Start verification check
     const startVerificationCheck = (email) => {
         setVerificationEmail(email);
         setShowVerification(true);
         setVerificationTimer(30);
-        
+
         timerIntervalRef.current = setInterval(() => {
-            setVerificationTimer(prev => {
+            setVerificationTimer((prev) => {
                 if (prev <= 1) {
                     clearInterval(timerIntervalRef.current);
                     checkEmailVerification();
@@ -380,34 +321,29 @@ export default function Login() {
                 return prev - 1;
             });
         }, 1000);
-        
+
         verificationIntervalRef.current = setInterval(checkEmailVerification, 30000);
     };
 
-    // Resend verification email
     const handleResendVerification = async () => {
         const user = auth.currentUser;
-        
         if (!user) {
             showMessage('Session expired. Please login again.', 'error');
             setShowVerification(false);
             return;
         }
-        
         try {
             await sendEmailVerification(user);
             showMessage('✅ Verification email resent! Check your inbox.', 'success');
             setVerificationTimer(30);
-        } catch (error) {
+        } catch {
             showMessage('Failed to resend verification email', 'error');
         }
     };
 
-    // Toggle registration form
     const toggleRegister = () => {
         setShowRegister(!showRegister);
         clearMessages();
-        // Reset form fields when toggling
         if (!showRegister) {
             setSignupSchoolName('');
             setSignupAdminFullName('');
@@ -415,8 +351,8 @@ export default function Login() {
             setSignupPassword('');
             setConfirmPassword('');
             setTermsAgreement(false);
-            setLogoUrl('');
-            setProfileUrl('');
+            setLogoFile(null);
+            setProfileFile(null);
             setLogoPreview(null);
             setProfilePreview(null);
             setSignupEmailValid(null);
@@ -424,36 +360,29 @@ export default function Login() {
         }
     };
 
-    // Handle login
+    // ---- Login ----
     const handleLogin = async (e) => {
         e.preventDefault();
         clearMessages();
-        
+
         if (!validateEmail(loginEmail)) {
             showMessage('Please enter a valid email address', 'error');
             return;
         }
-        
         if (loginPassword.length < 6) {
             showMessage('Password must be at least 6 characters', 'error');
             return;
         }
-        
         setLoading(true);
-        
         try {
-            // If offline, try cached login
             if (!isOnline) {
-                const cachedUser = cachedUsers.find(u => u.email === loginEmail);
+                const cachedUser = cachedUsers.find((u) => u.email === loginEmail);
                 if (cachedUser) {
                     showMessage('✅ Offline login successful! Limited functionality available.', 'success');
                     sessionStorage.setItem('userRole', cachedUser.collection || 'users');
                     sessionStorage.setItem('userId', cachedUser.uid);
                     sessionStorage.setItem('offlineMode', 'true');
-                    
-                    setTimeout(() => {
-                        navigateToDashboard(cachedUser.collection || 'users');
-                    }, 2000);
+                    setTimeout(() => navigateToDashboard(cachedUser.collection || 'users'), 2000);
                     setLoading(false);
                     return;
                 } else {
@@ -463,11 +392,9 @@ export default function Login() {
                 }
             }
 
-            // Online login
             const userCredential = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
             const user = userCredential.user;
-            
-            // Check if email is verified
+
             if (!user.emailVerified) {
                 showMessage('⚠️ Please verify your email address to access the dashboard.', 'warning');
                 startVerificationCheck(user.email);
@@ -475,173 +402,109 @@ export default function Login() {
                 setLoading(false);
                 return;
             }
-            
-            // Find user document
+
             const userData = await findUserDocument(user.uid, loginEmail);
-            
             if (userData) {
                 const { collection, docId } = userData;
-                
                 if (isOnline) {
-                    await updateDoc(doc(db, collection, docId), {
-                        lastLogin: serverTimestamp()
-                    });
+                    await updateDoc(doc(db, collection, docId), { lastLogin: serverTimestamp() });
                 }
-                
-                // Cache user data
                 await cacheUserData({
-                    uid: user.uid,
-                    email: loginEmail,
-                    collection: collection,
-                    ...userData.data
+                    uid: user.uid, email: loginEmail, collection,
+                    ...userData.data,
                 });
-                
-                // Store user role in session
                 sessionStorage.setItem('userRole', collection);
                 sessionStorage.setItem('userId', docId);
-                
-                const roleDisplay = collection === 'users' ? 'Admin' : 
-                                   collection === 'teachers' ? 'Teacher' : 
-                                   'Student';
-                
+                const roleDisplay =
+                    collection === 'users' ? 'Admin' :
+                    collection === 'teachers' ? 'Teacher' : 'Student';
                 showMessage(`Welcome ${roleDisplay}! Redirecting to dashboard...`, 'success');
-                
-                setTimeout(() => {
-                    navigateToDashboard(collection);
-                }, 2000);
+                setTimeout(() => navigateToDashboard(collection), 2000);
             } else {
-                // If no user document found, create one
                 if (isOnline) {
                     await setDoc(doc(db, 'users', user.uid), {
-                        uid: user.uid,
-                        email: loginEmail,
-                        role: 'user',
+                        uid: user.uid, email: loginEmail, role: 'user',
                         fullName: user.displayName || 'User',
                         emailVerified: true,
                         lastLogin: serverTimestamp(),
                         createdAt: serverTimestamp(),
-                        updatedAt: serverTimestamp()
+                        updatedAt: serverTimestamp(),
                     });
                 }
-                
-                // Cache user data
                 await cacheUserData({
-                    uid: user.uid,
-                    email: loginEmail,
-                    role: 'user',
-                    fullName: user.displayName || 'User',
-                    collection: 'users'
+                    uid: user.uid, email: loginEmail, role: 'user',
+                    fullName: user.displayName || 'User', collection: 'users',
                 });
-                
                 sessionStorage.setItem('userRole', 'users');
                 sessionStorage.setItem('userId', user.uid);
-                
                 showMessage('Welcome! Redirecting to dashboard...', 'success');
-                setTimeout(() => {
-                    navigateToDashboard('users');
-                }, 2000);
+                setTimeout(() => navigateToDashboard('users'), 2000);
             }
-            
         } catch (error) {
             let errorMessage = 'Login failed. ';
-            
             switch (error.code) {
                 case 'auth/invalid-credential':
-                case 'auth/wrong-password':
-                    errorMessage = 'Invalid email or password';
-                    break;
-                case 'auth/user-not-found':
-                    errorMessage = 'No account found with this email';
-                    break;
-                case 'auth/user-disabled':
-                    errorMessage = 'Account disabled. Contact support';
-                    break;
-                case 'auth/too-many-requests':
-                    errorMessage = 'Too many attempts. Try again later';
-                    break;
-                case 'auth/network-request-failed':
-                    errorMessage = 'Network error. Check connection';
-                    break;
-                default:
-                    errorMessage = 'An unexpected error occurred';
+                case 'auth/wrong-password': errorMessage = 'Invalid email or password'; break;
+                case 'auth/user-not-found': errorMessage = 'No account found with this email'; break;
+                case 'auth/user-disabled': errorMessage = 'Account disabled. Contact support'; break;
+                case 'auth/too-many-requests': errorMessage = 'Too many attempts. Try again later'; break;
+                case 'auth/network-request-failed': errorMessage = 'Network error. Check connection'; break;
+                default: errorMessage = 'An unexpected error occurred';
             }
-            
             showMessage(errorMessage, 'error');
         } finally {
             setLoading(false);
         }
     };
 
-    // Handle signup (with offline support)
+    // ---- Signup — now uploads to Cloudinary ----
     const handleSignup = async (e) => {
         e.preventDefault();
         clearMessages();
-        
+
         if (!isOnline) {
             showMessage('You are offline. Please connect to the internet to register.', 'error');
             return;
         }
-        
-        if (!signupSchoolName) {
-            showMessage('Please enter school name', 'error');
-            return;
-        }
-        
-        if (!signupAdminFullName) {
-            showMessage('Please enter admin full name', 'error');
-            return;
-        }
-        
-        if (!logoUrl) {
-            showMessage('Please upload school logo', 'error');
-            return;
-        }
-        
-        if (!profileUrl) {
-            showMessage('Please upload admin profile picture', 'error');
-            return;
-        }
-        
-        if (!validateEmail(signupEmail)) {
-            showMessage('Please enter a valid email address', 'error');
-            return;
-        }
-        
-        if (signupPassword.length < 6) {
-            showMessage('Password must be at least 6 characters', 'error');
-            return;
-        }
-        
-        if (signupPassword !== confirmPassword) {
-            showMessage('Passwords do not match', 'error');
-            return;
-        }
-        
-        if (!termsAgreement) {
-            showMessage('Please agree to the terms and conditions', 'error');
-            return;
-        }
-        
+        if (!signupSchoolName) { showMessage('Please enter school name', 'error'); return; }
+        if (!signupAdminFullName) { showMessage('Please enter admin full name', 'error'); return; }
+        if (!logoFile) { showMessage('Please upload school logo', 'error'); return; }
+        if (!profileFile) { showMessage('Please upload admin profile picture', 'error'); return; }
+        if (!validateEmail(signupEmail)) { showMessage('Please enter a valid email address', 'error'); return; }
+        if (signupPassword.length < 6) { showMessage('Password must be at least 6 characters', 'error'); return; }
+        if (signupPassword !== confirmPassword) { showMessage('Passwords do not match', 'error'); return; }
+        if (!termsAgreement) { showMessage('Please agree to the terms and conditions', 'error'); return; }
+
         setLoading(true);
-        
         try {
-            // Create auth user
+            // 1) Upload images to Cloudinary FIRST (before creating Auth user),
+            //    so a failure here doesn't leave an orphaned auth account.
+            let logoUrl = '';
+            let profileUrl = '';
+            try {
+                logoUrl = await uploadToCloudinary(logoFile);
+                profileUrl = await uploadToCloudinary(profileFile);
+            } catch (uploadErr) {
+                console.error('Cloudinary upload failed:', uploadErr);
+                showMessage(`Image upload failed: ${uploadErr.message}`, 'error');
+                setLoading(false);
+                return;
+            }
+
+            // 2) Create auth user
             const userCredential = await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
             const user = userCredential.user;
-            
-            // Update profile with display name
-            await updateProfile(user, {
-                displayName: signupAdminFullName
-            });
-            
-            // Generate school ID
+
+            await updateProfile(user, { displayName: signupAdminFullName });
+
             const schoolId = generateSchoolId(signupSchoolName);
-            
-            // Create school document
+
+            // 3) School doc — now only small HTTPS URLs live here
             const schoolData = {
-                schoolId: schoolId,
+                schoolId,
                 schoolName: signupSchoolName,
-                logoUrl: logoUrl,
+                logoUrl,              // canonical field used by AuthContext
+                schoolLogo: logoUrl,  // alias so StudentReports picks it up directly
                 adminName: signupAdminFullName,
                 adminImageUrl: profileUrl,
                 adminEmail: signupEmail,
@@ -654,16 +517,15 @@ export default function Login() {
                 settings: {
                     theme: 'default',
                     language: 'en',
-                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
-                }
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                },
             };
-            
             await setDoc(doc(db, 'schools', schoolId), schoolData);
-            
-            // Create user document
+
+            // 4) User doc — same treatment for profile image
             const userData = {
                 uid: user.uid,
-                schoolId: schoolId,
+                schoolId,
                 fullName: signupAdminFullName,
                 email: signupEmail,
                 role: 'admin',
@@ -678,94 +540,70 @@ export default function Login() {
                     canManageTeachers: true,
                     canManageClasses: true,
                     canManageFinance: true,
-                    canManageSettings: true
-                }
+                    canManageSettings: true,
+                },
             };
-            
             await setDoc(doc(db, 'users', user.uid), userData);
-            
-            // Cache user data
-            await cacheUserData({
-                ...userData,
-                collection: 'users'
-            });
-            
-            // Send verification email
+            await cacheUserData({ ...userData, collection: 'users' });
+
             const emailSent = await sendVerificationEmail(user);
-            
+
+            // 5) Clear form
+            setSignupSchoolName('');
+            setSignupAdminFullName('');
+            setSignupEmail('');
+            setSignupPassword('');
+            setConfirmPassword('');
+            setLogoFile(null);
+            setProfileFile(null);
+            setLogoPreview(null);
+            setProfilePreview(null);
+            setTermsAgreement(false);
+
             if (emailSent) {
-                // Clear form
-                setSignupSchoolName('');
-                setSignupAdminFullName('');
-                setSignupEmail('');
-                setSignupPassword('');
-                setConfirmPassword('');
-                setLogoUrl('');
-                setProfileUrl('');
-                setLogoPreview(null);
-                setProfilePreview(null);
-                setTermsAgreement(false);
-                
                 showMessage(`✅ School account created! Verification email sent to ${signupEmail}`, 'success');
-                startVerificationCheck(signupEmail);
             } else {
                 showMessage('Account created but verification email failed. Please try resending.', 'warning');
-                startVerificationCheck(signupEmail);
             }
-            
+            startVerificationCheck(signupEmail);
         } catch (error) {
             let errorMessage = 'Registration failed. ';
-            
             switch (error.code) {
                 case 'auth/email-already-in-use':
-                    errorMessage = 'Email already registered. Please login instead';
-                    break;
+                    errorMessage = 'Email already registered. Please login instead'; break;
                 case 'auth/invalid-email':
-                    errorMessage = 'Invalid email address';
-                    break;
+                    errorMessage = 'Invalid email address'; break;
                 case 'auth/weak-password':
-                    errorMessage = 'Password is too weak. Use at least 6 characters';
-                    break;
+                    errorMessage = 'Password is too weak. Use at least 6 characters'; break;
                 case 'auth/network-request-failed':
-                    errorMessage = 'Network error. Check your connection';
-                    break;
+                    errorMessage = 'Network error. Check your connection'; break;
                 default:
                     errorMessage += error.message;
             }
-            
             showMessage(errorMessage, 'error');
         } finally {
             setLoading(false);
         }
     };
 
-    // Handle forgot password
+    // ---- Password reset ----
     const handleForgotPassword = async () => {
         if (!isOnline) {
             alert('You are offline. Please connect to the internet to reset your password.');
             return;
         }
-        
         const email = prompt('Enter your email address to reset password:');
-        
         if (email && validateEmail(email)) {
             try {
                 await sendPasswordResetEmail(auth, email);
                 alert('✅ Password reset email sent! Check your inbox and spam folder.');
             } catch (error) {
                 let errorMessage = 'Error sending reset email. ';
-                
                 switch (error.code) {
-                    case 'auth/user-not-found':
-                        errorMessage = 'No account found with this email';
-                        break;
-                    case 'auth/invalid-email':
-                        errorMessage = 'Invalid email address';
-                        break;
-                    default:
-                        errorMessage += error.message;
+                    case 'auth/user-not-found': errorMessage = 'No account found with this email'; break;
+                    case 'auth/invalid-email': errorMessage = 'Invalid email address'; break;
+                    default: errorMessage += error.message;
                 }
-                
                 alert(errorMessage);
             }
         } else if (email) {
@@ -773,7 +611,6 @@ export default function Login() {
         }
     };
 
-    // Handle logout from verification page
     const handleLogout = async () => {
         try {
             await auth.signOut();
@@ -785,9 +622,9 @@ export default function Login() {
         }
     };
 
+    // ---- Render ----
     return (
         <div className="login-container">
-            {/* Offline Indicator */}
             {!isOnline && (
                 <div className="offline-indicator">
                     <i className="fas fa-wifi-slash"></i> Offline Mode
@@ -795,88 +632,51 @@ export default function Login() {
             )}
 
             <div className="split-container">
-                {/* Left Side - Image (Desktop only) */}
                 <div className="left-panel">
                     <div className="image-overlay">
                         <div className="overlay-content">
                             <h1>Welcome Back!</h1>
                             <p>Manage your school efficiently with EduPriva</p>
                             <div className="features-list">
-                                <div className="feature-item">
-                                    <i className="fas fa-users"></i>
-                                    <span>Student Management</span>
-                                </div>
-                                <div className="feature-item">
-                                    <i className="fas fa-chalkboard-teacher"></i>
-                                    <span>Teacher Management</span>
-                                </div>
-                                <div className="feature-item">
-                                    <i className="fas fa-file-invoice-dollar"></i>
-                                    <span>Fee & Invoice Tracking</span>
-                                </div>
-                                <div className="feature-item">
-                                    <i className="fas fa-chart-line"></i>
-                                    <span>Real-time Analytics</span>
-                                </div>
+                                <div className="feature-item"><i className="fas fa-users"></i><span>Student Management</span></div>
+                                <div className="feature-item"><i className="fas fa-chalkboard-teacher"></i><span>Teacher Management</span></div>
+                                <div className="feature-item"><i className="fas fa-file-invoice-dollar"></i><span>Fee & Invoice Tracking</span></div>
+                                <div className="feature-item"><i className="fas fa-chart-line"></i><span>Real-time Analytics</span></div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                {/* Right Side - Form */}
                 <div className="right-panel">
                     <div className="form-wrapper">
-                        {/* Header */}
                         <div className="header">
-                            <div className="logo-container">
-                                <div className="logo"></div>
-                            </div>
+                            <div className="logo-container"><div className="logo"></div></div>
                             <h1 className="system-title">EDUPRIVA</h1>
                             <div className="system-subtitle">School Management System</div>
                         </div>
-                        
-                        {/* Form Container */}
+
                         <div className="form-container">
-                            {/* Verification Page */}
                             {showVerification ? (
                                 <div className="verification-section">
-                                    <div className="verification-icon">
-                                        <i className="fas fa-envelope-circle-check"></i>
-                                    </div>
+                                    <div className="verification-icon"><i className="fas fa-envelope-circle-check"></i></div>
                                     <div className="verification-content">
                                         <h3>Verify Your Email Address</h3>
                                         <p>We've sent a verification email to:</p>
                                         <div className="email-display">{verificationEmail}</div>
                                         <p>Please check your inbox and click the verification link to activate your account.</p>
                                         <p><strong>Important:</strong> You must verify your email before accessing the system.</p>
-                                        
                                         <div className="verification-timer">
                                             <p>Checking verification status automatically in <span className="timer">{verificationTimer}</span> seconds...</p>
                                         </div>
-                                        
                                         <div className="resend-link">
                                             Didn't receive the email? <span onClick={handleResendVerification}>Resend Verification Email</span>
                                         </div>
-                                        
-                                        <button 
-                                            type="button" 
-                                            className="btn warning"
-                                            onClick={checkEmailVerification}
-                                        >
-                                            <i className="fas fa-sync-alt"></i>
-                                            <span>Check Verification Status</span>
+                                        <button type="button" className="btn warning" onClick={checkEmailVerification}>
+                                            <i className="fas fa-sync-alt"></i><span>Check Verification Status</span>
                                         </button>
-                                        
-                                        <button 
-                                            type="button" 
-                                            className="btn danger"
-                                            onClick={handleLogout}
-                                            style={{ marginTop: '10px' }}
-                                        >
-                                            <i className="fas fa-sign-out-alt"></i>
-                                            <span>Logout</span>
+                                        <button type="button" className="btn danger" onClick={handleLogout} style={{ marginTop: '10px' }}>
+                                            <i className="fas fa-sign-out-alt"></i><span>Logout</span>
                                         </button>
-                                        
                                         <div className="verification-note">
                                             <p><i className="fas fa-info-circle"></i> Check your spam folder if you don't see the email.</p>
                                             <p>After verification, you'll be automatically redirected to your dashboard.</p>
@@ -886,254 +686,170 @@ export default function Login() {
                             ) : (
                                 <>
                                     <h2 className="form-title">{showRegister ? 'Register School' : 'School Portal'}</h2>
-                                    
-                                    {/* Message Display */}
+
                                     {message.text && (
-                                        <div className={`message ${message.type}`}>
-                                            {message.text}
-                                        </div>
+                                        <div className={`message ${message.type}`}>{message.text}</div>
                                     )}
-                                    
-                                    {/* Login Form */}
+
                                     {!showRegister && (
                                         <form className="form active" onSubmit={handleLogin}>
                                             <div className="input-group">
                                                 <label htmlFor="loginEmail">Email Address</label>
                                                 <i className="fas fa-envelope"></i>
-                                                <input 
-                                                    type="email" 
-                                                    id="loginEmail" 
-                                                    value={loginEmail}
+                                                <input
+                                                    type="email" id="loginEmail" value={loginEmail}
                                                     onChange={handleLoginEmailChange}
-                                                    placeholder="Enter your email" 
-                                                    required 
+                                                    placeholder="Enter your email" required
                                                 />
                                                 <div className={`validation-icon ${emailValid === true ? 'valid' : emailValid === false ? 'invalid' : ''}`}>
                                                     {emailValid === true && <i className="fas fa-check-circle"></i>}
                                                     {emailValid === false && <i className="fas fa-exclamation-circle"></i>}
                                                 </div>
                                             </div>
-                                            
+
                                             <div className="input-group">
                                                 <label htmlFor="loginPassword">Password</label>
                                                 <i className="fas fa-lock"></i>
-                                                <input 
-                                                    type="password" 
-                                                    id="loginPassword" 
-                                                    value={loginPassword}
+                                                <input
+                                                    type="password" id="loginPassword" value={loginPassword}
                                                     onChange={(e) => setLoginPassword(e.target.value)}
-                                                    placeholder="Enter your password" 
-                                                    required 
+                                                    placeholder="Enter your password" required
                                                 />
                                             </div>
-                                            
+
                                             {!isOnline && (
-                                                <div style={{
-                                                    padding: '10px',
-                                                    marginBottom: '15px',
-                                                    background: '#fff3cd',
-                                                    border: '1px solid #ffc107',
-                                                    borderRadius: '8px',
-                                                    fontSize: '13px',
-                                                    color: '#856404'
-                                                }}>
+                                                <div style={{ padding: '10px', marginBottom: '15px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '8px', fontSize: '13px', color: '#856404' }}>
                                                     <i className="fas fa-info-circle"></i> Offline mode: Login with cached credentials
                                                 </div>
                                             )}
-                                            
+
                                             <button type="submit" className="btn" disabled={loading}>
-                                                {loading ? (
-                                                    <>
-                                                        <div className="loading"></div>
-                                                        <span>Logging in...</span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <i className="fas fa-sign-in-alt"></i>
-                                                        <span>Login to Dashboard</span>
-                                                    </>
-                                                )}
+                                                {loading ? (<><div className="loading"></div><span>Logging in...</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Login to Dashboard</span></>)}
                                             </button>
-                                            
-                                            <div className="forgot-password" onClick={handleForgotPassword}>
-                                                Forgot Password?
-                                            </div>
-                                            
-                                            {/* Toggle to Register */}
+
+                                            <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
+
                                             <div className="toggle-link" onClick={toggleRegister}>
                                                 Don't have an account? <span>Register School</span>
                                             </div>
                                         </form>
                                     )}
-                                    
-                                    {/* Signup Form */}
+
                                     {showRegister && (
                                         <form className="form active" onSubmit={handleSignup}>
                                             <div className="input-group">
                                                 <label htmlFor="schoolName">School Name</label>
                                                 <i className="fas fa-school"></i>
-                                                <input 
-                                                    type="text" 
-                                                    id="schoolName" 
-                                                    value={signupSchoolName}
+                                                <input
+                                                    type="text" id="schoolName" value={signupSchoolName}
                                                     onChange={(e) => setSignupSchoolName(e.target.value)}
-                                                    placeholder="Enter school name" 
-                                                    required 
+                                                    placeholder="Enter school name" required
                                                 />
                                             </div>
-                                            
+
                                             <div className="input-group">
                                                 <label htmlFor="adminFullName">Admin Full Name</label>
                                                 <i className="fas fa-user-tie"></i>
-                                                <input 
-                                                    type="text" 
-                                                    id="adminFullName" 
-                                                    value={signupAdminFullName}
+                                                <input
+                                                    type="text" id="adminFullName" value={signupAdminFullName}
                                                     onChange={(e) => setSignupAdminFullName(e.target.value)}
-                                                    placeholder="Enter admin full name" 
-                                                    required 
+                                                    placeholder="Enter admin full name" required
                                                 />
                                             </div>
-                                            
-                                            {/* School Logo Upload */}
+
                                             <div className="file-upload-container">
                                                 <label>School Logo</label>
                                                 <div className="upload-preview">
                                                     <div className="logo-preview">
-                                                        {logoPreview ? (
-                                                            <img src={logoPreview} alt="School Logo" />
-                                                        ) : (
-                                                            <i className="fas fa-school fa-2x" style={{ color: '#ccc' }}></i>
-                                                        )}
+                                                        {logoPreview ? (<img src={logoPreview} alt="School Logo" />) : (<i className="fas fa-school fa-2x" style={{ color: '#ccc' }}></i>)}
                                                     </div>
                                                     <div className="upload-info">
                                                         <p>Upload your school logo (Max 2MB)</p>
                                                         <button type="button" className="upload-btn" onClick={() => handleImageUpload('logo')}>
-                                                            <i className="fas fa-upload"></i>
-                                                            <span>Upload Logo</span>
+                                                            <i className="fas fa-upload"></i><span>Upload Logo</span>
                                                         </button>
                                                     </div>
                                                 </div>
-                                                <input type="hidden" id="logoUrl" value={logoUrl} />
                                             </div>
-                                            
-                                            {/* Admin Profile Picture Upload */}
+
                                             <div className="file-upload-container">
                                                 <label>Admin Profile Picture</label>
                                                 <div className="upload-preview">
                                                     <div className="profile-preview">
-                                                        {profilePreview ? (
-                                                            <img src={profilePreview} alt="Admin Profile" />
-                                                        ) : (
-                                                            <i className="fas fa-user fa-2x" style={{ color: '#ccc' }}></i>
-                                                        )}
+                                                        {profilePreview ? (<img src={profilePreview} alt="Admin Profile" />) : (<i className="fas fa-user fa-2x" style={{ color: '#ccc' }}></i>)}
                                                     </div>
                                                     <div className="upload-info">
                                                         <p>Upload admin profile picture (Max 2MB)</p>
                                                         <button type="button" className="upload-btn" onClick={() => handleImageUpload('profile')}>
-                                                            <i className="fas fa-upload"></i>
-                                                            <span>Upload Profile</span>
+                                                            <i className="fas fa-upload"></i><span>Upload Profile</span>
                                                         </button>
                                                     </div>
                                                 </div>
-                                                <input type="hidden" id="profileUrl" value={profileUrl} />
                                             </div>
-                                            
+
                                             <div className="input-group">
                                                 <label htmlFor="signupEmail">Admin Email Address</label>
                                                 <i className="fas fa-envelope"></i>
-                                                <input 
-                                                    type="email" 
-                                                    id="signupEmail" 
-                                                    value={signupEmail}
+                                                <input
+                                                    type="email" id="signupEmail" value={signupEmail}
                                                     onChange={handleSignupEmailChange}
-                                                    placeholder="Enter admin email" 
-                                                    required 
+                                                    placeholder="Enter admin email" required
                                                 />
                                                 <div className={`validation-icon ${signupEmailValid === true ? 'valid' : signupEmailValid === false ? 'invalid' : ''}`}>
                                                     {signupEmailValid === true && <i className="fas fa-check-circle"></i>}
                                                     {signupEmailValid === false && <i className="fas fa-exclamation-circle"></i>}
                                                 </div>
                                             </div>
-                                            
+
                                             <div className="input-group">
                                                 <label htmlFor="signupPassword">Password</label>
                                                 <i className="fas fa-lock"></i>
-                                                <input 
-                                                    type="password" 
-                                                    id="signupPassword" 
-                                                    value={signupPassword}
+                                                <input
+                                                    type="password" id="signupPassword" value={signupPassword}
                                                     onChange={(e) => setSignupPassword(e.target.value)}
-                                                    placeholder="Create a strong password" 
-                                                    required 
+                                                    placeholder="Create a strong password" required
                                                 />
                                             </div>
-                                            
+
                                             <div className="input-group">
                                                 <label htmlFor="confirmPassword">Confirm Password</label>
                                                 <i className="fas fa-lock"></i>
-                                                <input 
-                                                    type="password" 
-                                                    id="confirmPassword" 
-                                                    value={confirmPassword}
+                                                <input
+                                                    type="password" id="confirmPassword" value={confirmPassword}
                                                     onChange={handleConfirmPasswordChange}
-                                                    placeholder="Confirm your password" 
-                                                    required 
+                                                    placeholder="Confirm your password" required
                                                 />
                                                 <div className={`validation-icon ${passwordsMatch === true ? 'valid' : passwordsMatch === false ? 'invalid' : ''}`}>
                                                     {passwordsMatch === true && <i className="fas fa-check-circle"></i>}
                                                     {passwordsMatch === false && <i className="fas fa-exclamation-circle"></i>}
                                                 </div>
                                             </div>
-                                            
-                                            <div className="divider">
-                                                <span>Terms & Conditions</span>
-                                            </div>
-                                            
+
+                                            <div className="divider"><span>Terms & Conditions</span></div>
+
                                             <div className="input-group" style={{ marginBottom: '10px' }}>
                                                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                                                    <input 
-                                                        type="checkbox" 
-                                                        id="termsAgreement" 
-                                                        checked={termsAgreement}
+                                                    <input
+                                                        type="checkbox" id="termsAgreement" checked={termsAgreement}
                                                         onChange={(e) => setTermsAgreement(e.target.checked)}
-                                                        style={{ width: 'auto', marginTop: '3px' }} 
+                                                        style={{ width: 'auto', marginTop: '3px' }}
                                                     />
                                                     <label htmlFor="termsAgreement" style={{ fontSize: '13px', color: '#666', cursor: 'pointer' }}>
                                                         I agree to the <a href="#" style={{ color: 'var(--primary)' }}>Terms of Service</a> and <a href="#" style={{ color: 'var(--primary)' }}>Privacy Policy</a>. I understand that my school account will be in trial mode until subscription is activated.
                                                     </label>
                                                 </div>
                                             </div>
-                                            
+
                                             {!isOnline && (
-                                                <div style={{
-                                                    padding: '10px',
-                                                    marginBottom: '15px',
-                                                    background: '#fff3cd',
-                                                    border: '1px solid #ffc107',
-                                                    borderRadius: '8px',
-                                                    fontSize: '13px',
-                                                    color: '#856404'
-                                                }}>
+                                                <div style={{ padding: '10px', marginBottom: '15px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '8px', fontSize: '13px', color: '#856404' }}>
                                                     <i className="fas fa-info-circle"></i> You are offline. Registration requires an internet connection.
                                                 </div>
                                             )}
-                                            
+
                                             <button type="submit" className="btn warning" disabled={loading || !isOnline}>
-                                                {loading ? (
-                                                    <>
-                                                        <div className="loading"></div>
-                                                        <span>Creating account...</span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <i className="fas fa-school"></i>
-                                                        <span>Register School</span>
-                                                    </>
-                                                )}
+                                                {loading ? (<><div className="loading"></div><span>Creating account...</span></>) : (<><i className="fas fa-school"></i><span>Register School</span></>)}
                                             </button>
-                                            
-                                            {/* Toggle back to Login */}
+
                                             <div className="toggle-link" onClick={toggleRegister}>
                                                 Already have an account? <span>Login</span>
                                             </div>
@@ -1145,7 +861,8 @@ export default function Login() {
                     </div>
                 </div>
             </div>
-            {/* Styles */}
+
+{/* Styles */}
             <style>{`
                 * {
                     margin: 0;
@@ -2048,6 +1765,6 @@ export default function Login() {
                     background: var(--accent);
                 }
             `}</style>
-        </div>
+ </div>
     );
 }
