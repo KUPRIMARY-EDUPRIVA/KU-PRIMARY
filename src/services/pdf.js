@@ -73,7 +73,7 @@ export async function downloadStudentReportCardPDF({ mode, students, meta, subje
             '-'  // Points
         ]);
         
-        doc.autoTable({
+       autoTable(doc, {
             startY: 60,
             head: [['Subject', 'ETRM', 'Avg', 'Rank', 'Grade', 'Pts']],
             body: tableData,
