@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
 import { db } from '../firebase';
-import { downloadStudentReportCardPDF } from "../utils/pdf";
+import { downloadStudentReportCardPDF } from "../services/pdf";
 import { doc, getDoc, updateDoc, serverTimestamp, collection, setDoc } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
