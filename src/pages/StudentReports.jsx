@@ -15,7 +15,11 @@ import {
     LEVEL_SUBJECTS,
     getCBCGrade,
 } from '../utils/constants';
-import { exportIndividualStudentReport } from '../services/studentReportPdf';
+import {
+    exportIndividualStudentReport,
+    downloadStudentReportCardPDF,
+} from '../services/studentReportPdf';
+
 
 // ---------------- Constants ----------------
 const TERM_NAMES = ['', 'First Term', 'Second Term', 'Third Term'];
