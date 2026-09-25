@@ -147,16 +147,8 @@ export default function Sidebar({ isOpen, onClose }) {
 
   
 
-    const enabledOptionalItems = useMemo(() => {
-        if (isSuperAdmin) return [];
-        return optionalFeatures
-            .filter((item) => isFeatureEnabled(item.key))
-            .map((item) => ({ ...item, show: true }));
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [optionalFeatures, schoolFeatures, isSuperAdmin]);
-
-    // Whether the Premium accordion should be rendered at all
-    const hasPremium = enabledOptionalItems.length > 0;
+   
+   
 
     // ---- Active tab logic ----
     // If we're not on any known nav path, default the "active" highlight to the
@@ -348,7 +340,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 ...visible(adminItems),
                 ...visible(teacherItems),
                 ...visible(studentItems),
-                ...visible(superadminItems)
+               
             ],
             premium: enabledOptionalItems,
             common: visible(commonItems)
