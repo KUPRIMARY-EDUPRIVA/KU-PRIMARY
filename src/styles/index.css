@@ -3569,4 +3569,258 @@ tbody tr:hover td { background: var(--bg); }
     background: var(--navy-100);
     color: var(--navy-700);
     font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.35px;
+}
+.audit-role--admin,
+.audit-role--school_admin,
+.audit-role--super-admin {
+    background: var(--navy-700);
+    color: var(--gold-300);
+}
+.audit-role--teacher {
+    background: var(--info-bg);
+    color: var(--info);
+}
+.audit-role--student {
+    background: var(--success-bg);
+    color: var(--success);
+}
+
+/* ---- Action pill ---- */
+.audit-action {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-alt);
+    color: var(--text-soft);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+}
+.audit-action--auth     { background: var(--navy-100); color: var(--navy-700); }
+.audit-action--students { background: var(--success-bg); color: var(--success); }
+.audit-action--teachers { background: var(--info-bg); color: var(--info); }
+.audit-action--results  { background: #f4ecfb; color: #6b3fa0; }
+.audit-action--finance  { background: var(--gold-100); color: var(--gold-700); }
+.audit-action--settings { background: #e7e5fb; color: #4a44b3; }
+.audit-action--other    { background: var(--bg-alt); color: var(--text-muted); }
+
+/* ---- Mobile card list ---- */
+.audit-card-list {
+    display: none;
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.audit-card {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--divider);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.audit-card:last-child { border-bottom: none; }
+
+.audit-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.audit-card-time {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.audit-card-user {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.audit-card-user strong {
+    font-size: 13.5px;
+    color: var(--text);
+    font-weight: 600;
+}
+.audit-card-user span {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.audit-card-details {
+    font-size: 12.5px;
+    color: var(--text-soft);
+    line-height: 1.45;
+    background: var(--bg);
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    word-break: break-word;
+}
+
+/* ---- Empty state ---- */
+.audit-empty {
+    padding: 48px 20px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+.audit-empty i {
+    font-size: 40px;
+    color: var(--border-strong);
+    margin-bottom: 4px;
+}
+.audit-empty h3 {
+    font-size: 16px;
+    color: var(--text);
+    margin: 0;
+}
+.audit-empty p {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0 0 8px;
+    max-width: 420px;
+    line-height: 1.5;
+}
+
+/* ---- Access denied ---- */
+.audit-access-denied {
+    text-align: center;
+    padding: 60px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+.audit-access-denied i {
+    font-size: 40px;
+    color: var(--navy-300);
+}
+.audit-access-denied h2 {
+    font-size: 20px;
+    color: var(--text);
+    margin: 0;
+}
+.audit-access-denied p {
+    font-size: 13.5px;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+/* ---- Pagination ---- */
+.audit-pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xs);
+    flex-wrap: wrap;
+}
+
+.audit-pagination-info {
+    font-size: 12.5px;
+    color: var(--text-muted);
+}
+.audit-pagination-info strong { color: var(--text); font-weight: 700; }
+
+.audit-pagination-btns {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.audit-pagination-btns button {
+    width: 34px;
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-strong);
+    background: var(--white);
+    border-radius: var(--radius-sm);
+    color: var(--text-soft);
+    font-size: 12px;
+    transition: var(--transition-fast);
+    cursor: pointer;
+}
+.audit-pagination-btns button:hover:not(:disabled) {
+    border-color: var(--navy-500);
+    color: var(--navy-700);
+    background: var(--navy-50);
+}
+.audit-pagination-btns button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.audit-pagination-current {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-soft);
+    white-space: nowrap;
+}
+
+/* ---- Responsive ---- */
+@media (max-width: 900px) {
+    .audit-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 768px) {
+    .audit-header { flex-direction: column; align-items: stretch; }
+    .audit-header-actions { width: 100%; }
+    .audit-header-actions .btn { flex: 1; justify-content: center; }
+
+    .audit-stats { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .audit-stat { padding: 12px 12px; }
+    .audit-stat-value { font-size: 18px; }
+
+    .audit-filters {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 12px;
+    }
+    .audit-search,
+    .audit-search input,
+    .audit-filters select {
+        min-width: 100%;
+        width: 100%;
+    }
+
+    /* Swap table for card list on small screens */
+    .audit-table-scroll { display: none; }
+    .audit-card-list { display: block; }
+
+    .audit-pagination {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .audit-pagination-info { text-align: center; }
+    .audit-pagination-btns { justify-content: center; }
+}
+
+@media (max-width: 480px) {
+    .audit-header-text h1 { font-size: 18px; }
+    .audit-header-text p  { font-size: 12.5px; }
+
+    .audit-stat-value { font-size: 16px; }
+    .audit-stat-label { font-size: 9.5px; }
+    .audit-stat { padding: 10px; }
+
+    .audit-card { padding: 12px 14px; }
+    .audit-card-user strong { font-size: 13px; }
+    .audit-card-details { font-size: 12px; }
+}
    
