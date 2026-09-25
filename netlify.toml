@@ -1,38 +1,107 @@
 # netlify.toml
+# EduPriva — production configuration
 
+# ============================================================
+# Build
+# ============================================================
 [build]
   publish = "build"
   command = "CI=false npm run build"
-  functions = "netlify/functions"
+  # Modern key (was `functions = "netlify/functions"` in older CLI).
+  # @netlify/build 24+ prefers `functions-directory`.
+  functions-directory = "netlify/functions"
+  # Where bundled functions land at deploy time. Default is fine; the
+  # explicit setting helps the CLI when running `netlify dev` locally.
+  edge_functions = "netlify/edge-functions"
 
 [build.environment]
   NODE_VERSION = "18"
+  # Prevents react-scripts from running its post-build analysis when
+  # the deploy target is set to production by Netlify.
+  CI = "false"
 
-# API routes → Netlify Functions
+# ============================================================
+# Scheduled functions
+# ============================================================
+# Netlify scheduled functions: the block name must EXACTLY match the
+# function filename (without .js).
+#
+# Free plan: schedules are limited to one run per day and require a
+# manual trigger via `netlify functions:invoke` to seed.
+# Pro plan: cron expressions run at full fidelity — every 15 min below.
+#
+# If you are on Free, change the schedule to "0 3 * * *" (daily at 03:00 UTC).
+[functions.mpesa-timeout-sweep]
+  schedule = "*/15 * * * *"
+
+# ============================================================
+# Function bundling
+# ============================================================
+# Only bundle the modules each function requires. This dramatically
+# shrinks the deploy and cold-start time, especially for functions that
+# only need a couple of npm packages.
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = []
+
+# ============================================================
+# Redirects
+# ============================================================
+# API routes → Netlify Functions.
+# Register the M-Pesa callback on the Daraja portal as:
+#     https://<your-site>/api/mpesa-callback
+# not the raw /.netlify/functions/mpesa-callback URL.
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
 
-# Explicitly allow static assets
+# Do NOT cache function responses — payments, callbacks, and auth
+# endpoints must always hit a fresh instance.
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0"
+
+# Explicitly allow static assets. `force = true` means "if the file
+# isn't there, 404 — don't fall through to the SPA."
 [[redirects]]
   from = "/static/*"
   to = "/static/:splat"
   status = 200
   force = true
 
-# React SPA fallback
+# SPA fallback — everything else goes to index.html.
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
-# Security headers
+# ============================================================
+# Global security headers
+# ============================================================
 [[headers]]
   for = "/*"
-
   [headers.values]
-    X-Frame-Options = "DENY"
-    X-XSS-Protection = "1; mode=block"
-    X-Content-Type-Options = "nosniff"
-    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options            = "DENY"
+    X-XSS-Protection           = "1; mode=block"
+    X-Content-Type-Options     = "nosniff"
+    Referrer-Policy            = "strict-origin-when-cross-origin"
+    Permissions-Policy         = "camera=(), microphone=(), geolocation=()"
+    Strict-Transport-Security  = "max-age=31536000; includeSubDomains; preload"
+
+# ============================================================
+# Scheduled function environment
+# ============================================================
+# `mpesa-timeout-sweep` needs the same Firebase Admin credentials
+# that `mpesa-callback` uses. Set these in the Netlify UI:
+#
+#   FIREBASE_PROJECT_ID
+#   FIREBASE_CLIENT_EMAIL
+#   FIREBASE_PRIVATE_KEY       (with literal \n newlines)
+#
+# And for the callback auth (once you enable it):
+#
+#   MPESA_ALLOWED_IPS
+#   MPESA_CALLBACK_USER
+#   MPESA_CALLBACK_PASS
