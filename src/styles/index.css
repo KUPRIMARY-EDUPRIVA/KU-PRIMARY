@@ -3328,3 +3328,245 @@ tbody tr:hover td { background: var(--bg); }
     .modal-close { background: var(--bg-alt); color: var(--text-soft); }
     .modal-close:hover { background: #2a1418; color: #f2b1ab; }
 }
+/* ============================================================
+   33. AUDIT LOGS PAGE
+   ============================================================ */
+
+.audit-page {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* ---- Header ---- */
+.audit-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.audit-header-text h1 {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--navy-800);
+    margin: 0 0 4px;
+    letter-spacing: -0.02em;
+}
+
+.audit-header-text p {
+    font-size: 13.5px;
+    color: var(--text-muted);
+    margin: 0;
+    max-width: 640px;
+    line-height: 1.5;
+}
+
+.audit-header-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* ---- Stat strip ---- */
+.audit-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.audit-stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    box-shadow: var(--shadow-xs);
+}
+
+.audit-stat-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+    color: var(--text-muted);
+}
+
+.audit-stat-value {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--text);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+}
+
+/* ---- Filters ---- */
+.audit-filters {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    box-shadow: var(--shadow-xs);
+}
+
+.audit-search {
+    position: relative;
+    flex: 1;
+    min-width: 220px;
+    display: flex;
+}
+
+.audit-search i {
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 13px;
+    pointer-events: none;
+}
+
+.audit-search input {
+    width: 100%;
+    padding: 10px 12px 10px 36px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+    background: var(--white);
+    color: var(--text);
+    transition: var(--transition-fast);
+}
+
+.audit-search input:focus {
+    outline: none;
+    border-color: var(--navy-500);
+    box-shadow: 0 0 0 3px rgba(42, 61, 143, 0.12);
+}
+
+.audit-filters select {
+    padding: 10px 32px 10px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+    background-color: var(--white);
+    color: var(--text);
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'/%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    min-width: 160px;
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+
+.audit-filters select:focus {
+    outline: none;
+    border-color: var(--navy-500);
+    box-shadow: 0 0 0 3px rgba(42, 61, 143, 0.12);
+}
+
+/* ---- Error banner ---- */
+.audit-error {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--danger-bg);
+    border: 1px solid #f3c8c4;
+    border-radius: var(--radius-md);
+    color: var(--danger);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.audit-error i { font-size: 15px; flex-shrink: 0; }
+.audit-error .btn { margin-left: auto; }
+
+/* ---- Table ---- */
+.audit-table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+}
+
+.audit-table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.audit-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    min-width: 720px;
+    font-size: 13px;
+}
+
+.audit-table thead th {
+    background: var(--bg-alt);
+    color: var(--text-muted);
+    padding: 11px 16px;
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.audit-table tbody td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--divider);
+    vertical-align: top;
+    color: var(--text);
+}
+
+.audit-table tbody tr:last-child td { border-bottom: none; }
+.audit-table tbody tr:hover td { background: var(--bg); }
+
+.audit-cell-time {
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-size: 12px;
+}
+
+.audit-cell-user .audit-user-name {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.audit-cell-user .audit-user-email {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.audit-cell-details {
+    color: var(--text-soft);
+    max-width: 420px;
+    word-break: break-word;
+    line-height: 1.45;
+    font-size: 12.5px;
+}
+
+/* ---- Role pill ---- */
+.audit-role {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: var(--radius-pill);
+    background: var(--navy-100);
+    color: var(--navy-700);
+    font-size: 10.5px;
+   
