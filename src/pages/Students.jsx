@@ -6,7 +6,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
 import { db } from '../firebase';
-import { downloadStudentReportCardPDF } from "../services/pdf";
 import { doc, getDoc, updateDoc, serverTimestamp, collection, setDoc } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
@@ -70,9 +69,9 @@ const STATUS_OPTIONS = [
     { value: 'archived', label: 'Archived' },
 ];
 
-const PAGE_SIZE_UI = 10;             // Rows shown per page in the UI
-const PAGE_SIZE_FETCH = 9999;         // Docs fetched per Firestore page
-const MAX_IMPORT_SIZE = 5 * 1024 * 1024; // 5 MB
+const PAGE_SIZE_UI = 10;
+const PAGE_SIZE_FETCH = 9999;
+const MAX_IMPORT_SIZE = 5 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 1000;
 
 // ============================================================
@@ -80,6 +79,19 @@ const MAX_IMPORT_ROWS = 1000;
 // ============================================================
 const normalizeText = (t) =>
     !t ? '' : String(t).trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * Resolve the class list for a level, preferring the school's custom
+ * list from SchoolContext, falling back to the built-in constant.
+ * ALL call sites must pass `getLevelClassesFn` when available.
+ */
+// ← PATCHED: single source of truth for "which classes does this level have"
+const resolveClassList = (level, getLevelClassesFn) => {
+    if (!level) return [];
+    const custom = getLevelClassesFn ? getLevelClassesFn(level) : null;
+    if (Array.isArray(custom) && custom.length > 0) return custom;
+    return LEVEL_CLASSES[level] || [];
+};
 
 const getValidLevel = (input) => {
     if (!input) return null;
@@ -90,10 +102,11 @@ const getValidLevel = (input) => {
     return null;
 };
 
+// ← PATCHED: uses resolveClassList so custom classes are honoured
 const getValidClass = (input, level, getLevelClassesFn) => {
     if (!input || !level) return null;
     const n = normalizeText(input);
-    const list = getLevelClassesFn ? getLevelClassesFn(level) : (LEVEL_CLASSES[level] || []);
+    const list = resolveClassList(level, getLevelClassesFn);
     for (const c of list) if (n === normalizeText(c)) return c;
     return null;
 };
@@ -103,10 +116,13 @@ const getLevelDisplayName = (level) =>
 
 const getLevelBadgeClass = (level) => LEVEL_BADGE_CLASSES[level] || '';
 
-const getClassOptions = (level, getLevelClassesFn) => getLevelClassesFn ? getLevelClassesFn(level) : (LEVEL_CLASSES[level] || []);
+// ← PATCHED: getClassOptions now REQUIRES getLevelClassesFn (no silent fallback)
+const getClassOptions = (level, getLevelClassesFn) =>
+    resolveClassList(level, getLevelClassesFn);
 
+// ← PATCHED: uses resolveClassList so custom classes are honoured
 const getNextClass = (level, currentClass, getLevelClassesFn) => {
-    const list = getLevelClassesFn ? getLevelClassesFn(level) : (LEVEL_CLASSES[level] || []);
+    const list = resolveClassList(level, getLevelClassesFn);
     const i = list.indexOf(currentClass);
     if (i === -1 || i === list.length - 1) return null;
     return list[i + 1];
@@ -118,21 +134,14 @@ const getNextLevel = (currentLevel) => {
     return LEVEL_ORDER[i + 1];
 };
 
-/**
- * A student is in the school's terminal class if their (level, class)
- * equals the school's declared highest level AND the class is the last
- * class in that level's list. Used to mark terminal graduates.
- */
+// ← PATCHED: uses resolveClassList so custom terminal classes are detected
 const isInTerminalClass = (level, studentClass, schoolHighestLevel, getLevelClassesFn) => {
     if (!schoolHighestLevel || level !== schoolHighestLevel) return false;
-    const list = getLevelClassesFn ? getLevelClassesFn(level) : (LEVEL_CLASSES[level] || []);
+    const list = resolveClassList(level, getLevelClassesFn);
+    if (list.length === 0) return false;
     return studentClass === list[list.length - 1];
 };
 
-/**
- * Sort students for display. Numeric admission IDs sort numerically;
- * non-numeric fall back to name.
- */
 const sortStudentsByAdmission = (list) => {
     return [...list].sort((a, b) => {
         const idA = String(a.studentId || '');
@@ -189,9 +198,10 @@ export default function Students() {
     const [statusFilter, setStatusFilter] = useState('');
     const [yearFilter, setYearFilter] = useState('');
 
+    // ← PATCHED: filter bar class dropdown reads from SchoolContext
     const classOptions = useMemo(() => {
         if (!levelFilter) return [];
-        return getLevelClasses(levelFilter);
+        return getClassOptions(levelFilter, getLevelClasses);
     }, [levelFilter, getLevelClasses]);
 
     const [showStudentModal, setShowStudentModal] = useState(false);
@@ -281,7 +291,6 @@ export default function Students() {
                     );
                 }
 
-                // School doc (cache → live)
                 let school = await getFromIndexedDB(`school_data_${sid}`);
                 if (!school && isOnline) {
                     const snap = await getDoc(doc(db, 'schools', sid));
@@ -317,7 +326,6 @@ export default function Students() {
     // Pagination loaders
     // ============================================================
     const loadFirstPage = useCallback(async (sid) => {
-        // Show cache immediately for perceived speed
         const cached = await getFromIndexedDB(`students_${sid}`);
         if (cached && cached.length > 0) {
             setStudents(sortStudentsByAdmission(cached));
@@ -331,15 +339,11 @@ export default function Students() {
         const sorted = sortStudentsByAdmission(page);
         setStudents(sorted);
         setUsingCachedData(false);
-        // Cache the first page as a fast-restore snapshot
         await saveToIndexedDB(`students_${sid}`, sorted);
     }, [isOnline, getFromIndexedDB, saveToIndexedDB, isTeacher, teacherClasses]);
 
-    
-
     const refresh = useCallback(async () => {
         if (!schoolId) return;
-        
         await loadFirstPage(schoolId);
         showNotification('Refreshed', 'success');
     }, [schoolId, loadFirstPage, showNotification]);
@@ -524,7 +528,6 @@ export default function Students() {
             let studentId;
 
             if (formData.manualStudentId) {
-                // User wants to specify an ID — validate it
                 const cleaned = String(formData.manualStudentId).trim();
                 if (!/^\d+$/.test(cleaned)) {
                     showNotification('Manual ID must be numeric', 'error');
@@ -539,7 +542,6 @@ export default function Students() {
                 studentId = formatted;
                 await ensureSchoolCounterAtLeast(schoolId, parseInt(cleaned, 10) + 1);
             } else {
-                // Atomic reservation
                 const [reserved] = await reserveAdmissionNumbers(schoolId, 1);
                 studentId = reserved;
             }
@@ -622,12 +624,12 @@ export default function Students() {
     // ============================================================
     // Promotion
     // ============================================================
+    // ← PATCHED: getLevelClasses threaded through every helper + dependency array
     const getPromotionTargets = useCallback((student) => {
         if (!student) return [];
         const targets = [];
-        
-        // If in terminal class for this school, only target is graduation
-        if (isInTerminalClass(student.level, student.class, schoolHighestLevel)) {
+
+        if (isInTerminalClass(student.level, student.class, schoolHighestLevel, getLevelClasses)) {
             targets.push({
                 key: `graduate`,
                 level: student.level,
@@ -638,7 +640,7 @@ export default function Students() {
             return targets;
         }
 
-        const nextClass = getNextClass(student.level, student.class);
+        const nextClass = getNextClass(student.level, student.class, getLevelClasses);
         if (nextClass) {
             targets.push({
                 key: `${student.level}|${nextClass}`,
@@ -650,7 +652,8 @@ export default function Students() {
         }
         const nextLevel = getNextLevel(student.level);
         if (nextLevel && (!schoolHighestLevel || LEVEL_ORDER.indexOf(nextLevel) <= LEVEL_ORDER.indexOf(schoolHighestLevel))) {
-            const first = LEVEL_CLASSES[nextLevel]?.[0];
+            // ← PATCHED: use getClassOptions(...) instead of LEVEL_CLASSES[...] directly
+            const first = getClassOptions(nextLevel, getLevelClasses)[0];
             if (first) {
                 targets.push({
                     key: `${nextLevel}|${first}`,
@@ -662,7 +665,7 @@ export default function Students() {
             }
         }
         return targets;
-    }, [schoolHighestLevel]);
+    }, [schoolHighestLevel, getLevelClasses]);
 
     const canPromote = useCallback((student) => {
         if (!student || student.isDeleted) return false;
@@ -696,7 +699,6 @@ export default function Students() {
         }
 
         const year = promoteData.promotionYear;
-        // Prevent double-promotion in the same academic year
         const alreadyPromotedThisYear = (student.history || []).some(
             (h) => h.type === 'promotion' && h.year === year
         );
@@ -710,7 +712,8 @@ export default function Students() {
         );
         if (!ok) return;
 
-        const terminal = isInTerminalClass(chosen.level, chosen.class, schoolHighestLevel);
+        // ← PATCHED: pass getLevelClasses
+        const terminal = isInTerminalClass(chosen.level, chosen.class, schoolHighestLevel, getLevelClasses);
 
         const historyEntry = {
             type: 'promotion',
@@ -727,7 +730,6 @@ export default function Students() {
         const updateData = {
             level: chosen.level,
             class: chosen.class,
-            // Terminal-class students are marked 'graduated' — distinct from 'archived'
             status: terminal ? 'graduated' : 'promoted',
             promotedAt: new Date().toISOString(),
             promotionYear: year,
@@ -762,10 +764,7 @@ export default function Students() {
     };
 
     // ============================================================
-    // Bulk promote — by (sourceLevel, sourceClass) → (targetLevel, targetClass)
-    // Does not exclude status='promoted' because double-promotion protection
-    // lives in the history check at promotion time. Uses only students whose
-    // getPromotionTargets contain the chosen target.
+    // Bulk promote
     // ============================================================
     const computeBulkPromoteTargets = useCallback(() => {
         if (!bulkPromoteLevel || !bulkPromoteClass) return [];
@@ -773,7 +772,6 @@ export default function Students() {
         return students.filter((s) => {
             if (s.isDeleted) return false;
             if (s.status === 'archived' || s.status === 'graduated') return false;
-            // Skip if already promoted to this exact target this year
             const already = (s.history || []).some(
                 (h) => h.type === 'promotion'
                     && h.year === year
@@ -793,7 +791,8 @@ export default function Students() {
             showNotification('No students eligible for this promotion.', 'warning');
             return;
         }
-        const terminal = isInTerminalClass(bulkPromoteLevel, bulkPromoteClass, schoolHighestLevel);
+        // ← PATCHED: pass getLevelClasses
+        const terminal = isInTerminalClass(bulkPromoteLevel, bulkPromoteClass, schoolHighestLevel, getLevelClasses);
         const year = new Date().getFullYear().toString();
 
         const ok = window.confirm(
@@ -830,7 +829,6 @@ export default function Students() {
         try {
             if (isOnline) {
                 await bulkUpdateStudents(updates);
-                // Archive records for transcripts (retaining personal info and history)
                 for (const student of targets) {
                     try {
                         const archiveRef = doc(collection(db, 'archived_students'));
@@ -905,7 +903,7 @@ export default function Students() {
     };
 
     // ============================================================
-    // CSV Import — full validation, no duplicate IDs, advances counter
+    // CSV Import
     // ============================================================
     const handleImportCSV = async (e) => {
         const file = e.target.files?.[0];
@@ -967,11 +965,9 @@ export default function Students() {
                 return;
             }
 
-            // --------------------------------------------
-            // Pass 1: Normalize + validate every row (no writes yet)
-            // --------------------------------------------
+            // Pass 1: Normalize + validate every row
             const parsedRows = [];
-            const idsInFile = new Map();  // id -> first row that used it
+            const idsInFile = new Map();
 
             for (let i = 0; i < objects.length; i++) {
                 const src = objects[i];
@@ -1004,7 +1000,8 @@ export default function Students() {
                 }
                 student.level = validLevel;
 
-                const validClass = getValidClass(student.class, validLevel);
+                // ← PATCHED: pass getLevelClasses so custom classes validate
+                const validClass = getValidClass(student.class, validLevel, getLevelClasses);
                 if (!validClass) {
                     errors.push(`Row ${rowNum}: invalid class "${student.class}" for ${validLevel}`);
                     continue;
@@ -1029,9 +1026,7 @@ export default function Students() {
                 parsedRows.push({ rowNum, student, reservedId });
             }
 
-            // --------------------------------------------
-            // Pass 2: Pre-flight collision check for supplied IDs
-            // --------------------------------------------
+            // Pass 2: Pre-flight collision check
             const suppliedIds = parsedRows
                 .filter((r) => r.reservedId)
                 .map((r) => r.reservedId);
@@ -1060,9 +1055,7 @@ export default function Students() {
                 return;
             }
 
-            // --------------------------------------------
             // Pass 3: Reserve IDs for rows WITHOUT supplied IDs
-            // --------------------------------------------
             const needReservation = parsedRows.filter((r) => !r.reservedId);
             let reservedPool = [];
             if (needReservation.length > 0) {
@@ -1070,9 +1063,7 @@ export default function Students() {
             }
             let poolIdx = 0;
 
-            // --------------------------------------------
             // Pass 4: Write each student
-            // --------------------------------------------
             const created = [];
             for (const r of parsedRows) {
                 const studentId = r.reservedId || reservedPool[poolIdx++];
@@ -1092,17 +1083,12 @@ export default function Students() {
                 }
             }
 
-            // --------------------------------------------
-            // Pass 5: Advance counter past highest supplied ID
-            // --------------------------------------------
+            // Pass 5: Advance counter
             const highestSupplied = maxNumericId(parsedRows.map((r) => r.reservedId).filter(Boolean));
             if (highestSupplied > 0) {
                 await ensureSchoolCounterAtLeast(schoolId, highestSupplied + 1);
             }
 
-            // --------------------------------------------
-            // Merge & cache
-            // --------------------------------------------
             const next = sortStudentsByAdmission([...created, ...students]);
             setStudents(next);
             await saveToIndexedDB(`students_${schoolId}`, next);
@@ -1171,7 +1157,6 @@ export default function Students() {
                 showDotsAfter.add(i);
             }
         }
-        // (dots inserted for symmetry)
         if (showDotsBefore.size) {
             btns.splice(1, 0, <span key="dots-before" style={{ padding: '0 10px', color: 'var(--gray)' }}>…</span>);
         }
@@ -1373,7 +1358,7 @@ export default function Students() {
                     onChange={(e) => setSearchTerm(e.target.value)}
                 />
                 <select className="filter-select" value={levelFilter}
-                        onChange={(e) => setLevelFilter(e.target.value)}>
+                        onChange={(e) => { setLevelFilter(e.target.value); setClassFilter(''); }}>
                     <option value="">All Levels</option>
                     {uniqueLevels.map((l) => <option key={l} value={l}>{getLevelDisplayName(l)}</option>)}
                 </select>
@@ -1473,8 +1458,6 @@ export default function Students() {
                     </div>
                     <div className="pagination-btns">{paginationButtons}</div>
                 </div>
-
-                
             </div>
 
             {/* Add/Edit Modal */}
@@ -1524,7 +1507,10 @@ export default function Students() {
                                     <select required value={formData.class}
                                             onChange={(e) => setFormData({ ...formData, class: e.target.value })}>
                                         <option value="">Select Class</option>
-                                        {getClassOptions(formData.level).map((c) => <option key={c} value={c}>{c}</option>)}
+                                        {/* ← PATCHED: pass getLevelClasses */}
+                                        {getClassOptions(formData.level, getLevelClasses).map((c) => (
+                                            <option key={c} value={c}>{c}</option>
+                                        ))}
                                     </select>
                                 </div>
                             </div>
@@ -1686,8 +1672,9 @@ export default function Students() {
             {!isTeacher && showPromoteModal && promotingStudent && (() => {
                 const targets = getPromotionTargets(promotingStudent);
                 const chosen = targets.find((t) => t.key === promoteData.targetKey);
+                // ← PATCHED: pass getLevelClasses
                 const terminal = chosen
-                    ? isInTerminalClass(chosen.level, chosen.class, schoolHighestLevel)
+                    ? isInTerminalClass(chosen.level, chosen.class, schoolHighestLevel, getLevelClasses)
                     : false;
                 return (
                     <div className="modal-overlay active">
@@ -1770,7 +1757,8 @@ export default function Students() {
                             <select value={bulkPromoteLevel}
                                     onChange={(e) => {
                                         setBulkPromoteLevel(e.target.value);
-                                        setBulkPromoteClass(getClassOptions(e.target.value)?.[0] || '');
+                                        // ← PATCHED: pass getLevelClasses
+                                        setBulkPromoteClass(getClassOptions(e.target.value, getLevelClasses)?.[0] || '');
                                     }}>
                                 <option value="">Select Level</option>
                                 {LEVEL_ORDER.map((l) => <option key={l} value={l}>{getLevelDisplayName(l)}</option>)}
@@ -1781,7 +1769,10 @@ export default function Students() {
                             <select value={bulkPromoteClass}
                                     onChange={(e) => setBulkPromoteClass(e.target.value)}>
                                 <option value="">Select Class</option>
-                                {getClassOptions(bulkPromoteLevel).map((c) => <option key={c} value={c}>{c}</option>)}
+                                {/* ← PATCHED: pass getLevelClasses */}
+                                {getClassOptions(bulkPromoteLevel, getLevelClasses).map((c) => (
+                                    <option key={c} value={c}>{c}</option>
+                                ))}
                             </select>
                         </div>
 
@@ -1791,7 +1782,8 @@ export default function Students() {
                             </div>
                         )}
 
-                        {isInTerminalClass(bulkPromoteLevel, bulkPromoteClass, schoolHighestLevel) && (
+                        {/* ← PATCHED: pass getLevelClasses */}
+                        {isInTerminalClass(bulkPromoteLevel, bulkPromoteClass, schoolHighestLevel, getLevelClasses) && (
                             <div style={{
                                 padding:12, background:'#e8f5e9', border:'1px solid #81c784',
                                 borderRadius:8, marginBottom:15, color:'#1b5e20'
