@@ -1092,7 +1092,6 @@ export default function Dashboard() {
             'generate-report': () => navigate('/reports?action=generate'),
             'print-records': () => window.print(),
             'assign-teacher': () => navigate('/teachers?action=assign'),
-            'upgrade-plan': () => navigate('/subscription?action=upgrade'),
             'view-exams': () => navigate('/exams'),
             'view-results': () => navigate('/results'),
             'view-scores': () => navigate('/scores'),
@@ -1268,7 +1267,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-warning"></span>
                                 <span>{stats.storageUsage}</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/school-profile')}>Upgrade →</button>
+                            <button className="stat-more" onClick={() => navigate('/school-profile')}>Manage →</button>
                         </div>
                     </div>
 
@@ -1554,13 +1553,6 @@ export default function Dashboard() {
                         <p className="quick-action-desc">Assign to class/subject</p>
                     </div>
                     
-                    <div className="quick-action-card" onClick={() => handleQuickAction('upgrade-plan')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-credit-card"></i>
-                        </div>
-                        <h3 className="quick-action-title">Upgrade Plan</h3>
-                        <p className="quick-action-desc">Upgrade subscription</p>
-                    </div>
                 </>
             );
         }
