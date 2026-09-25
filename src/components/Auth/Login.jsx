@@ -729,9 +729,7 @@ export default function Login() {
 
                                             <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
 
-                                            <div className="toggle-link" onClick={toggleRegister}>
-                                                Don't have an account? <span>Register School</span>
-                                            </div>
+                                           
                                         </form>
                                     )}
 
