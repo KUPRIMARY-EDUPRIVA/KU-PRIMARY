@@ -1,5 +1,5 @@
-```jsx
 // src/components/Layout/Sidebar.jsx
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -18,7 +18,14 @@ import './Layout.css';
 export default function Sidebar({ isOpen, onClose }) {
     const navigate = useNavigate();
     const location = useLocation();
-    const { currentUser, userData, userRole, logout } = useAuth();
+
+    const {
+        currentUser,
+        userData,
+        userRole,
+        logout
+    } = useAuth();
+
     const { badges } = useBadges();
 
     const [userName, setUserName] = useState('User');
@@ -26,26 +33,47 @@ export default function Sidebar({ isOpen, onClose }) {
     const [userAvatar, setUserAvatar] = useState('');
     const [feeBadge, setFeeBadge] = useState(0);
 
-    // ---- Load user profile + fee badge ----
-    useEffect(() => {
-        if (userData?.schoolId) {
-            loadFeeBadge();
-        }
+    // --------------------------------------------------
+    // LOAD USER DATA
+    // --------------------------------------------------
 
+    useEffect(() => {
         if (currentUser) {
             loadUserProfile();
         }
 
+        if (userData && userData.schoolId) {
+            loadFeeBadge();
+        }
+
+        // These functions intentionally remain stable for this effect.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [userData, currentUser]);
+    }, [currentUser, userData]);
+
+    // --------------------------------------------------
+    // LOAD USER PROFILE
+    // --------------------------------------------------
 
     const loadUserProfile = async () => {
-        try {
-            // 1. Users collection
-            const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+        if (!currentUser || !currentUser.uid) {
+            return;
+        }
 
-            if (userDoc.exists()) {
-                const data = userDoc.data();
+        try {
+            // ------------------------------------------
+            // 1. USERS COLLECTION
+            // ------------------------------------------
+
+            const userRef = doc(
+                db,
+                'users',
+                currentUser.uid
+            );
+
+            const userSnapshot = await getDoc(userRef);
+
+            if (userSnapshot.exists()) {
+                const data = userSnapshot.data();
 
                 setUserName(
                     data.fullName ||
@@ -66,17 +94,32 @@ export default function Sidebar({ isOpen, onClose }) {
                 return;
             }
 
-            // 2. Teachers collection
-            const teacherDoc = await getDoc(
-                doc(db, 'teachers', currentUser.uid)
+            // ------------------------------------------
+            // 2. TEACHERS COLLECTION
+            // ------------------------------------------
+
+            const teacherRef = doc(
+                db,
+                'teachers',
+                currentUser.uid
             );
 
-            if (teacherDoc.exists()) {
-                const data = teacherDoc.data();
+            const teacherSnapshot = await getDoc(
+                teacherRef
+            );
+
+            if (teacherSnapshot.exists()) {
+                const data = teacherSnapshot.data();
+
+                const firstName = data.firstName || '';
+                const lastName = data.lastName || '';
+
+                const fullName = (
+                    firstName + ' ' + lastName
+                ).trim();
 
                 setUserName(
-                    `${data.firstName || ''} ${data.lastName || ''}`.trim() ||
-                    'Teacher'
+                    fullName || 'Teacher'
                 );
 
                 setUserEmail(
@@ -86,23 +129,40 @@ export default function Sidebar({ isOpen, onClose }) {
                 );
 
                 if (data.profileImageUrl) {
-                    setUserAvatar(data.profileImageUrl);
+                    setUserAvatar(
+                        data.profileImageUrl
+                    );
                 }
 
                 return;
             }
 
-            // 3. Students collection
-            const studentDoc = await getDoc(
-                doc(db, 'students', currentUser.uid)
+            // ------------------------------------------
+            // 3. STUDENTS COLLECTION
+            // ------------------------------------------
+
+            const studentRef = doc(
+                db,
+                'students',
+                currentUser.uid
             );
 
-            if (studentDoc.exists()) {
-                const data = studentDoc.data();
+            const studentSnapshot = await getDoc(
+                studentRef
+            );
+
+            if (studentSnapshot.exists()) {
+                const data = studentSnapshot.data();
+
+                const firstName = data.firstName || '';
+                const lastName = data.lastName || '';
+
+                const fullName = (
+                    firstName + ' ' + lastName
+                ).trim();
 
                 setUserName(
-                    `${data.firstName || ''} ${data.lastName || ''}`.trim() ||
-                    'Student'
+                    fullName || 'Student'
                 );
 
                 setUserEmail(
@@ -112,16 +172,25 @@ export default function Sidebar({ isOpen, onClose }) {
                 );
 
                 if (data.profileImageUrl) {
-                    setUserAvatar(data.profileImageUrl);
+                    setUserAvatar(
+                        data.profileImageUrl
+                    );
                 }
             }
         } catch (error) {
-            console.error('Error loading user profile:', error);
+            console.error(
+                'Error loading user profile:',
+                error
+            );
         }
     };
 
+    // --------------------------------------------------
+    // LOAD FEE BADGE
+    // --------------------------------------------------
+
     const loadFeeBadge = async () => {
-        if (!userData?.schoolId) {
+        if (!userData || !userData.schoolId) {
             setFeeBadge(0);
             return;
         }
@@ -129,23 +198,38 @@ export default function Sidebar({ isOpen, onClose }) {
         try {
             const invoicesQuery = query(
                 collection(db, 'fee_invoices'),
-                where('schoolId', '==', userData.schoolId),
-                where('status', '==', 'pending')
+                where(
+                    'schoolId',
+                    '==',
+                    userData.schoolId
+                ),
+                where(
+                    'status',
+                    '==',
+                    'pending'
+                )
             );
 
-            const invoicesSnapshot = await getDocs(invoicesQuery);
+            const invoicesSnapshot =
+                await getDocs(invoicesQuery);
 
             const studentsQuery = query(
                 collection(db, 'students'),
-                where('schoolId', '==', userData.schoolId)
+                where(
+                    'schoolId',
+                    '==',
+                    userData.schoolId
+                )
             );
 
-            const studentsSnapshot = await getDocs(studentsQuery);
+            const studentsSnapshot =
+                await getDocs(studentsQuery);
 
             let overdueCount = 0;
 
-            studentsSnapshot.forEach((d) => {
-                const student = d.data();
+            studentsSnapshot.forEach((studentDoc) => {
+                const student =
+                    studentDoc.data();
 
                 if (
                     student.feeBalance &&
@@ -156,53 +240,102 @@ export default function Sidebar({ isOpen, onClose }) {
             });
 
             setFeeBadge(
-                invoicesSnapshot.size + overdueCount
+                invoicesSnapshot.size +
+                overdueCount
             );
         } catch (error) {
-            console.error('Error loading fee badge:', error);
+            console.error(
+                'Error loading fee badge:',
+                error
+            );
+
             setFeeBadge(0);
         }
     };
 
-    // ---- Navigation ----
+    // --------------------------------------------------
+    // NAVIGATION
+    // --------------------------------------------------
+
     const handleNavigation = (path) => {
         navigate(path);
-        onClose();
+
+        if (onClose) {
+            onClose();
+        }
     };
+
+    // --------------------------------------------------
+    // LOGOUT
+    // --------------------------------------------------
 
     const handleLogout = async () => {
         try {
             await logout();
+
             navigate('/login');
-            onClose();
+
+            if (onClose) {
+                onClose();
+            }
         } catch (error) {
-            console.error('Logout error:', error);
+            console.error(
+                'Logout error:',
+                error
+            );
         }
     };
 
-    const getResultsBadgeClass = () => {
-        const resultsNum = parseInt(badges.results, 10);
+    // --------------------------------------------------
+    // RESULTS BADGE
+    // --------------------------------------------------
 
-        if (isNaN(resultsNum)) return '';
-        if (resultsNum >= 70) return 'success';
-        if (resultsNum < 40) return 'danger';
+    const getResultsBadgeClass = () => {
+        const resultsNum = parseInt(
+            badges.results,
+            10
+        );
+
+        if (isNaN(resultsNum)) {
+            return '';
+        }
+
+        if (resultsNum >= 70) {
+            return 'success';
+        }
+
+        if (resultsNum < 40) {
+            return 'danger';
+        }
 
         return '';
     };
 
-    // ---- Build navigation groups ----
+    // --------------------------------------------------
+    // NAVIGATION GROUPS
+    // --------------------------------------------------
+
     const getNavGroups = () => {
-        const role = userRole || userData?.role || 'user';
+        const role =
+            userRole ||
+            (userData && userData.role) ||
+            'user';
 
         const isAdmin =
             role === 'admin' ||
             role === 'user' ||
             role === 'school_admin';
 
-        const isTeacher = role === 'teacher';
-        const isStudent = role === 'student';
+        const isTeacher =
+            role === 'teacher';
 
-        // ---- Admin items ----
+        const isStudent =
+            role === 'student';
+
+        // ----------------------------------------------
+        // ADMIN
+        // ----------------------------------------------
+
         const adminItems = [
             {
                 path: '/dashboard',
@@ -236,7 +369,8 @@ export default function Sidebar({ isOpen, onClose }) {
                 icon: 'fa-chart-line',
                 label: 'Results',
                 badge: badges.results,
-                badgeClass: getResultsBadgeClass(),
+                badgeClass:
+                    getResultsBadgeClass(),
                 show: isAdmin
             },
             {
@@ -279,7 +413,10 @@ export default function Sidebar({ isOpen, onClose }) {
             }
         ];
 
-        // ---- Teacher items ----
+        // ----------------------------------------------
+        // TEACHER
+        // ----------------------------------------------
+
         const teacherItems = [
             {
                 path: '/mydashboard',
@@ -307,7 +444,10 @@ export default function Sidebar({ isOpen, onClose }) {
             }
         ];
 
-        // ---- Student items ----
+        // ----------------------------------------------
+        // STUDENT
+        // ----------------------------------------------
+
         const studentItems = [
             {
                 path: '/student-dashboard',
@@ -329,7 +469,10 @@ export default function Sidebar({ isOpen, onClose }) {
             }
         ];
 
-        // ---- Common items ----
+        // ----------------------------------------------
+        // COMMON
+        // ----------------------------------------------
+
         const commonItems = [
             {
                 path: '/timetable',
@@ -345,8 +488,11 @@ export default function Sidebar({ isOpen, onClose }) {
             }
         ];
 
-        const visible = (arr) =>
-            arr.filter((item) => item.show);
+        const visible = (items) => {
+            return items.filter(
+                (item) => item.show
+            );
+        };
 
         return {
             main: [
@@ -360,7 +506,10 @@ export default function Sidebar({ isOpen, onClose }) {
 
     const groups = getNavGroups();
 
-    // ---- Auto-active logic ----
+    // --------------------------------------------------
+    // ACTIVE PATH
+    // --------------------------------------------------
+
     const firstAvailablePath = useMemo(() => {
         if (groups.main.length > 0) {
             return groups.main[0].path;
@@ -375,11 +524,19 @@ export default function Sidebar({ isOpen, onClose }) {
 
     const effectiveActivePath = useMemo(() => {
         const allPaths = [
-            ...groups.main.map((item) => item.path),
-            ...groups.common.map((item) => item.path)
+            ...groups.main.map(
+                (item) => item.path
+            ),
+            ...groups.common.map(
+                (item) => item.path
+            )
         ];
 
-        if (allPaths.includes(location.pathname)) {
+        if (
+            allPaths.includes(
+                location.pathname
+            )
+        ) {
             return location.pathname;
         }
 
@@ -390,44 +547,70 @@ export default function Sidebar({ isOpen, onClose }) {
         firstAvailablePath
     ]);
 
-    // ---- Render navigation item ----
-    const renderNavItem = (item, index) => {
+    // --------------------------------------------------
+    // RENDER NAV ITEM
+    // --------------------------------------------------
+
+    const renderNavItem = (
+        item,
+        index
+    ) => {
         const active =
             effectiveActivePath === item.path;
 
         return (
             <div
-                key={`${item.path}_${index}`}
-                className={`nav-item ${active ? 'active' : ''}`}
+                key={
+                    item.path +
+                    '_' +
+                    index
+                }
+                className={
+                    'nav-item ' +
+                    (active ? 'active' : '')
+                }
                 onClick={() =>
-                    handleNavigation(item.path)
+                    handleNavigation(
+                        item.path
+                    )
                 }
                 role="button"
                 tabIndex={0}
-                onKeyDown={(e) => {
+                onKeyDown={(event) => {
                     if (
-                        e.key === 'Enter' ||
-                        e.key === ' '
+                        event.key === 'Enter' ||
+                        event.key === ' '
                     ) {
-                        handleNavigation(item.path);
+                        handleNavigation(
+                            item.path
+                        );
                     }
                 }}
                 aria-current={
-                    active ? 'page' : undefined
+                    active
+                        ? 'page'
+                        : undefined
                 }
             >
                 <i
-                    className={`fas ${item.icon}`}
+                    className={
+                        'fas ' +
+                        item.icon
+                    }
                 ></i>
 
-                <span>{item.label}</span>
+                <span>
+                    {item.label}
+                </span>
 
                 {item.badge !== undefined &&
                     item.badge > 0 && (
                         <span
-                            className={`nav-badge ${
-                                item.badgeClass || ''
-                            }`}
+                            className={
+                                'nav-badge ' +
+                                (item.badgeClass ||
+                                    '')
+                            }
                         >
                             {item.badge}
                         </span>
@@ -436,24 +619,29 @@ export default function Sidebar({ isOpen, onClose }) {
         );
     };
 
+    // --------------------------------------------------
+    // RENDER
+    // --------------------------------------------------
+
     return (
         <>
             <div
-                className={`side-nav ${
-                    isOpen ? 'open' : ''
-                }`}
+                className={
+                    'side-nav ' +
+                    (isOpen ? 'open' : '')
+                }
             >
-                {/* Brand */}
+                {/* BRAND */}
                 <div className="side-nav-brand">
                     <div className="brand-logo">
                         <img
                             src="/Logo.png"
                             alt="EduPriva"
-                            onError={(e) => {
-                                e.target.style.display =
+                            onError={(event) => {
+                                event.currentTarget.style.display =
                                     'none';
 
-                                e.target.parentElement.innerHTML =
+                                event.currentTarget.parentElement.innerHTML =
                                     '<span style="font-size:24px;font-weight:700;color:#1a237e;">EP</span>';
                             }}
                         />
@@ -464,15 +652,18 @@ export default function Sidebar({ isOpen, onClose }) {
                     </div>
                 </div>
 
+                {/* NAVIGATION */}
                 <nav className="side-nav-menu">
-                    {/* Main items */}
-                    {groups.main.map(renderNavItem)}
+                    {groups.main.map(
+                        renderNavItem
+                    )}
 
-                    {/* Common items */}
-                    {groups.common.map(renderNavItem)}
+                    {groups.common.map(
+                        renderNavItem
+                    )}
                 </nav>
 
-                {/* User profile + logout */}
+                {/* USER FOOTER */}
                 <div className="side-nav-footer">
                     <div className="user-profile-mini">
                         <div className="user-avatar-mini">
@@ -480,20 +671,26 @@ export default function Sidebar({ isOpen, onClose }) {
                                 <img
                                     src={userAvatar}
                                     alt="Profile"
-                                    onError={(e) => {
-                                        e.target.style.display =
+                                    onError={(
+                                        event
+                                    ) => {
+                                        event.currentTarget.style.display =
                                             'none';
 
-                                        e.target.parentElement.textContent =
+                                        event.currentTarget.parentElement.textContent =
                                             userName
-                                                .charAt(0)
+                                                .charAt(
+                                                    0
+                                                )
                                                 .toUpperCase();
                                     }}
                                 />
                             ) : (
                                 <span>
                                     {userName
-                                        .charAt(0)
+                                        .charAt(
+                                            0
+                                        )
                                         .toUpperCase()}
                                 </span>
                             )}
@@ -512,21 +709,41 @@ export default function Sidebar({ isOpen, onClose }) {
 
                     <div
                         className="logout-btn"
-                        onClick={handleLogout}
+                        onClick={
+                            handleLogout
+                        }
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(
+                            event
+                        ) => {
+                            if (
+                                event.key ===
+                                    'Enter' ||
+                                event.key === ' '
+                            ) {
+                                handleLogout();
+                            }
+                        }}
                     >
                         <i className="fas fa-sign-out-alt"></i>
-                        <span>Logout</span>
+
+                        <span>
+                            Logout
+                        </span>
                     </div>
                 </div>
             </div>
 
+            {/* MOBILE OVERLAY */}
             <div
-                className={`overlay ${
-                    isOpen ? 'show' : ''
-                }`}
+                className={
+                    'overlay ' +
+                    (isOpen ? 'show' : '')
+                }
                 onClick={onClose}
             ></div>
         </>
     );
 }
-```
+
