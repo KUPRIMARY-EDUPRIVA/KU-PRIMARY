@@ -145,14 +145,7 @@ export default function Sidebar({ isOpen, onClose }) {
         return schoolFeatures[featureName] !== false;
     };
 
-    // ---- Optional / premium feature availability ----
-    const optionalFeatures = useMemo(() => ([
-        { key: 'transport', path: '/transport', icon: 'fa-bus', label: 'Transport' },
-        { key: 'accommodation', path: '/accomodation', icon: 'fa-hotel', label: 'Accommodation' },
-        { key: 'health', path: '/health', icon: 'fa-heartbeat', label: 'Health Unit' },
-        { key: 'inventory', path: '/inventory', icon: 'fa-boxes', label: 'Inventory' },
-        { key: 'communication', path: '/sms', icon: 'fa-comments', label: 'Communication' }
-    ]), []);
+  
 
     const enabledOptionalItems = useMemo(() => {
         if (isSuperAdmin) return [];
@@ -259,12 +252,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 label: 'Student Reports',
                 show: isAdmin && !isSuper && isFeatureEnabled('reports')
             },
-            {
-                path: '/subscription',
-                icon: 'fa-credit-card',
-                label: 'Subscription',
-                show: isAdmin && !isSuper && isFeatureEnabled('subscription')
-            },
+           
             {
                 path: '/school-profile',
                 icon: 'fa-school',
@@ -335,41 +323,7 @@ export default function Sidebar({ isOpen, onClose }) {
             }
         ];
 
-        // ---- Super-admin items ----
-        const superadminItems = [
-            {
-                path: '/platformtower',
-                icon: 'fa-tachometer-alt',
-                label: 'Platform Dashboard',
-                show: isSuper
-            },
-            
-            {
-                path: '/platform-admin/schools',
-                icon: 'fa-school',
-                label: 'Schools',
-                show: isSuper
-            },
-            {
-                path: '/platform-admin/users',
-                icon: 'fa-users-cog',
-                label: 'Platform Users',
-                show: isSuper
-            },
-            {
-                path: '/platform-admin/exit',
-                icon: 'fa-trash',
-                label: 'School Exit',
-                show: isSuper
-            },
-            {
-                path: '/platform-admin/settings',
-                icon: 'fa-cog',
-                label: 'Platform Settings',
-                show: isSuper
-            }
-        ];
-
+      
         // ---- Common items ----
         const commonItems = [
             {
@@ -378,12 +332,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 label: 'Timetable',
                 show: true
             },
-            {
-                path: '/transfer',
-                icon: 'fa-exchange',
-                label: 'Transfer',
-                show: true
-            },
+          
             {
                 path: '/settings',
                 icon: 'fa-user-cog',
