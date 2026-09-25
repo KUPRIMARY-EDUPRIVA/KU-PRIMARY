@@ -1254,15 +1254,6 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-            
-                        <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className={`status-dot ${stats.subscriptionStatus === 'active' ? 'status-active' : stats.subscriptionStatus === 'pending' ? 'status-warning' : 'status-danger'}`}></span>
-                                <span>{stats.subscriptionStatus?.charAt(0).toUpperCase() + stats.subscriptionStatus?.slice(1) || 'Inactive'}</span>
-                            </div>
-                            <button className="stat-more" onClick={() => navigate('/subscription')}>Renew →</button>
-                        </div>
-                    </div>
 
                     <div className="stat-card">
                         <div className="stat-header">
