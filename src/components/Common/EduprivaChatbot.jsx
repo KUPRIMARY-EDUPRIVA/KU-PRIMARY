@@ -144,7 +144,7 @@ export default function EduprivaChatbot() {
                     title="Chat with LABAN"
                 >
                     <img src="/logo.png" alt="Logo" style={{ width: '28px', height: '28px', borderRadius: '50%' }} />
-                    LABAN AI
+                    ASSISTANT LABAN
                 </button>
             )}
 
