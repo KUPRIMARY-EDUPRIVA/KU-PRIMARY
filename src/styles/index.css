@@ -3823,4 +3823,498 @@ tbody tr:hover td { background: var(--bg); }
     .audit-card-user strong { font-size: 13px; }
     .audit-card-details { font-size: 12px; }
 }
-   
+/* ============================================================
+   34. TIMETABLE MODULE (extended)
+   ============================================================ */
+
+.tt-page { padding: 0; }
+
+.tt-page-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-bottom: 20px;
+}
+
+.tt-header-badges { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.tt-badge-primary {
+    padding: 4px 12px;
+    background: var(--navy-100);
+    color: var(--navy-700);
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--navy-200);
+}
+
+.tt-header-sub { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+.tt-page-title {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--navy-800);
+    margin: 6px 0 4px;
+    letter-spacing: -0.02em;
+}
+.tt-page-sub { font-size: 13.5px; color: var(--text-muted); margin: 0; line-height: 1.5; }
+
+.tt-header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.tt-feedback {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 16px;
+    border: 1px solid;
+}
+.tt-feedback-success { background: var(--success-bg); border-color: #b9dfc8; color: var(--success); }
+.tt-feedback-error   { background: var(--danger-bg);  border-color: #f3c8c4; color: var(--danger); }
+.tt-feedback-warning { background: var(--gold-50);    border-color: var(--gold-200); color: var(--gold-700); }
+
+.tt-loading { padding: 60px; text-align: center; }
+.tt-empty { padding: 56px 20px; text-align: center; color: var(--text-muted); }
+.tt-empty i { font-size: 40px; color: var(--border-strong); display: block; margin-bottom: 12px; }
+.tt-empty p { font-size: 13px; margin: 0; }
+
+.tt-clash-warn {
+    padding: 12px 16px;
+    background: var(--gold-50);
+    border: 1px solid var(--gold-200);
+    color: var(--gold-700);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.tt-coverage-warn {
+    padding: 10px 16px;
+    background: var(--info-bg);
+    border: 1px solid #b9d1ec;
+    color: var(--info);
+    border-radius: var(--radius-md);
+    font-size: 12.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.tt-warn-box {
+    padding: 12px 14px;
+    background: var(--gold-50);
+    border: 1px solid var(--gold-200);
+    color: var(--gold-700);
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    margin-bottom: 14px;
+    line-height: 1.5;
+}
+.tt-warn-box code {
+    background: rgba(0, 0, 0, 0.05);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11.5px;
+}
+
+/* Print root */
+.tt-print-root {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Branded header */
+.tt-branded-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    border-bottom: 2px solid var(--navy-800);
+    padding-bottom: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+}
+.tt-branded-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.tt-branded-logo {
+    width: 60px;
+    height: 60px;
+    border-radius: var(--radius-md);
+    background: var(--navy-800);
+    color: var(--gold-400);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    flex-shrink: 0;
+    overflow: hidden;
+}
+.tt-branded-logo img { width: 100%; height: 100%; object-fit: cover; }
+.tt-branded-text h2 {
+    font-size: 19px;
+    font-weight: 800;
+    color: var(--navy-800);
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+.tt-branded-text p { font-size: 11px; color: var(--text-muted); margin: 2px 0 0; line-height: 1.4; }
+.tt-branded-motto { font-style: italic; color: var(--navy-700) !important; font-weight: 600; }
+.tt-branded-right { text-align: right; }
+.tt-branded-title { font-size: 13.5px; font-weight: 700; color: var(--navy-800); }
+.tt-branded-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+
+.tt-branded-footer {
+    margin-top: 22px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 10px;
+    color: var(--text-muted);
+}
+.tt-branded-footer-motto { font-style: italic; color: var(--navy-700); }
+
+/* Timetable grid */
+.tt-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tt-grid { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 720px; }
+.tt-grid th, .tt-grid td {
+    border: 1px solid var(--border);
+    padding: 8px;
+    vertical-align: top;
+    font-size: 12px;
+}
+.tt-grid thead th {
+    background: var(--navy-800);
+    color: #ffffff;
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+    text-align: center;
+    padding: 11px 6px;
+}
+.tt-period-th { width: 100px; }
+.tt-period-cell { background: var(--bg-alt); text-align: center; }
+.tt-period-name { font-weight: 700; color: var(--navy-800); font-size: 11px; }
+.tt-period-time { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+.tt-break-row td {
+    background: var(--gold-50);
+    color: var(--gold-700);
+    text-align: center;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    font-size: 11px;
+    text-transform: uppercase;
+    padding: 8px;
+}
+
+.tt-cell { cursor: pointer; transition: background var(--transition-fast); }
+.tt-cell-empty { background: var(--white); }
+.tt-cell-empty:hover { background: var(--bg); }
+.tt-cell-inner { display: flex; flex-direction: column; gap: 4px; }
+.tt-cell-subject {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 4px;
+}
+.tt-cell-subject-name {
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    line-height: 1.2;
+}
+.tt-clear-btn {
+    background: none;
+    border: none;
+    color: var(--text-faint);
+    cursor: pointer;
+    padding: 0;
+    font-size: 11px;
+    opacity: 0.4;
+}
+.tt-cell:hover .tt-clear-btn { opacity: 1; }
+.tt-clear-btn:hover { color: var(--danger); }
+.tt-cell-teacher { display: flex; gap: 4px; }
+.tt-teacher-chip {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid currentColor;
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+}
+.tt-cell-room { font-size: 9px; opacity: 0.75; }
+.tt-cell-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 50px;
+    color: var(--border-strong);
+    font-size: 10px;
+    font-style: italic;
+}
+
+/* Subject colour classes — navy/gold family */
+.tt-sub-math       { background: var(--navy-50)  !important; color: var(--navy-700)   !important; border-color: var(--navy-200) !important; }
+.tt-sub-english    { background: #eef2ff         !important; color: #3b4db3           !important; border-color: #c7d2fe       !important; }
+.tt-sub-kiswahili  { background: var(--success-bg) !important; color: var(--success)  !important; border-color: #b9dfc8       !important; }
+.tt-sub-science    { background: var(--info-bg)  !important; color: var(--info)       !important; border-color: #b9d1ec       !important; }
+.tt-sub-social     { background: var(--gold-50)  !important; color: var(--gold-700)   !important; border-color: var(--gold-200) !important; }
+.tt-sub-cre        { background: #f4ecfb         !important; color: #6b3fa0           !important; border-color: #ddc9f0       !important; }
+.tt-sub-creative   { background: #fdf2f8         !important; color: #9d174d           !important; border-color: #fbcfe8       !important; }
+.tt-sub-tech       { background: #ecfeff         !important; color: #0e7490           !important; border-color: #a5f3fc       !important; }
+.tt-sub-agric      { background: #f7fee7         !important; color: #4d7c0f           !important; border-color: #d9f99d       !important; }
+.tt-sub-default    { background: var(--bg)       !important; color: var(--text-soft)  !important; border-color: var(--border)   !important; }
+
+/* Workload summary */
+.tt-teachers-stack { display: flex; flex-direction: column; gap: 20px; }
+.tt-workload-table { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.tt-section-label {
+    padding: 10px 14px;
+    background: var(--bg-alt);
+    color: var(--navy-800);
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+}
+.tt-workload-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tt-workload-table th {
+    padding: 10px 14px;
+    text-align: left;
+    background: var(--bg);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.tt-workload-table td { padding: 10px 14px; border-bottom: 1px solid var(--divider); }
+.tt-workload-table tbody tr:last-child td { border-bottom: none; }
+.tt-initials-cell {
+    font-weight: 800;
+    color: var(--navy-700);
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    letter-spacing: 0.5px;
+}
+.tt-bold { font-weight: 700; }
+.tt-center { text-align: center !important; }
+.tt-muted { color: var(--text-muted); font-size: 11px; }
+.tt-muted-small { color: var(--text-muted); font-size: 10px; }
+
+/* Teacher card */
+.tt-teacher-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    break-inside: avoid;
+    page-break-inside: avoid;
+}
+.tt-teacher-card-header {
+    padding: 10px 14px;
+    background: var(--navy-800);
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.tt-teacher-card-header .tt-muted { color: rgba(255, 255, 255, 0.7); }
+.tt-teacher-count {
+    font-size: 11px;
+    background: rgba(255, 255, 255, 0.2);
+    padding: 3px 10px;
+    border-radius: var(--radius-pill);
+}
+.tt-teacher-grid { width: 100%; border-collapse: collapse; font-size: 11px; min-width: 620px; }
+.tt-teacher-grid th, .tt-teacher-grid td {
+    border: 1px solid var(--border);
+    padding: 5px 6px;
+    text-align: center;
+    vertical-align: middle;
+}
+.tt-teacher-grid thead th {
+    background: var(--bg-alt);
+    color: var(--navy-800);
+    font-weight: 700;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.tt-teacher-period { background: var(--bg); }
+.tt-teacher-cell { min-height: 32px; }
+.tt-teacher-subject { font-weight: 700; color: var(--navy-700); font-size: 10px; }
+.tt-teacher-class { font-size: 9px; color: var(--text-muted); margin-top: 1px; }
+
+/* Master overview */
+.tt-master-stack { display: flex; flex-direction: column; gap: 16px; }
+.tt-master-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    break-inside: avoid;
+    page-break-inside: avoid;
+}
+.tt-master-title {
+    padding: 8px 14px;
+    background: var(--navy-800);
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+}
+.tt-master-grid { width: 100%; border-collapse: collapse; font-size: 10px; min-width: 620px; }
+.tt-master-grid th, .tt-master-grid td {
+    border: 1px solid var(--border);
+    padding: 4px;
+    text-align: center;
+}
+.tt-master-grid thead th {
+    background: var(--bg-alt);
+    font-weight: 700;
+    color: var(--navy-700);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.tt-master-period { background: var(--bg); font-weight: 600; color: var(--text-muted); }
+.tt-master-cell { min-height: 30px; }
+.tt-master-subject { font-weight: 700; font-size: 10px; line-height: 1.15; }
+.tt-master-teacher { font-size: 9px; color: var(--text-muted); margin-top: 1px; }
+
+/* Duty grid */
+.tt-duty-grid thead th { padding: 10px 6px; }
+.tt-duty-area-th { width: 200px; text-align: left !important; }
+.tt-duty-cell { padding: 6px !important; text-align: center; vertical-align: middle; }
+.tt-duty-select {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xs);
+    background: var(--white);
+    font-size: 12px;
+    color: var(--text);
+}
+.tt-duty-select:focus {
+    outline: none;
+    border-color: var(--navy-500);
+    box-shadow: 0 0 0 3px rgba(42, 61, 143, 0.12);
+}
+
+/* Settings */
+.tt-settings { display: flex; flex-direction: column; gap: 18px; }
+.tt-settings .card { padding: 20px; }
+.tt-settings-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--navy-800);
+    margin: 0 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.tt-settings-title i { color: var(--navy-700); }
+.tt-settings-desc { font-size: 12.5px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.5; }
+.tt-settings-desc code {
+    background: var(--bg-alt);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11.5px;
+}
+
+.tt-period-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.tt-period-chip { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.tt-period-chip.break { background: var(--gold-50); border-color: var(--gold-200); }
+.tt-period-chip-name { font-size: 11px; font-weight: 700; color: var(--navy-800); }
+.tt-period-chip-time { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+.tt-subject-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.tt-chip {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid;
+}
+.tt-chip-primary { background: var(--navy-100); color: var(--navy-700); border-color: var(--navy-200); }
+.tt-chip-ok      { background: var(--success-bg); color: var(--success); border-color: #b9dfc8; }
+.tt-chip-neutral { background: var(--bg-alt); color: var(--text-soft); border-color: var(--border); }
+
+.tt-settings-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 520px; }
+.tt-settings-table th {
+    padding: 10px 14px;
+    text-align: left;
+    background: var(--bg);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.55px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+}
+.tt-settings-table td { padding: 10px 14px; border-bottom: 1px solid var(--divider); }
+.tt-settings-table tbody tr:last-child td { border-bottom: none; }
+
+/* Mobile */
+@media (max-width: 768px) {
+    .tt-page-header { flex-direction: column; align-items: stretch; }
+    .tt-header-actions { width: 100%; }
+    .tt-header-actions .btn { flex: 1; justify-content: center; }
+
+    .tt-branded-header { flex-direction: column; align-items: flex-start; }
+    .tt-branded-right { text-align: left; width: 100%; }
+
+    .tt-print-root { padding: 14px; }
+    .tt-teacher-card, .tt-master-card, .tt-workload-table { overflow-x: auto; }
+}
+
+/* Print */
+@media print {
+    .tt-page-header,
+    .tt-tabs,
+    .tt-filters,
+    .tt-feedback,
+    .tt-header-actions,
+    .tt-clash-warn,
+    .tt-coverage-warn {
+        display: none !important;
+    }
+    .tt-print-root {
+        box-shadow: none !important;
+        border: none !important;
+        padding: 0 !important;
+        background: #ffffff !important;
+    }
+    .tt-teacher-card,
+    .tt-master-card,
+    .tt-grid {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+}   
