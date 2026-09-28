@@ -608,56 +608,81 @@ export default function Timetable() {
 
   /* ---------------- Export ---------------- */
 
-  const exportCurrentPDF = async () => {
-    try {
-      const school = {
-        name: schoolInfo?.name || 'School',
-        address: schoolInfo?.address || '',
-        phone: schoolInfo?.phone || '',
-        email: schoolInfo?.email || '',
-        motto: schoolInfo?.motto || '',
-      };
-      const logoUrl = schoolInfo?.logoUrl || schoolInfo?.schoolLogo || '';
+ const exportCurrentPDF = async () => {
+  try {
+    const school = {
+      name: schoolInfo?.name || 'School',
+      address: schoolInfo?.address || '',
+      phone: schoolInfo?.phone || '',
+      email: schoolInfo?.email || '',
+      website: schoolInfo?.website || '',
+      motto: schoolInfo?.motto || '',
+    };
+    const logoUrl = schoolInfo?.logoUrl || schoolInfo?.schoolLogo || '';
 
-      if (activeTab === 'class') {
-        await downloadClassTimetablePDF({
-          school, logoUrl,
-          className: selectedClass,
-          schedule: classSchedule,
-          term: normalizeTerm(selectedTerm),
-          year: normalizeYear(selectedYear),
-        });
-      } else if (activeTab === 'duty') {
-        await downloadDutyRosterPDF({
-          school, logoUrl, roster: dutyRoster,
-          term: normalizeTerm(selectedTerm),
-          year: normalizeYear(selectedYear),
-        });
-      } else if (activeTab === 'master') {
-        await downloadMasterTimetablePDF({
-          school, logoUrl,
-          level: selectedLevel,
-          classes: availableClasses,
-          schedules: allSchedules,
-          term: normalizeTerm(selectedTerm),
-          year: normalizeYear(selectedYear),
-        });
-      } else if (activeTab === 'teachers') {
-        const stats = teacherStats;
-        await Promise.all(stats.map((t) => downloadTeacherTimetablePDF({
+    // The periods/duty/level config the admin has saved for this school.
+    const livePeriods = periods;           // from useMemo above
+    const liveDutyAreas = customConfig?.dutyAreas || DUTY_AREAS;
+    const levelDisplay = {
+      'pre-primary': 'Pre-Primary',
+      'lower-primary': 'Lower Primary',
+      'upper-primary': 'Upper Primary',
+      'junior-school': 'Junior School',
+      'senior-school': 'Senior School',
+    };
+
+    if (activeTab === 'class') {
+      await downloadClassTimetablePDF({
+        school, logoUrl,
+        className: selectedClass,
+        schedule: classSchedule,
+        term: normalizeTerm(selectedTerm),
+        year: normalizeYear(selectedYear),
+        periods: livePeriods,
+        levelDisplay,
+      });
+    } else if (activeTab === 'duty') {
+      await downloadDutyRosterPDF({
+        school, logoUrl,
+        roster: dutyRoster,
+        term: normalizeTerm(selectedTerm),
+        year: normalizeYear(selectedYear),
+        dutyAreas: liveDutyAreas,
+        levelDisplay,
+      });
+    } else if (activeTab === 'master') {
+      const lvlLabel =
+        SCHOOL_LEVELS.find((l) => l.value === selectedLevel)?.label || selectedLevel;
+      await downloadMasterTimetablePDF({
+        school, logoUrl,
+        level: selectedLevel,
+        levelLabel: lvlLabel,
+        classes: availableClasses,
+        schedules: allSchedules,
+        term: normalizeTerm(selectedTerm),
+        year: normalizeYear(selectedYear),
+        periods: classPeriods,       // master view only shows class periods
+        levelDisplay,
+      });
+    } else if (activeTab === 'teachers') {
+      await Promise.all(
+        teacherStats.map((t) => downloadTeacherTimetablePDF({
           school, logoUrl,
           teacher: { id: t.teacherId, initials: t.initials, fullName: t.fullName },
           assignments: t.assignments,
           term: normalizeTerm(selectedTerm),
           year: normalizeYear(selectedYear),
-        })));
-      }
-      notify('PDF exported.', 'success');
-    } catch (err) {
-      console.error('[Timetable] export:', err);
-      notify('Export failed: ' + err.message, 'error');
+          periods: classPeriods,
+          levelDisplay,
+        }))
+      );
     }
-  };
+    notify('PDF exported.', 'success');
+  } catch (err) {
+    console.error('[Timetable] export:', err);
+    notify('Export failed: ' + err.message, 'error');
+  }
+};
 
   /* ---------------- Derived ---------------- */
 
