@@ -12,93 +12,80 @@ import {
 export const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 /**
- * Period structures per level. Every level can define its own.
- * `type: 'class'` = teachable slot, `type: 'break'` = non-teachable.
+ * Default period structures per level. These are DEFAULTS — schools
+ * can override via Settings which stores a custom config in Firestore.
  */
-export const PERIOD_STRUCTURES = Object.freeze({
+export const DEFAULT_PERIOD_STRUCTURES = Object.freeze({
   'pre-primary': [
-    { id: 'p1', name: 'Period 1', time: '08:00 - 08:30', type: 'class' },
-    { id: 'p2', name: 'Period 2', time: '08:30 - 09:00', type: 'class' },
-    { id: 'break1', name: 'Morning Break', time: '09:00 - 09:30', type: 'break', label: 'TEA / RECREATION BREAK' },
-    { id: 'p3', name: 'Period 3', time: '09:30 - 10:00', type: 'class' },
-    { id: 'p4', name: 'Period 4', time: '10:00 - 10:30', type: 'class' },
-    { id: 'lunch', name: 'Lunch Break', time: '10:30 - 11:30', type: 'break', label: 'NOON LUNCH BREAK' },
-    { id: 'p5', name: 'Period 5', time: '11:30 - 12:00', type: 'class' },
-    { id: 'p6', name: 'Period 6', time: '12:00 - 12:30', type: 'class' },
+    { id: 'p1', name: 'Period 1', start: '08:00', end: '08:30', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:30', end: '09:00', type: 'class' },
+    { id: 'break1', name: 'Morning Break', start: '09:00', end: '09:30', type: 'break', label: 'TEA / RECREATION BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:30', end: '10:00', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:00', end: '10:30', type: 'class' },
+    { id: 'lunch', name: 'Lunch Break', start: '10:30', end: '11:30', type: 'break', label: 'NOON LUNCH BREAK' },
+    { id: 'p5', name: 'Period 5', start: '11:30', end: '12:00', type: 'class' },
+    { id: 'p6', name: 'Period 6', start: '12:00', end: '12:30', type: 'class' },
   ],
   'lower-primary': [
-    { id: 'p1', name: 'Period 1', time: '08:00 - 08:40', type: 'class' },
-    { id: 'p2', name: 'Period 2', time: '08:40 - 09:20', type: 'class' },
-    { id: 'break1', name: 'Morning Break', time: '09:20 - 09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
-    { id: 'p3', name: 'Period 3', time: '09:50 - 10:30', type: 'class' },
-    { id: 'p4', name: 'Period 4', time: '10:30 - 11:10', type: 'class' },
-    { id: 'p5', name: 'Period 5', time: '11:10 - 11:50', type: 'class' },
-    { id: 'lunch', name: 'Lunch Break', time: '11:50 - 13:00', type: 'break', label: 'NOON LUNCH BREAK' },
-    { id: 'p6', name: 'Period 6', time: '13:00 - 13:40', type: 'class' },
-    { id: 'p7', name: 'Period 7', time: '13:40 - 14:20', type: 'class' },
+    { id: 'p1', name: 'Period 1', start: '08:00', end: '08:40', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:40', end: '09:20', type: 'class' },
+    { id: 'break1', name: 'Morning Break', start: '09:20', end: '09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:50', end: '10:30', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:30', end: '11:10', type: 'class' },
+    { id: 'p5', name: 'Period 5', start: '11:10', end: '11:50', type: 'class' },
+    { id: 'lunch', name: 'Lunch Break', start: '11:50', end: '13:00', type: 'break', label: 'NOON LUNCH BREAK' },
+    { id: 'p6', name: 'Period 6', start: '13:00', end: '13:40', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '13:40', end: '14:20', type: 'class' },
   ],
   'upper-primary': [
-    { id: 'p1', name: 'Period 1', time: '08:00 - 08:40', type: 'class' },
-    { id: 'p2', name: 'Period 2', time: '08:40 - 09:20', type: 'class' },
-    { id: 'break1', name: 'Morning Break', time: '09:20 - 09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
-    { id: 'p3', name: 'Period 3', time: '09:50 - 10:30', type: 'class' },
-    { id: 'p4', name: 'Period 4', time: '10:30 - 11:10', type: 'class' },
-    { id: 'p5', name: 'Period 5', time: '11:10 - 11:50', type: 'class' },
-    { id: 'lunch', name: 'Lunch Break', time: '11:50 - 13:00', type: 'break', label: 'NOON LUNCH BREAK' },
-    { id: 'p6', name: 'Period 6', time: '13:00 - 13:40', type: 'class' },
-    { id: 'p7', name: 'Period 7', time: '13:40 - 14:20', type: 'class' },
-    { id: 'p8', name: 'Period 8', time: '14:20 - 15:00', type: 'class' },
+    { id: 'p1', name: 'Period 1', start: '08:00', end: '08:40', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:40', end: '09:20', type: 'class' },
+    { id: 'break1', name: 'Morning Break', start: '09:20', end: '09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:50', end: '10:30', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:30', end: '11:10', type: 'class' },
+    { id: 'p5', name: 'Period 5', start: '11:10', end: '11:50', type: 'class' },
+    { id: 'lunch', name: 'Lunch Break', start: '11:50', end: '13:00', type: 'break', label: 'NOON LUNCH BREAK' },
+    { id: 'p6', name: 'Period 6', start: '13:00', end: '13:40', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '13:40', end: '14:20', type: 'class' },
+    { id: 'p8', name: 'Period 8', start: '14:20', end: '15:00', type: 'class' },
   ],
   'junior-school': [
-    { id: 'p1', name: 'Period 1', time: '08:00 - 08:40', type: 'class' },
-    { id: 'p2', name: 'Period 2', time: '08:40 - 09:20', type: 'class' },
-    { id: 'break1', name: 'Morning Break', time: '09:20 - 09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
-    { id: 'p3', name: 'Period 3', time: '09:50 - 10:30', type: 'class' },
-    { id: 'p4', name: 'Period 4', time: '10:30 - 11:10', type: 'class' },
-    { id: 'p5', name: 'Period 5', time: '11:10 - 11:50', type: 'class' },
-    { id: 'lunch', name: 'Lunch Break', time: '11:50 - 13:00', type: 'break', label: 'NOON LUNCH BREAK' },
-    { id: 'p6', name: 'Period 6', time: '13:00 - 13:40', type: 'class' },
-    { id: 'p7', name: 'Period 7', time: '13:40 - 14:20', type: 'class' },
-    { id: 'p8', name: 'Period 8', time: '14:20 - 15:00', type: 'class' },
+    { id: 'p1', name: 'Period 1', start: '08:00', end: '08:40', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:40', end: '09:20', type: 'class' },
+    { id: 'break1', name: 'Morning Break', start: '09:20', end: '09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:50', end: '10:30', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:30', end: '11:10', type: 'class' },
+    { id: 'p5', name: 'Period 5', start: '11:10', end: '11:50', type: 'class' },
+    { id: 'lunch', name: 'Lunch Break', start: '11:50', end: '13:00', type: 'break', label: 'NOON LUNCH BREAK' },
+    { id: 'p6', name: 'Period 6', start: '13:00', end: '13:40', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '13:40', end: '14:20', type: 'class' },
+    { id: 'p8', name: 'Period 8', start: '14:20', end: '15:00', type: 'class' },
   ],
   'senior-school': [
-    { id: 'p1', name: 'Period 1', time: '08:00 - 08:40', type: 'class' },
-    { id: 'p2', name: 'Period 2', time: '08:40 - 09:20', type: 'class' },
-    { id: 'break1', name: 'Morning Break', time: '09:20 - 09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
-    { id: 'p3', name: 'Period 3', time: '09:50 - 10:30', type: 'class' },
-    { id: 'p4', name: 'Period 4', time: '10:30 - 11:10', type: 'class' },
-    { id: 'p5', name: 'Period 5', time: '11:10 - 11:50', type: 'class' },
-    { id: 'lunch', name: 'Lunch Break', time: '11:50 - 13:00', type: 'break', label: 'NOON LUNCH BREAK' },
-    { id: 'p6', name: 'Period 6', time: '13:00 - 13:40', type: 'class' },
-    { id: 'p7', name: 'Period 7', time: '13:40 - 14:20', type: 'class' },
-    { id: 'p8', name: 'Period 8', time: '14:20 - 15:00', type: 'class' },
+    { id: 'p1', name: 'Period 1', start: '08:00', end: '08:40', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:40', end: '09:20', type: 'class' },
+    { id: 'break1', name: 'Morning Break', start: '09:20', end: '09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:50', end: '10:30', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:30', end: '11:10', type: 'class' },
+    { id: 'p5', name: 'Period 5', start: '11:10', end: '11:50', type: 'class' },
+    { id: 'lunch', name: 'Lunch Break', start: '11:50', end: '13:00', type: 'break', label: 'NOON LUNCH BREAK' },
+    { id: 'p6', name: 'Period 6', start: '13:00', end: '13:40', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '13:40', end: '14:20', type: 'class' },
+    { id: 'p8', name: 'Period 8', start: '14:20', end: '15:00', type: 'class' },
   ],
 });
 
-export const periodsForLevel = (level) =>
-  PERIOD_STRUCTURES[level] || PERIOD_STRUCTURES['junior-school'];
-
-export const classPeriodsForLevel = (level) =>
-  periodsForLevel(level).filter((p) => p.type === 'class');
-
-/**
- * Duty areas. `duration` in hours matters for clash detection.
- */
 export const DUTY_AREAS = Object.freeze([
-  { id: 'gate_morning', label: 'Main Gate (Morning)', start: 7,  end: 8 },
-  { id: 'assembly',     label: 'Assembly Ground',     start: 8,  end: 8.33 },
-  { id: 'break_duty',   label: 'Break Supervision',   start: 9.33, end: 9.83 },
-  { id: 'dining',       label: 'Dining Hall',         start: 12, end: 13 },
+  { id: 'gate_morning', label: 'Main Gate (Morning)', start: 7, end: 8 },
+  { id: 'assembly', label: 'Assembly Ground', start: 8, end: 8.33 },
+  { id: 'break_duty', label: 'Break Supervision', start: 9.33, end: 9.83 },
+  { id: 'dining', label: 'Dining Hall', start: 12, end: 13 },
   { id: 'gate_evening', label: 'Main Gate (Evening)', start: 15, end: 16.5 },
-  { id: 'library',      label: 'Library',             start: 15, end: 16.5 },
-  { id: 'playground',   label: 'Playground',          start: 16, end: 17 },
-  { id: 'dormitory',    label: 'Dormitory (Night)',   start: 21, end: 22 },
+  { id: 'library', label: 'Library', start: 15, end: 16.5 },
+  { id: 'playground', label: 'Playground', start: 16, end: 17 },
+  { id: 'dormitory', label: 'Dormitory (Night)', start: 21, end: 22 },
 ]);
 
-/**
- * Subject colours map to the CSS classes we ship in index.css.
- * Kept small and navy/gold-tinted on purpose — no loud rainbow.
- */
 export const SUBJECT_CLASS = Object.freeze({
   'Mathematics': 'tt-sub-math',
   'English': 'tt-sub-english',
@@ -122,12 +109,12 @@ export const SUBJECT_CLASS = Object.freeze({
   'Pre-Technical Studies': 'tt-sub-tech',
   'Agriculture and Nutrition': 'tt-sub-agric',
   'Agriculture': 'tt-sub-agric',
+  'Games': 'tt-sub-games',
+  'PE': 'tt-sub-games',
+  'Clubs': 'tt-sub-clubs',
+  'Library': 'tt-sub-library',
 });
 
-/**
- * Weekly period weights per subject. Used by the generator to bias
- * how many slots each subject gets in a class timetable.
- */
 export const SUBJECT_WEIGHTS = Object.freeze({
   'Mathematics': 5, 'English': 5, 'Kiswahili': 4,
   'Science': 4, 'Science and Technology': 4, 'Integrated Science': 4,
@@ -138,11 +125,11 @@ export const SUBJECT_WEIGHTS = Object.freeze({
   'Christian Religious Education': 3, 'Islamic Religious Education': 3,
   'Hindu Religious Education': 3,
   'Art and Craft': 2, 'Creative Arts and Sports': 2, 'Music': 2, 'Physical Education': 2,
+  'Games': 2, 'PE': 2, 'Clubs': 1, 'Library': 1,
 });
 
 export const DEFAULT_SUBJECT_WEIGHT = 2;
 
-/** Sciences get double-periods when the level allows. */
 const DOUBLE_PERIOD_SUBJECTS = new Set([
   'Science', 'Science and Technology', 'Integrated Science',
   'Biology', 'Chemistry', 'Physics',
@@ -193,6 +180,108 @@ export function weightForSubject(subject) {
   return SUBJECT_WEIGHTS[subject] ?? DEFAULT_SUBJECT_WEIGHT;
 }
 
+export function fmtTime(t) {
+  if (!t) return '';
+  return t;
+}
+
+/* ============================================================
+   Period config helpers
+   ============================================================ */
+
+/**
+ * Get the period structure for a level. If custom config exists, use it.
+ */
+export function periodsForLevel(level, customConfig = null) {
+  if (customConfig?.periods?.[level]) {
+    return customConfig.periods[level];
+  }
+  return DEFAULT_PERIOD_STRUCTURES[level] || DEFAULT_PERIOD_STRUCTURES['junior-school'];
+}
+
+export function classPeriodsForLevel(level, customConfig = null) {
+  return periodsForLevel(level, customConfig).filter((p) => p.type === 'class');
+}
+
+export function breakPeriodsForLevel(level, customConfig = null) {
+  return periodsForLevel(level, customConfig).filter((p) => p.type === 'break');
+}
+
+/**
+ * Calculate duration in minutes from start/end time strings.
+ */
+export function calcDuration(start, end) {
+  if (!start || !end) return 0;
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  return (eh * 60 + em) - (sh * 60 + sm);
+}
+
+/**
+ * Format period time display.
+ */
+export function formatPeriodTime(period) {
+  if (period.time) return period.time; // legacy
+  if (period.start && period.end) return `${period.start} - ${period.end}`;
+  return '';
+}
+
+/* ============================================================
+   Settings
+   ============================================================ */
+
+export async function loadTimetableSettings(schoolId) {
+  if (!schoolId) return null;
+  const id = `${safeSlug(schoolId)}_timetable_settings`;
+  const snap = await getDoc(doc(db, 'timetable_settings', id));
+  return snap.exists() ? snap.data() : null;
+}
+
+export async function saveTimetableSettings(schoolId, settings, userId) {
+  const id = `${safeSlug(schoolId)}_timetable_settings`;
+  await setDoc(doc(db, 'timetable_settings', id), {
+    ...settings,
+    schoolId,
+    updatedAt: serverTimestamp(),
+    updatedBy: userId || 'admin',
+  }, { merge: true });
+}
+
+/* ============================================================
+   Events (games, clubs, assemblies, etc.)
+   ============================================================ */
+
+export async function loadEvents(schoolId, term, year) {
+  if (!schoolId) return [];
+  const q = query(
+    collection(db, 'timetable_events'),
+    where('schoolId', '==', schoolId),
+    where('term', '==', normalizeTerm(term)),
+    where('year', '==', normalizeYear(year))
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function saveEvent(schoolId, term, year, event, userId) {
+  const id = event.id || `${safeSlug(schoolId)}_${safeSlug(event.title)}_${Date.now()}`;
+  await setDoc(doc(db, 'timetable_events', id), {
+    ...event,
+    id,
+    schoolId,
+    term: normalizeTerm(term),
+    year: normalizeYear(year),
+    updatedAt: serverTimestamp(),
+    updatedBy: userId || 'admin',
+  }, { merge: true });
+  return id;
+}
+
+export async function deleteEvent(eventId) {
+  const { deleteDoc } = await import('firebase/firestore');
+  await deleteDoc(doc(db, 'timetable_events', eventId));
+}
+
 /* ============================================================
    Document id builders
    ============================================================ */
@@ -228,10 +317,6 @@ export async function loadClassTimetable(schoolId, level, cls, term, year) {
   return snap.exists() ? (snap.data().schedule || {}) : {};
 }
 
-/**
- * Bulk-load every class timetable for a level + term + year in one query.
- * Fixes the N+1 problem in the original (Promise.all of getDoc per class).
- */
 export async function loadAllSchedulesForLevel(schoolId, level, term, year) {
   if (!schoolId || !level) return {};
   const q = query(
@@ -273,7 +358,6 @@ export async function saveClassTimetable(schoolId, level, cls, term, year, sched
 }
 
 export async function saveManyClassTimetables(schoolId, level, term, year, schedulesByClass, userId) {
-  // writeBatch — max 500 ops, safe here.
   const batch = writeBatch(db);
   for (const [cls, schedule] of Object.entries(schedulesByClass)) {
     const id = buildClassKey(schoolId, level, cls, term, year);
@@ -304,19 +388,6 @@ export async function saveDutyRoster(schoolId, term, year, roster, userId) {
    Generator
    ============================================================ */
 
-/**
- * Build a schedule for a single class that:
- *  - respects per-teacher `maxPeriods` (weekly cap)
- *  - respects per-teacher `subjects` (never teaches outside it)
- *  - respects teacher busy slots from OTHER classes
- *  - assigns double-periods for sciences at senior/junior levels
- *  - avoids giving the same subject twice in a row unless it's a double
- *  - weights subjects according to SUBJECT_WEIGHTS
- *
- * Returns { schedule, unassigned } — unassigned is a list of
- * { day, periodId, reason } so the UI can tell admins which slots
- * couldn't be filled because there weren't enough qualified teachers.
- */
 export function generateClassSchedule({
   level,
   cls,
@@ -324,18 +395,20 @@ export function generateClassSchedule({
   teachers,
   otherSchedules = {},
   existingTeacherLoad = {},
+  customConfig = null,
+  events = [],
 }) {
-  const periods = classPeriodsForLevel(level);
+  const periods = classPeriodsForLevel(level, customConfig);
   const allowDoubles = DOUBLE_PERIOD_LEVELS.has(level);
 
-  // 1. Build the weekly pool of subjects for this class
+  // Build the weekly pool of subjects for this class
   const pool = [];
   for (const sub of subjects) {
     const w = weightForSubject(sub);
     for (let i = 0; i < w; i += 1) pool.push(sub);
   }
 
-  // 2. Compute teacher busy slots from other classes
+  // Compute teacher busy slots from other classes
   const teacherBusy = {};
   for (const day of DAYS) {
     for (const p of periods) teacherBusy[`${day}|${p.id}`] = new Set();
@@ -350,10 +423,24 @@ export function generateClassSchedule({
     }
   }
 
-  // 3. Copy teacher load so far this week so we don't over-assign
+  // Copy teacher load
   const teacherLoad = { ...existingTeacherLoad };
 
-  // 4. The schedule we'll build
+  // Build event lookup: day|periodId -> event
+  const eventSlots = {};
+  for (const ev of events) {
+    if (ev.classes && !ev.classes.includes(cls)) continue;
+    if (ev.level && ev.level !== level) continue;
+    for (const day of DAYS) {
+      if (ev.days && !ev.days.includes(day)) continue;
+      if (ev.periodIds) {
+        for (const pid of ev.periodIds) {
+          eventSlots[`${day}|${pid}`] = ev;
+        }
+      }
+    }
+  }
+
   const schedule = {};
   const unassigned = [];
 
@@ -365,31 +452,47 @@ export function generateClassSchedule({
       const period = periods[i];
       const busyKey = `${day}|${period.id}`;
 
-      // First, try a double-period if the next period is free and the
-      // subject qualifies. This must run before the single-period path.
+      // Check for event override
+      const ev = eventSlots[busyKey];
+      if (ev) {
+        schedule[day][period.id] = {
+          subject: ev.title,
+          teacherId: '',
+          teacherInitials: ev.teacherInitials || 'EVT',
+          teacherFullName: ev.teacherName || 'Event',
+          room: ev.location || '',
+          isEvent: true,
+          eventId: ev.id,
+          eventColor: ev.color || '#d4a017',
+        };
+        continue;
+      }
+
+      // Double-period logic
       if (allowDoubles && i + 1 < periods.length) {
         const next = periods[i + 1];
         const nextBusyKey = `${day}|${next.id}`;
-        const candidate = dayPool.find((s) => DOUBLE_PERIOD_SUBJECTS.has(s));
-        if (candidate) {
-          const teacher = pickTeacher(candidate, teachers, teacherBusy[busyKey], teacherBusy[nextBusyKey], teacherLoad);
-          if (teacher) {
-            const shared = slotFor(candidate, teacher, cls);
-            schedule[day][period.id] = shared;
-            schedule[day][next.id] = { ...shared, doubleWith: period.id };
-            schedule[day][period.id].doubleWith = next.id;
-            teacherBusy[busyKey].add(teacher.id);
-            teacherBusy[nextBusyKey].add(teacher.id);
-            teacherLoad[teacher.id] = (teacherLoad[teacher.id] || 0) + 2;
-            removeFirst(dayPool, candidate);
-            removeFirst(dayPool, candidate);
-            i += 1; // skip next
-            continue;
+        if (!eventSlots[nextBusyKey]) {
+          const candidate = dayPool.find((s) => DOUBLE_PERIOD_SUBJECTS.has(s));
+          if (candidate) {
+            const teacher = pickTeacher(candidate, teachers, teacherBusy[busyKey], teacherBusy[nextBusyKey], teacherLoad);
+            if (teacher) {
+              const shared = slotFor(candidate, teacher, cls);
+              schedule[day][period.id] = { ...shared, doubleWith: next.id };
+              schedule[day][next.id] = { ...shared, doubleWith: period.id };
+              teacherBusy[busyKey].add(teacher.id);
+              teacherBusy[nextBusyKey].add(teacher.id);
+              teacherLoad[teacher.id] = (teacherLoad[teacher.id] || 0) + 2;
+              removeFirst(dayPool, candidate);
+              removeFirst(dayPool, candidate);
+              i += 1;
+              continue;
+            }
           }
         }
       }
 
-      // Single-period assignment
+      // Single period
       let assigned = null;
       for (const candidateSubject of dayPool) {
         const teacher = pickTeacher(candidateSubject, teachers, teacherBusy[busyKey], null, teacherLoad);
@@ -405,11 +508,7 @@ export function generateClassSchedule({
       if (assigned) {
         schedule[day][period.id] = assigned;
       } else {
-        unassigned.push({
-          day,
-          periodId: period.id,
-          reason: 'No qualified teacher available',
-        });
+        unassigned.push({ day, periodId: period.id, reason: 'No qualified teacher available' });
       }
     }
   }
@@ -436,7 +535,6 @@ function pickTeacher(subject, teachers, busySet, extraBusySet, load) {
     .filter((t) => !extraBusySet || !extraBusySet.has(t.id))
     .filter((t) => (load[t.id] || 0) < (t.maxPeriods || 30));
   if (candidates.length === 0) return null;
-  // Least-loaded first — a tie breaker of alphabetical keeps output stable
   candidates.sort((a, b) => {
     const d = (load[a.id] || 0) - (load[b.id] || 0);
     if (d !== 0) return d;
@@ -445,12 +543,6 @@ function pickTeacher(subject, teachers, busySet, extraBusySet, load) {
   return candidates[0];
 }
 
-/**
- * A teacher "teaches" a subject if they've declared it, or if they've
- * declared NO subjects at all (fallback: generalist). This preserves
- * the old behaviour for schools that haven't filled the field yet,
- * but is stricter when a teacher has explicitly opted in.
- */
 function teacherTeaches(teacher, subject) {
   const declared = Array.isArray(teacher.subjects) ? teacher.subjects : [];
   if (declared.length === 0) return true;
@@ -474,14 +566,8 @@ function removeFirst(arr, value) {
    Clash engine
    ============================================================ */
 
-/**
- * Returns an array of clash objects. `otherSchedules` must be
- * pre-loaded — the caller is responsible for fetching it. This
- * removes the silent-zero-clash bug the original had when
- * allSchedules was empty.
- */
-export function detectClashes(level, cls, proposedSchedule, otherSchedules) {
-  const periods = classPeriodsForLevel(level);
+export function detectClashes(level, cls, proposedSchedule, otherSchedules, customConfig = null) {
+  const periods = classPeriodsForLevel(level, customConfig);
   const clashes = [];
   const otherEntries = Object.entries(otherSchedules || {}).filter(([c]) => c !== cls);
 
@@ -507,16 +593,12 @@ export function detectClashes(level, cls, proposedSchedule, otherSchedules) {
   return clashes;
 }
 
-/**
- * Returns clashes between duty assignments for the same teacher on
- * overlapping time windows.
- */
-export function detectDutyClashes(roster) {
+export function detectDutyClashes(roster, dutyAreas = DUTY_AREAS) {
   const clashes = [];
   for (const day of DAYS) {
     const entries = [];
     const dayRoster = roster?.[day] || {};
-    for (const area of DUTY_AREAS) {
+    for (const area of dutyAreas) {
       const entry = dayRoster[area.id];
       if (!entry?.teacherId) continue;
       entries.push({ area, teacherId: entry.teacherId, teacherName: entry.teacherFullName });
@@ -545,11 +627,8 @@ export function detectDutyClashes(roster) {
    Analytics
    ============================================================ */
 
-/**
- * Per-teacher workload summary — used by the teacher tab and by PDF.
- */
-export function summarizeTeacherLoad(allSchedules, level) {
-  const periods = classPeriodsForLevel(level);
+export function summarizeTeacherLoad(allSchedules, level, customConfig = null) {
+  const periods = classPeriodsForLevel(level, customConfig);
   const load = {};
   for (const [clsName, sched] of Object.entries(allSchedules || {})) {
     for (const day of DAYS) {
@@ -577,12 +656,8 @@ export function summarizeTeacherLoad(allSchedules, level) {
     .sort((a, b) => b.assignments.length - a.assignments.length);
 }
 
-/**
- * Per-class health summary: which subjects are missing,
- * which subjects never got their weighted number of periods.
- */
-export function summarizeClassCoverage(level, subjects, schedule) {
-  const periods = classPeriodsForLevel(level);
+export function summarizeClassCoverage(level, subjects, schedule, customConfig = null) {
+  const periods = classPeriodsForLevel(level, customConfig);
   const counts = {};
   for (const sub of subjects) counts[sub] = 0;
   for (const day of DAYS) {
@@ -597,4 +672,53 @@ export function summarizeClassCoverage(level, subjects, schedule) {
     return counts[s] > 0 && counts[s] < expected;
   });
   return { counts, missing, under };
+}
+
+/* ============================================================
+   Duty roster generation
+   ============================================================ */
+
+export function generateDutyRoster(teachers, customAreas = DUTY_AREAS) {
+  if (!teachers.length) return {};
+
+  const roster = {};
+  const teacherLoad = {};
+  teachers.forEach((t) => { teacherLoad[t.id] = 0; });
+
+  for (const day of DAYS) {
+    roster[day] = {};
+    const availableTeachers = shuffle([...teachers]);
+
+    for (const area of customAreas) {
+      // Find least-loaded teacher not already assigned to overlapping duty
+      const assigned = [];
+      for (const a of customAreas) {
+        if (a.id === area.id) continue;
+        const entry = roster[day][a.id];
+        if (entry?.teacherId) {
+          const overlap = entry.area?.end > area.start && area.end > entry.area?.start;
+          if (overlap || (a.start < area.end && area.start < a.end)) {
+            assigned.push(entry.teacherId);
+          }
+        }
+      }
+
+      const candidates = availableTeachers
+        .filter((t) => !assigned.includes(t.id))
+        .sort((a, b) => (teacherLoad[a.id] || 0) - (teacherLoad[b.id] || 0));
+
+      if (candidates.length > 0) {
+        const t = candidates[0];
+        roster[day][area.id] = {
+          teacherId: t.id,
+          teacherInitials: teacherInitials(t),
+          teacherFullName: teacherFullName(t),
+          area,
+        };
+        teacherLoad[t.id] = (teacherLoad[t.id] || 0) + 1;
+      }
+    }
+  }
+
+  return roster;
 }
