@@ -1,7 +1,9 @@
 // src/services/timetablePdfClient.js
 /**
  * Thin client for the Netlify timetable-pdf function.
- * Mirrors the payload shapes the function expects.
+ *
+ * Accepts the school's live period/duty configuration so exported PDFs
+ * match whatever the admin has configured in Settings.
  */
 
 async function postJSON(url, body) {
@@ -29,42 +31,85 @@ function triggerDownload(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * Extract only the fields we actually want to send to the function.
+ * Keeps payload size small and avoids leaking extra Firestore metadata.
+ */
+function packPeriods(periods) {
+  if (!Array.isArray(periods)) return undefined;
+  return periods.map((p) => ({
+    id: p.id,
+    name: p.name,
+    start: p.start,
+    end: p.end,
+    type: p.type || 'class',
+    label: p.label || p.name,
+  }));
+}
+
+function packDutyAreas(areas) {
+  if (!Array.isArray(areas)) return undefined;
+  return areas.map((a) => ({
+    id: a.id,
+    label: a.label,
+    start: a.start,
+    end: a.end,
+  }));
+}
+
+function packLevelDisplay(levels) {
+  if (!levels || typeof levels !== 'object') return undefined;
+  return levels;
+}
+
 export async function downloadClassTimetablePDF({
   school, logoUrl, className, schedule, term, year,
+  periods, levelDisplay,
 }) {
   const blob = await postJSON('/api/timetable-pdf', {
     type: 'class',
     school, logoUrl, className, schedule, term, year,
+    periods: packPeriods(periods),
+    levelDisplay: packLevelDisplay(levelDisplay),
   });
   triggerDownload(blob, `Timetable_${className || 'Class'}_${term}_${year}.pdf`);
 }
 
 export async function downloadTeacherTimetablePDF({
   school, logoUrl, teacher, assignments, term, year,
+  periods, levelDisplay,
 }) {
   const blob = await postJSON('/api/timetable-pdf', {
     type: 'teacher',
     school, logoUrl, teacher, assignments, term, year,
+    periods: packPeriods(periods),
+    levelDisplay: packLevelDisplay(levelDisplay),
   });
   triggerDownload(blob, `Timetable_${teacher?.initials || 'Teacher'}_${term}_${year}.pdf`);
 }
 
 export async function downloadMasterTimetablePDF({
-  school, logoUrl, level, classes, schedules, term, year,
+  school, logoUrl, level, levelLabel, classes, schedules, term, year,
+  periods, levelDisplay,
 }) {
   const blob = await postJSON('/api/timetable-pdf', {
     type: 'master',
-    school, logoUrl, level, classes, schedules, term, year,
+    school, logoUrl, level, levelLabel, classes, schedules, term, year,
+    periods: packPeriods(periods),
+    levelDisplay: packLevelDisplay(levelDisplay),
   });
-  triggerDownload(blob, `Timetable_Master_${level}_${term}_${year}.pdf`);
+  triggerDownload(blob, `Timetable_Master_${levelLabel || level}_${term}_${year}.pdf`);
 }
 
 export async function downloadDutyRosterPDF({
   school, logoUrl, roster, term, year,
+  dutyAreas, levelDisplay,
 }) {
   const blob = await postJSON('/api/timetable-pdf', {
     type: 'duty',
     school, logoUrl, roster, term, year,
+    dutyAreas: packDutyAreas(dutyAreas),
+    levelDisplay: packLevelDisplay(levelDisplay),
   });
   triggerDownload(blob, `Duty_Roster_${term}_${year}.pdf`);
 }
