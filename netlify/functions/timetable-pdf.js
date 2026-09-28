@@ -3,22 +3,29 @@
 // Supports: class | teacher | master | duty.
 //
 // Request body:
-//   { type, school: {name,address,phone,email,motto}, logoUrl,
-//     term, year, ...typeSpecific }
+//   {
+//     type,
+//     school: { name, address, phone, email, motto, website, logoUrl },
+//     logoUrl,
+//     term, year,
 //
-// type=class:   { className, schedule }
-// type=teacher: { teacher: {initials, fullName}, assignments: [{day, period, subject, className}] }
-// type=master:  { level, classes: [..], schedules: { [cls]: schedule } }
-// type=duty:    { roster }
+//     // Optional — overrides to match the school's saved settings.
+//     // If omitted, defaults below are used (backwards compatible).
+//     periods:     [{ id, name, start, end, type: 'class'|'break', label? }],
+//     breaks:      [{ id, name, start, end, label }],
+//     dutyAreas:   [{ id, label, start, end, time? }],
+//     levelDisplay:{ 'lower-primary': 'Lower Primary', ... },
+//     levelLabel:  'Lower Primary',   // optional override for the requested level
 //
-// Styling matches generate-student-report.js, generate-teacher-reports.js,
-// and generate-ranking.js:
-//   - Letterhead-style header (logo left, school name / motto / contact stack)
-//     with a coloured underline rule
-//   - Times New Roman typography (PDFKit standard-14 Times family)
-//   - Images opened once as reusable PDF XObjects (multi-page size win)
-//   - Early size guard rejects oversized requests with a 413 before PDFKit
-//     starts streaming
+//     // type-specific:
+//     className, schedule,                 // class
+//     teacher, assignments,                // teacher
+//     level, classes: [...], schedules: {},// master
+//     roster,                              // duty
+//   }
+//
+// Styling matches the other EduPriva reports (letterhead header, Times font,
+// logo loaded as a reusable XObject, early size guard).
 
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
@@ -32,10 +39,6 @@ const FALLBACK_MOTTO = 'Powering Modern Education';
 
 const MAX_RESPONSE_BYTES = 5_500_000;
 const ESTIMATE_HEADROOM = 0.7;
-
-// Per-section size estimate (bytes) used for the early guard.
-// A "section" is one timetable block (one class, one teacher, one level
-// strip, or one duty area). Conservative.
 const EST_BYTES_PER_SECTION = 8_000;
 
 const COLORS = {
@@ -51,48 +54,50 @@ const COLORS = {
   white: '#ffffff',
 };
 
-// Letterhead colours (shared with the other reports)
 const HEADER_BLUE = '#1a4e8a';
 const HEADER_RULE_WIDTH = 1.4;
 const HEADER_MOTTO_GRAY = '#666';
 const HEADER_CONTACT_GRAY = '#333';
 
-// Times New Roman family (PDFKit standard-14 names)
 const FONT_REGULAR = 'Times-Roman';
 const FONT_BOLD = 'Times-Bold';
 const FONT_ITALIC = 'Times-Italic';
-const FONT_BOLD_ITALIC = 'Times-BoldItalic';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
-const CLASS_PERIODS = [
-  { id: 'p1', name: 'Period 1', time: '08:00 - 08:40' },
-  { id: 'p2', name: 'Period 2', time: '08:40 - 09:20' },
-  { id: 'p3', name: 'Period 3', time: '09:50 - 10:30' },
-  { id: 'p4', name: 'Period 4', time: '10:30 - 11:10' },
-  { id: 'p5', name: 'Period 5', time: '11:10 - 11:50' },
-  { id: 'p6', name: 'Period 6', time: '13:00 - 13:40' },
-  { id: 'p7', name: 'Period 7', time: '13:40 - 14:20' },
-  { id: 'p8', name: 'Period 8', time: '14:20 - 15:00' },
+const MARGIN = 28;
+const HEADER_LOGO = 46;
+const FOOTER_H = 40;
+
+/* ============================================================
+   Defaults (used only when the client doesn't send overrides)
+   ============================================================ */
+
+const DEFAULT_PERIODS = [
+  { id: 'p1', name: 'Period 1', start: '08:00', end: '08:40', type: 'class' },
+  { id: 'p2', name: 'Period 2', start: '08:40', end: '09:20', type: 'class' },
+  { id: 'break1', name: 'Morning Break', start: '09:20', end: '09:50', type: 'break', label: 'TEA / RECREATION BREAK' },
+  { id: 'p3', name: 'Period 3', start: '09:50', end: '10:30', type: 'class' },
+  { id: 'p4', name: 'Period 4', start: '10:30', end: '11:10', type: 'class' },
+  { id: 'p5', name: 'Period 5', start: '11:10', end: '11:50', type: 'class' },
+  { id: 'lunch', name: 'Lunch Break', start: '11:50', end: '13:00', type: 'break', label: 'NOON LUNCH BREAK' },
+  { id: 'p6', name: 'Period 6', start: '13:00', end: '13:40', type: 'class' },
+  { id: 'p7', name: 'Period 7', start: '13:40', end: '14:20', type: 'class' },
+  { id: 'p8', name: 'Period 8', start: '14:20', end: '15:00', type: 'class' },
 ];
 
-const BREAKS_INLINE = [
-  { afterPeriodIndex: 1, label: 'TEA / RECREATION BREAK', time: '09:20 - 09:50' },
-  { afterPeriodIndex: 4, label: 'NOON LUNCH BREAK', time: '11:50 - 13:00' },
+const DEFAULT_DUTY_AREAS = [
+  { id: 'gate_morning', label: 'Main Gate (Morning)', start: 7,    end: 8 },
+  { id: 'assembly',     label: 'Assembly Ground',     start: 8,    end: 8.33 },
+  { id: 'break_duty',   label: 'Break Supervision',   start: 9.33, end: 9.83 },
+  { id: 'dining',       label: 'Dining Hall',         start: 12,   end: 13 },
+  { id: 'gate_evening', label: 'Main Gate (Evening)', start: 15,   end: 16.5 },
+  { id: 'library',      label: 'Library',             start: 15,   end: 16.5 },
+  { id: 'playground',   label: 'Playground',          start: 16,   end: 17 },
+  { id: 'dormitory',    label: 'Dormitory (Night)',   start: 21,   end: 22 },
 ];
 
-const DUTY_AREAS = [
-  { id: 'gate_morning', label: 'Main Gate (Morning)', time: '07:00 - 08:00' },
-  { id: 'assembly',     label: 'Assembly Ground',     time: '08:00 - 08:20' },
-  { id: 'break_duty',   label: 'Break Supervision',   time: '09:20 - 09:50' },
-  { id: 'dining',       label: 'Dining Hall',         time: '12:00 - 13:00' },
-  { id: 'gate_evening', label: 'Main Gate (Evening)', time: '15:00 - 16:30' },
-  { id: 'library',      label: 'Library',             time: '15:00 - 16:30' },
-  { id: 'playground',   label: 'Playground',          time: '16:00 - 17:00' },
-  { id: 'dormitory',    label: 'Dormitory (Night)',   time: '21:00 - 22:00' },
-];
-
-const LEVEL_DISPLAY = {
+const DEFAULT_LEVEL_DISPLAY = {
   'pre-primary': 'Pre-Primary',
   'lower-primary': 'Lower Primary',
   'upper-primary': 'Upper Primary',
@@ -100,15 +105,93 @@ const LEVEL_DISPLAY = {
   'senior-school': 'Senior School',
 };
 
-const MARGIN = 28;
-const HEADER_LOGO = 46;
-const FOOTER_H = 40;
+/* ============================================================
+   Payload normalisation
+   ============================================================ */
+
+/** Derive "HH:MM - HH:MM" from start/end or trust a pre-formatted `time`. */
+function periodTime(p) {
+  if (p.time) return p.time;
+  if (p.start && p.end) return `${p.start} - ${p.end}`;
+  return '';
+}
+
+/** Decimal hours (7.5) → "07:30". */
+function decimalToHHMM(h) {
+  if (typeof h === 'string' && h.includes(':')) return h;
+  const num = Number(h);
+  if (!Number.isFinite(num)) return '';
+  const whole = Math.floor(num);
+  const mins = Math.round((num - whole) * 60);
+  return `${String(whole).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+}
+
+/** Same as decimalToHHMM but for the duty areas which use start/end floats. */
+function dutyTime(a) {
+  if (a.time) return a.time;
+  if (a.start == null || a.end == null) return '';
+  return `${decimalToHHMM(a.start)} - ${decimalToHHMM(a.end)}`;
+}
+
+/**
+ * Normalise whatever periods/breaks the client sent into a single ordered
+ * array of { id, name, time, type, label } entries.
+ */
+function normalizePeriods(payload) {
+  // Preferred shape: a single ordered array of periods (class + break mixed).
+  if (Array.isArray(payload.periods) && payload.periods.length) {
+    return payload.periods.map((p) => ({
+      id: p.id,
+      name: p.name || (p.type === 'break' ? 'Break' : 'Period'),
+      time: periodTime(p),
+      type: p.type === 'break' ? 'break' : 'class',
+      label: p.label || p.name || 'BREAK',
+    }));
+  }
+
+  // Legacy/fallback: separate periods + breaks arrays.
+  if (Array.isArray(payload.breaks) && payload.breaks.length) {
+    // Interleave: for simplicity, append breaks after every class period
+    // that precedes them by start time. If we can't determine, push to end.
+    const classes = (Array.isArray(payload.periods) ? payload.periods : [])
+      .filter((p) => p.type !== 'break')
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        time: periodTime(p),
+        type: 'class',
+        startSort: p.start || '',
+      }));
+    const breaks = payload.breaks.map((b) => ({
+      id: b.id,
+      name: b.name,
+      time: periodTime(b),
+      type: 'break',
+      label: b.label || b.name || 'BREAK',
+      startSort: b.start || '',
+    }));
+    const merged = [...classes, ...breaks].sort((a, b) => {
+      if (!a.startSort || !b.startSort) return 0;
+      return a.startSort.localeCompare(b.startSort);
+    });
+    return merged.map(({ startSort, ...rest }) => rest);
+  }
+
+  // Otherwise: built-in default.
+  return DEFAULT_PERIODS.map((p) => ({
+    id: p.id,
+    name: p.name,
+    time: periodTime(p),
+    type: p.type,
+    label: p.label || p.name,
+  }));
+}
 
 /* ============================================================
    Image fetch (per cold start cache)
    ============================================================ */
 
-const logoCache = new Map(); // url -> Buffer | null
+const logoCache = new Map();
 
 async function fetchImageBuffer(url, maxBytes = 2 * 1024 * 1024) {
   if (!url || typeof url !== 'string') return null;
@@ -150,14 +233,6 @@ function drawImage(doc, img, cx, cy, w, h) {
   }
 }
 
-/**
- * Compose a letterhead-style header and return the y below the rule.
- * Identical geometry to the other three reports so every document
- * produced by the system matches.
- *
- * `title` and `subtitle` are rendered right-aligned on the header band,
- * so the timetable type is still identifiable at a glance.
- */
 function drawLetterheadHeader(doc, {
   x, y, w,
   school, logoImg,
@@ -187,19 +262,17 @@ function drawLetterheadHeader(doc, {
   const textX = logoX + logoSize + padding;
   const textW = w - logoSize - padding - rightW - 8;
 
-  // School name (left, dominant)
   doc.font(FONT_BOLD).fontSize(nameSize).fillColor(HEADER_BLUE)
     .text((school.name || FALLBACK_NAME).toUpperCase(), textX, y + 1, {
       width: Math.max(80, textW), align: 'left', ellipsis: true,
     });
   let cy = y + nameSize + 3;
 
-  // Contact stack (left)
   doc.font(FONT_REGULAR).fontSize(contactSize).fillColor(HEADER_CONTACT_GRAY);
   const contactLines = [];
   if (school.address) contactLines.push(String(school.address));
-  if (school.phone) contactLines.push(`Tel: ${school.phone}`);
-  if (school.email) contactLines.push(`Email: ${school.email}`);
+  if (school.phone)   contactLines.push(`Tel: ${school.phone}`);
+  if (school.email)   contactLines.push(`Email: ${school.email}`);
   if (school.website) contactLines.push(`Website: ${school.website}`);
 
   for (const line of contactLines) {
@@ -209,7 +282,6 @@ function drawLetterheadHeader(doc, {
     cy += contactSize + lineGap;
   }
 
-  // Motto (left, italic)
   if (school.motto) {
     doc.font(FONT_ITALIC).fontSize(mottoSize).fillColor(HEADER_MOTTO_GRAY)
       .text(`Motto: ${school.motto}`, textX, cy, {
@@ -218,7 +290,6 @@ function drawLetterheadHeader(doc, {
     cy += mottoSize + lineGap;
   }
 
-  // Title / subtitle (right-aligned on the header band)
   const titleX = x + w - rightW;
   doc.font(FONT_BOLD).fontSize(11.5).fillColor(COLORS.slate)
     .text(title || '', titleX, y + 4, { width: rightW, align: 'right' });
@@ -264,7 +335,7 @@ function drawFooter(doc, school) {
    Class timetable (one per page)
    ============================================================ */
 
-function drawClassTimetable(doc, school, logoImg, schedule, className, term, year) {
+function drawClassTimetable(doc, school, logoImg, schedule, className, term, year, periods) {
   const pageW = doc.page.width;
   const startY = drawLetterheadHeader(doc, {
     x: MARGIN, y: MARGIN, w: pageW - MARGIN * 2,
@@ -280,8 +351,16 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
   const dayColW = (pageW - MARGIN * 2 - timeColW) / DAYS.length;
 
   const headerH = 22;
+  const breakRows = periods.filter((p) => p.type === 'break');
+  const classRows = periods.filter((p) => p.type === 'class');
+
+  // Compute row heights. Guard against zero/very-large period counts.
   const breakRowH = 16;
-  const classRowH = (availableH - headerH - BREAKS_INLINE.length * breakRowH) / CLASS_PERIODS.length;
+  const totalBreakH = breakRows.length * breakRowH;
+  const classRowH = Math.max(
+    22,
+    (availableH - headerH - totalBreakH) / Math.max(1, classRows.length)
+  );
 
   // Header row
   let y = startY;
@@ -294,39 +373,57 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
   }
   y += headerH;
 
-  const drawsBreak = (afterIndex) => {
-    const br = BREAKS_INLINE.find((b) => b.afterPeriodIndex === afterIndex);
-    if (!br) return false;
-    doc.rect(MARGIN, y, pageW - MARGIN * 2, breakRowH).fill(COLORS.breakBg);
-    doc.strokeColor(COLORS.border).lineWidth(0.5)
-      .rect(MARGIN, y, pageW - MARGIN * 2, breakRowH).stroke();
-    doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.breakFg)
-      .text(`${br.label}  (${br.time})`, MARGIN, y + (breakRowH - 8) / 2,
-        { width: pageW - MARGIN * 2, align: 'center', characterSpacing: 1 });
-    y += breakRowH;
-    return true;
-  };
+  // Render periods in the order they were provided.
+  for (const period of periods) {
+    const isBreak = period.type === 'break';
+    const rowH = isBreak ? breakRowH : classRowH;
 
-  for (let i = 0; i < CLASS_PERIODS.length; i += 1) {
-    const period = CLASS_PERIODS[i];
+    if (isBreak) {
+      doc.rect(MARGIN, y, pageW - MARGIN * 2, rowH).fill(COLORS.breakBg);
+      doc.strokeColor(COLORS.border).lineWidth(0.5)
+        .rect(MARGIN, y, pageW - MARGIN * 2, rowH).stroke();
+      doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.breakFg)
+        .text(
+          `${period.label || period.name}${period.time ? `  (${period.time})` : ''}`,
+          MARGIN, y + (rowH - 8) / 2,
+          { width: pageW - MARGIN * 2, align: 'center', characterSpacing: 1 }
+        );
+      y += rowH;
+      continue;
+    }
 
     // Time cell
-    doc.rect(MARGIN, y, timeColW, classRowH).fill(COLORS.light);
+    doc.rect(MARGIN, y, timeColW, rowH).fill(COLORS.light);
     doc.strokeColor(COLORS.border).lineWidth(0.5)
-      .rect(MARGIN, y, timeColW, classRowH).stroke();
+      .rect(MARGIN, y, timeColW, rowH).stroke();
     doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.slate)
       .text(period.name, MARGIN + 3, y + 4, { width: timeColW - 6, align: 'center' });
-    doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
-      .text(period.time, MARGIN + 3, y + 14, { width: timeColW - 6, align: 'center' });
+    if (period.time) {
+      doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
+        .text(period.time, MARGIN + 3, y + 14, { width: timeColW - 6, align: 'center' });
+    }
 
     // Day cells
     for (let d = 0; d < DAYS.length; d += 1) {
       const day = DAYS[d];
       const cx = MARGIN + timeColW + dayColW * d;
       const slot = schedule?.[day]?.[period.id];
-      doc.rect(cx, y, dayColW, classRowH).strokeColor(COLORS.border).lineWidth(0.5).stroke();
+      doc.rect(cx, y, dayColW, rowH).strokeColor(COLORS.border).lineWidth(0.5).stroke();
 
       if (slot) {
+        const isEvent = slot.isEvent;
+        if (isEvent) {
+          // Tint the cell faintly with the event's colour.
+          doc.save();
+          doc.rect(cx + 0.5, y + 0.5, dayColW - 1, rowH - 1)
+            .fill('#fffbea').restore();
+          doc.strokeColor(COLORS.border).lineWidth(0.5).rect(cx, y, dayColW, rowH).stroke();
+
+          // Left accent bar
+          doc.save();
+          doc.rect(cx, y, 3, rowH).fill(slot.eventColor || COLORS.gold).restore();
+        }
+
         doc.font(FONT_BOLD).fontSize(7).fillColor(COLORS.slate)
           .text(slot.subject || '', cx + 3, y + 4,
             { width: dayColW - 6, align: 'left', ellipsis: true });
@@ -341,8 +438,7 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
       }
     }
 
-    y += classRowH;
-    drawsBreak(i);
+    y += rowH;
   }
 
   drawFooter(doc, school);
@@ -352,7 +448,7 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
    Teacher timetable (one per page)
    ============================================================ */
 
-function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, year) {
+function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, year, periods) {
   const pageW = doc.page.width;
   const startY = drawLetterheadHeader(doc, {
     x: MARGIN, y: MARGIN, w: pageW - MARGIN * 2,
@@ -368,7 +464,8 @@ function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, 
   const dayColW = (pageW - MARGIN * 2 - timeColW) / DAYS.length;
 
   const headerH = 22;
-  const rowH = (availableH - headerH) / CLASS_PERIODS.length;
+  const classRows = periods.filter((p) => p.type === 'class');
+  const rowH = Math.max(20, (availableH - headerH) / Math.max(1, classRows.length));
 
   let y = startY;
   doc.rect(MARGIN, y, pageW - MARGIN * 2, headerH).fill(COLORS.navy);
@@ -380,15 +477,17 @@ function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, 
   }
   y += headerH;
 
-  for (const period of CLASS_PERIODS) {
+  for (const period of classRows) {
     doc.rect(MARGIN, y, timeColW, rowH).fill(COLORS.light);
     doc.strokeColor(COLORS.border).lineWidth(0.5).rect(MARGIN, y, timeColW, rowH).stroke();
     doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.slate)
       .text(period.name, MARGIN + 3, y + rowH / 2 - 8,
         { width: timeColW - 6, align: 'center' });
-    doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
-      .text(period.time, MARGIN + 3, y + rowH / 2 + 2,
-        { width: timeColW - 6, align: 'center' });
+    if (period.time) {
+      doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
+        .text(period.time, MARGIN + 3, y + rowH / 2 + 2,
+          { width: timeColW - 6, align: 'center' });
+    }
 
     for (let i = 0; i < DAYS.length; i += 1) {
       const day = DAYS[i];
@@ -411,14 +510,13 @@ function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, 
 }
 
 /* ============================================================
-   Master overview (one level per page, page-breaking as needed)
+   Master overview
    ============================================================ */
 
-function drawMasterByLevel(doc, school, logoImg, level, classes, schedules, term, year) {
+function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules, term, year, periods) {
   const pageW = doc.page.width;
-  const levelName = LEVEL_DISPLAY[level] || level;
   const title = 'Master Timetable Overview';
-  const subtitle = `${levelName} · ${term} ${year}`;
+  const subtitle = `${levelLabel} · ${term} ${year}`;
 
   let y = drawLetterheadHeader(doc, {
     x: MARGIN, y: MARGIN, w: pageW - MARGIN * 2,
@@ -432,6 +530,8 @@ function drawMasterByLevel(doc, school, logoImg, level, classes, schedules, term
   const dayColW = (pageW - MARGIN * 2 - timeColW) / DAYS.length;
   const headerH = 14;
   const rowH = 16;
+
+  const classRows = periods.filter((p) => p.type === 'class');
 
   const ensureSpace = (needed) => {
     if (y + needed > footerTop) {
@@ -464,7 +564,9 @@ function drawMasterByLevel(doc, school, logoImg, level, classes, schedules, term
     }
     y += headerH;
 
-    for (const period of CLASS_PERIODS) {
+    for (const period of classRows) {
+      ensureSpace(rowH);
+
       doc.rect(MARGIN, y, timeColW, rowH).fill(COLORS.light);
       doc.strokeColor(COLORS.border).lineWidth(0.4).rect(MARGIN, y, timeColW, rowH).stroke();
       doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
@@ -497,7 +599,7 @@ function drawMasterByLevel(doc, school, logoImg, level, classes, schedules, term
    Duty roster
    ============================================================ */
 
-function drawDutyRoster(doc, school, logoImg, roster, term, year) {
+function drawDutyRoster(doc, school, logoImg, roster, term, year, dutyAreas) {
   const pageW = doc.page.width;
   const startY = drawLetterheadHeader(doc, {
     x: MARGIN, y: MARGIN, w: pageW - MARGIN * 2,
@@ -512,7 +614,7 @@ function drawDutyRoster(doc, school, logoImg, roster, term, year) {
   const areaColW = 150;
   const dayColW = (pageW - MARGIN * 2 - areaColW) / DAYS.length;
   const headerH = 22;
-  const rowH = (availableH - headerH) / DUTY_AREAS.length;
+  const rowH = Math.max(20, (availableH - headerH) / Math.max(1, dutyAreas.length));
 
   let y = startY;
   doc.rect(MARGIN, y, pageW - MARGIN * 2, headerH).fill(COLORS.navy);
@@ -524,13 +626,13 @@ function drawDutyRoster(doc, school, logoImg, roster, term, year) {
   }
   y += headerH;
 
-  for (const area of DUTY_AREAS) {
+  for (const area of dutyAreas) {
     doc.rect(MARGIN, y, areaColW, rowH).fill(COLORS.light);
     doc.strokeColor(COLORS.border).lineWidth(0.5).rect(MARGIN, y, areaColW, rowH).stroke();
     doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.slate)
       .text(area.label, MARGIN + 4, y + 5, { width: areaColW - 8, align: 'left' });
     doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
-      .text(area.time, MARGIN + 4, y + 14, { width: areaColW - 8, align: 'left' });
+      .text(dutyTime(area), MARGIN + 4, y + 14, { width: areaColW - 8, align: 'left' });
 
     for (let i = 0; i < DAYS.length; i += 1) {
       const day = DAYS[i];
@@ -598,12 +700,20 @@ exports.handler = async (event) => {
     return json(400, { error: 'Unknown type' });
   }
 
-  // Early size guard based on the estimated number of "sections" this
-  // request will render. Conservative but effective.
+  // Resolve everything with sane fallbacks so old clients keep working.
+  const periods = normalizePeriods(payload);
+  const dutyAreas = Array.isArray(payload.dutyAreas) && payload.dutyAreas.length
+    ? payload.dutyAreas
+    : DEFAULT_DUTY_AREAS;
+  const levelDisplay = payload.levelDisplay && typeof payload.levelDisplay === 'object'
+    ? { ...DEFAULT_LEVEL_DISPLAY, ...payload.levelDisplay }
+    : DEFAULT_LEVEL_DISPLAY;
+
+  // Early size guard based on estimated "sections".
   const sectionCount =
-    type === 'class' ? 1
+    type === 'class'   ? 1
     : type === 'teacher' ? 1
-    : type === 'duty' ? 1
+    : type === 'duty'    ? 1
     : (Array.isArray(payload.classes) ? payload.classes.length : 1);
   const estBytes = Math.max(1, sectionCount) * EST_BYTES_PER_SECTION;
   const safeBudget = MAX_RESPONSE_BYTES * ESTIMATE_HEADROOM;
@@ -616,7 +726,6 @@ exports.handler = async (event) => {
     });
   }
 
-  // Accept every plausible logo field name
   const resolvedLogoUrl = logoUrl || school.logoUrl || school.schoolLogo || school.logo || '';
   const logoBuffer = await fetchImageBuffer(resolvedLogoUrl);
 
@@ -624,6 +733,9 @@ exports.handler = async (event) => {
     type,
     hasLogoUrl: !!resolvedLogoUrl,
     logoBytes: logoBuffer ? logoBuffer.length : 0,
+    periods: periods.length,
+    breaks: periods.filter((p) => p.type === 'break').length,
+    dutyAreas: dutyAreas.length,
   });
 
   const chunks = [];
@@ -660,10 +772,9 @@ exports.handler = async (event) => {
     doc.on('error', reject);
   });
 
-  // Set the document-wide default font once
   doc.font(FONT_REGULAR);
 
-  // Open the logo once as a reusable XObject
+  // Open the logo once as a reusable XObject.
   let logoImg = null;
   if (logoBuffer) {
     try { logoImg = doc.openImage(logoBuffer); }
@@ -672,15 +783,84 @@ exports.handler = async (event) => {
 
   try {
     switch (type) {
-      case 'class':
+      case 'class': {
         doc.addPage({ layout: 'landscape' });
         drawClassTimetable(
           doc, school, logoImg,
           payload.schedule || {},
           payload.className || '',
-          term, year
+          term, year,
+          periods
         );
         break;
-      case 'teacher':
+      }
+
+      case 'teacher': {
         doc.addPage({ layout: 'landscape' });
-        drawTeacherTimet
+        drawTeacherTimetable(
+          doc, school, logoImg,
+          payload.teacher || {},
+          Array.isArray(payload.assignments) ? payload.assignments : [],
+          term, year,
+          periods
+        );
+        break;
+      }
+
+      case 'master': {
+        const level = payload.level || '';
+        const levelLabel = payload.levelLabel || levelDisplay[level] || level;
+        const classes = Array.isArray(payload.classes) ? payload.classes : [];
+        const schedules = payload.schedules && typeof payload.schedules === 'object'
+          ? payload.schedules
+          : {};
+        doc.addPage({ layout: 'landscape' });
+        drawMasterByLevel(
+          doc, school, logoImg,
+          levelLabel, classes, schedules,
+          term, year, periods
+        );
+        break;
+      }
+
+      case 'duty': {
+        doc.addPage({ layout: 'landscape' });
+        drawDutyRoster(
+          doc, school, logoImg,
+          payload.roster || {},
+          term, year,
+          dutyAreas
+        );
+        break;
+      }
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error('[timetable-pdf] render failed:', err);
+    try { doc.end(); } catch {}
+    return json(500, { error: 'PDF render failed: ' + err.message });
+  }
+
+  let pdfBuffer;
+  try {
+    pdfBuffer = await done;
+  } catch (err) {
+    console.error('[timetable-pdf] stream failed:', err);
+    return json(500, { error: 'PDF stream failed: ' + err.message });
+  }
+
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition':
+        `inline; filename="timetable-${type}-${Date.now()}.pdf"`,
+      'Content-Length': String(pdfBuffer.length),
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    },
+    body: pdfBuffer.toString('base64'),
+    isBase64Encoded: true,
+  };
+};
