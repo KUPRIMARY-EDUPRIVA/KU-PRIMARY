@@ -26,6 +26,7 @@ import {
     restoreStudent,
     bulkUpdateStudents,
 } from '../services/studentService';
+import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
 
 // ============================================================
 // Constants
@@ -164,7 +165,6 @@ export default function Students() {
     const navigate = useNavigate();
     const {
         isOnline,
-        pendingCount,
         saveToIndexedDB,
         getFromIndexedDB,
         addToSyncQueue,
@@ -493,6 +493,15 @@ export default function Students() {
             try {
                 if (isOnline) {
                     await updateStudent(editingStudent.id, base, currentUser);
+                    await AuditLogService.logAction(
+                        schoolId,
+                        { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                        AUDIT_ACTIONS.STUDENT_UPDATED,
+                        {
+                            entityId: editingStudent.id,
+                            message: `Updated student ${editingStudent.studentId || editingStudent.admissionNumber || editingStudent.id}.`
+                        }
+                    );
                 } else {
                     await addToSyncQueue('students', 'update', { id: editingStudent.id, ...base });
                 }
@@ -548,6 +557,15 @@ export default function Students() {
 
             const payload = { ...base, studentId, history: [], isDeleted: false };
             const created = await createStudent(payload);
+            await AuditLogService.logAction(
+                schoolId,
+                { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                AUDIT_ACTIONS.STUDENT_CREATED,
+                {
+                    entityId: created.id,
+                    message: `Created student record ${studentId}.`
+                }
+            );
 
             setStudents((prev) => sortStudentsByAdmission([created, ...prev]));
             await saveToIndexedDB(`students_${schoolId}`,
@@ -575,6 +593,15 @@ export default function Students() {
         try {
             if (isOnline) {
                 await softDeleteStudent(student.id, currentUser?.uid);
+                await AuditLogService.logAction(
+                    schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                    AUDIT_ACTIONS.STUDENT_ARCHIVED,
+                    {
+                        entityId: student.id,
+                        message: `Archived student ${student.studentId || student.admissionNumber || student.id}.`
+                    }
+                );
             } else {
                 await addToSyncQueue('students', 'update', {
                     id: student.id,
@@ -600,6 +627,15 @@ export default function Students() {
         try {
             if (isOnline) {
                 await restoreStudent(student.id);
+                await AuditLogService.logAction(
+                    schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                    AUDIT_ACTIONS.STUDENT_RESTORED,
+                    {
+                        entityId: student.id,
+                        message: `Restored student ${student.studentId || student.admissionNumber || student.id}.`
+                    }
+                );
             } else {
                 await addToSyncQueue('students', 'update', {
                     id: student.id,
@@ -1296,27 +1332,6 @@ export default function Students() {
                 .action-btn.restore:hover { opacity:0.9; }
                 @media (max-width:768px) { .history-item { flex-direction:column; gap:5px; } }
             `}</style>
-
-            {/* Offline banner */}
-            {!isOnline && (
-                <div style={{
-                    background:'#fff3cd', color:'#856404', padding:'10px 20px',
-                    borderRadius:8, marginBottom:20, display:'flex',
-                    alignItems:'center', gap:10, fontSize:14, border:'1px solid #ffc107'
-                }}>
-                    <i className="fas fa-wifi-slash"></i>
-                    <span>
-                        You are offline. Editing existing students still works, but new students
-                        can only be added online so admission numbers stay unique.
-                    </span>
-                    {pendingCount > 0 && (
-                        <span style={{
-                            background:'#ffc107', color:'#856404', padding:'2px 10px',
-                            borderRadius:12, fontSize:12, fontWeight:600
-                        }}>{pendingCount} pending</span>
-                    )}
-                </div>
-            )}
 
             {usingCachedData && isOnline && (
                 <div style={{

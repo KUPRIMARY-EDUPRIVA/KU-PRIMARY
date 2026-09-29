@@ -12,6 +12,7 @@ import './Layout.css';
 export default function Layout({ children, title = 'Dashboard Overview' }) {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [showNotifications, setShowNotifications] = useState(false);
+    const [chatbotVisible, setChatbotVisible] = useState(true);
     const { currentUser, userData } = useAuth();
     const location = useLocation();
     const { notifications, unreadCount, markAsRead, markAllAsRead, formatTimeAgo } = useNotifications();
@@ -143,7 +144,7 @@ export default function Layout({ children, title = 'Dashboard Overview' }) {
             <Sidebar isOpen={sidebarOpen} onClose={closeSidebar} />
 
             {/* Edupriva AI Chatbot Widget */}
-            <EduprivaChatbot />
+            {chatbotVisible && <EduprivaChatbot onClose={() => setChatbotVisible(false)} />}
             
             {/* Main Content */}
             <div className="layout-main">
@@ -157,6 +158,17 @@ export default function Layout({ children, title = 'Dashboard Overview' }) {
                         <div className="subheader-right">
                             {/* Sync Status */}
                             <SyncStatus />
+
+                            {!chatbotVisible && (
+                                <button
+                                    className="subheader-notification-btn"
+                                    onClick={() => setChatbotVisible(true)}
+                                    aria-label="Show LABAN assistant"
+                                    title="Show LABAN assistant"
+                                >
+                                    <i className="fas fa-comment-dots"></i>
+                                </button>
+                            )}
                             
                             {/* Notifications */}
                             <div className="subheader-notification-wrapper" ref={notificationRef}>

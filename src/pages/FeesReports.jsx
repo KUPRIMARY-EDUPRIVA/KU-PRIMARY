@@ -26,7 +26,7 @@ export default function FeesReports() {
     const navigate = useNavigate();
     const { currentUser, userData } = useAuth();
     const { getLevelClasses } = useSchool();
-    const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
+    const { saveToIndexedDB, getFromIndexedDB } = useSync();
     const { 
         students, 
         feeBalances, 
@@ -579,24 +579,32 @@ export default function FeesReports() {
         `;
     };
 
-    const handleDownloadPDF = () => {
-        downloadFeeReportPDF({
-            summary: {
-                totalBilled: stats?.totalDue || 0,
-                totalCollected: stats?.totalCollected || 0,
-                totalBalance: stats?.outstanding || 0
-            },
-            records: (filteredData || []).map(item => ({
-                admissionNumber: item.admissionNumber || item.studentId,
-                studentName: `${item.firstName || ''} ${item.lastName || ''}`.trim(),
-                className: item.class || 'N/A',
-                billed: item.totalDue || 0,
-                paid: item.totalPaid || 0,
-                balance: item.currentBalance || 0,
-                status: item.status || 'Active'
-            }))
-        }, userData);
-        showNotification('PDF downloaded successfully!', 'success');
+    const handleDownloadPDF = async () => {
+        setGeneratingPDF(true);
+        try {
+            const result = await downloadFeeReportPDF({
+                summary: {
+                    totalBilled: stats?.totalDue || 0,
+                    totalCollected: stats?.totalCollected || 0,
+                    totalBalance: stats?.outstanding || 0
+                },
+                records: (filteredData || []).map(item => ({
+                    admissionNumber: item.admissionNumber || item.studentId,
+                    studentName: `${item.firstName || ''} ${item.lastName || ''}`.trim(),
+                    className: item.class || 'N/A',
+                    billed: item.totalDue || 0,
+                    paid: item.totalPaid || 0,
+                    balance: item.currentBalance || 0,
+                    status: item.status || 'Active'
+                }))
+            }, userData);
+            showNotification(`PDF saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+        } catch (error) {
+            console.error('Fee report PDF export failed:', error);
+            showNotification(`PDF export failed: ${error.message || 'Unable to save the report.'}`, 'error');
+        } finally {
+            setGeneratingPDF(false);
+        }
     };
 
     const showNotification = (message, type = 'info') => {
@@ -965,25 +973,6 @@ export default function FeesReports() {
             `}</style>
 
             <div className="reports-container">
-                {/* Offline indicator */}
-                {!isOnline && (
-                    <div style={{
-                        background: '#fff3cd',
-                        color: '#856404',
-                        padding: '10px 20px',
-                        borderRadius: '8px',
-                        marginBottom: '20px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        fontSize: '14px',
-                        border: '1px solid #ffc107'
-                    }}>
-                        <i className="fas fa-wifi-slash"></i>
-                        <span>You are offline. Data is cached and will sync when back online.</span>
-                    </div>
-                )}
-
                 {/* Header */}
                 <div className="report-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
@@ -1334,8 +1323,8 @@ export default function FeesReports() {
                             <button className="btn btn-outline" onClick={() => setShowReportModal(false)}>
                                 Close
                             </button>
-                            <button className="btn btn-success" onClick={handleDownloadPDF}>
-                                <i className="fas fa-download"></i> Download PDF
+                            <button className="btn btn-success" onClick={handleDownloadPDF} disabled={generatingPDF}>
+                                <i className={`fas ${generatingPDF ? 'fa-spinner fa-spin' : 'fa-download'}`}></i> {generatingPDF ? 'Saving PDF…' : 'Download PDF'}
                             </button>
                             <button className="btn btn-primary" onClick={() => window.print()}>
                                 <i className="fas fa-print"></i> Print

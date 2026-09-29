@@ -42,9 +42,9 @@ const generateStatementHash = (data) => {
 
 export default function Fees() {
     const navigate = useNavigate();
-    const { currentUser, userData } = useAuth();
+    const { currentUser, userData, userRole } = useAuth();
     const { getLevelClasses } = useSchool();
-    const { isOnline, pendingCount, saveToIndexedDB, getFromIndexedDB } = useSync();
+    const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
     const {
         students,
         feeBalances,
@@ -500,10 +500,20 @@ export default function Fees() {
 
             if (result.success) {
                 await AuditLogService.logAction(
-                    currentUser?.uid,
+                    userData?.schoolId,
+                    {
+                        uid: currentUser?.uid,
+                        fullName: userData?.fullName,
+                        email: currentUser?.email,
+                        role: userRole
+                    },
                     'FEE_PAYMENT',
-                    transaction.reference,
-                    { studentId: student.id, amount: transaction.amount, method: transaction.paymentMethod }
+                    {
+                        entityId: transaction.reference,
+                        studentId: student.id,
+                        amount: transaction.amount,
+                        method: transaction.paymentMethod
+                    }
                 );
                 showNotification('Fee payment recorded', 'success');
                 setShowFeeModal(false);
@@ -601,7 +611,17 @@ export default function Fees() {
                 createdByName: userData?.fullName || userData?.firstName || 'System'
             });
 
-            await AuditLogService.logAction(currentUser?.uid, 'INVOICES_CREATED', 'bulk', { count: result.count, term: invoiceForm.term });
+            await AuditLogService.logAction(
+                userData?.schoolId,
+                {
+                    uid: currentUser?.uid,
+                    fullName: userData?.fullName,
+                    email: currentUser?.email,
+                    role: userRole
+                },
+                'INVOICES_CREATED',
+                { count: result.count, term: invoiceForm.term }
+            );
             showNotification(`Invoices created for ${result.count} of ${selectedStudents.length} students`, 'success');
             setShowInvoiceModal(false);
             resetInvoiceForm();
@@ -1149,8 +1169,8 @@ export default function Fees() {
     const handleDownloadReceiptPDF = useCallback(async () => {
         if (!receiptData) return;
         try {
-            await downloadReceiptPDF(receiptData, schoolData);
-            showNotification('Receipt PDF downloaded', 'success');
+            const result = await downloadReceiptPDF(receiptData, schoolData);
+            showNotification(`Receipt saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (e) {
             console.error(e);
             showNotification('PDF generation failed', 'error');
@@ -1342,26 +1362,6 @@ export default function Fees() {
             <style>{feesStyles}</style>
 
             <div className="fees-container">
-                {/* Offline indicator */}
-                {!isOnline && (
-                    <div style={{
-                        background: '#fff3cd', color: '#856404', padding: '10px 20px',
-                        borderRadius: '8px', marginBottom: '20px', display: 'flex',
-                        alignItems: 'center', gap: '10px', fontSize: '14px',
-                        border: '1px solid #ffc107'
-                    }}>
-                        <i className="fas fa-wifi-slash"></i>
-                        <span>You are offline. Fee data is cached and will sync when back online.</span>
-                        {pendingCount > 0 && (
-                            <span style={{
-                                background: '#ffc107', color: '#856404',
-                                padding: '2px 10px', borderRadius: '12px',
-                                fontSize: '12px', fontWeight: '600'
-                            }}>{pendingCount} pending changes</span>
-                        )}
-                    </div>
-                )}
-
                 {/* Invoice Stats Summary */}
                 {invoiceStats && invoiceStats.total > 0 && (
                     <div style={{

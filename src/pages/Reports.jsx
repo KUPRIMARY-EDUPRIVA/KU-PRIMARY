@@ -371,8 +371,8 @@ export default function Reports() {
     const handleExportPDF = async () => {
         setExporting(true);
         try {
-            downloadExecutiveReportsPDF(kpis, userData, term, year);
-            notify('Executive report exported.', 'success');
+            const result = await downloadExecutiveReportsPDF(kpis, userData, term, year);
+            notify(`Executive report saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('PDF export failed:', err);
             notify('Export failed: ' + err.message, 'error');

@@ -27,6 +27,7 @@
     right: 0;
     z-index: 1000;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    box-sizing: border-box;
 }
 
 /* Left - Menu Button */
@@ -57,9 +58,11 @@
     gap: 10px;
     cursor: pointer;
     flex: 1;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 0 10px;
     height: 100%;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .logo-img {
@@ -75,8 +78,13 @@
     color: #1a237e;
     letter-spacing: 0.5px;
     text-align: left;
-    flex-grow: 0;
+    flex: 1 1 auto;
+    max-width: none;
     white-space: nowrap;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    align-self: center;
 }
 
 
@@ -797,6 +805,8 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    flex: 1;
+    min-width: 0;
 }
 
 .subheader-icon {
@@ -810,12 +820,25 @@
     font-weight: 600;
     color: #333;
     margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .subheader-right {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex-shrink: 0;
+}
+
+.sync-status {
+    flex-shrink: 0;
+}
+
+.chatbot-widget {
+    max-width: calc(100vw - 24px);
 }
 
 .subheader-notification-wrapper {
@@ -1035,6 +1058,30 @@
 
     .subheader-title {
         font-size: 14px;
+        max-width: 42vw;
+    }
+
+    @media (max-width: 600px) {
+        .sync-status {
+            padding: 4px 8px !important;
+            gap: 0 !important;
+        }
+
+        .sync-status-label,
+        .sync-status-pending,
+        .sync-status-time,
+        .sync-status button {
+            display: none !important;
+        }
+
+        .subheader-right {
+            gap: 6px;
+        }
+
+        .chatbot-widget {
+            right: 12px !important;
+            bottom: 12px !important;
+        }
     }
 
     .subheader-icon {

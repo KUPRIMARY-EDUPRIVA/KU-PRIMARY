@@ -1,9 +1,14 @@
 // src/components/Common/EduprivaChatbot.jsx
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { triggerSTKPush, fetchFeeBalance, fetchDailyCollections } from '../../utils/ChatbotActions';
+import {
+    findStudentByAdmissionNumber,
+    triggerSTKPush,
+    fetchFeeBalance,
+    fetchDailyCollections
+} from '../../utils/ChatbotActions';
 
-export default function EduprivaChatbot() {
+export default function EduprivaChatbot({ onClose }) {
     const { currentUser, userData } = useAuth();
     const schoolId = userData?.schoolId;
     const [isOpen, setIsOpen] = useState(false);
@@ -16,6 +21,7 @@ export default function EduprivaChatbot() {
     ]);
     const [input, setInput] = useState('');
     const [botState, setBotState] = useState({ step: 'IDLE', context: {} });
+    const [isProcessing, setIsProcessing] = useState(false);
     const messagesEndRef = useRef(null);
 
     const scrollToBottom = () => {
@@ -40,7 +46,18 @@ export default function EduprivaChatbot() {
         }]);
         setInput('');
 
-        await processInput(text);
+        setIsProcessing(true);
+        try {
+            await processInput(text);
+        } catch (error) {
+            setMessages(prev => [...prev, {
+                sender: 'bot',
+                text: error.message || 'Sorry, I could not complete that request. Please try again.',
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            }]);
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     const processInput = async (text) => {
@@ -49,20 +66,63 @@ export default function EduprivaChatbot() {
 
         // Handle State Machine
         if (botState.step === 'AWAITING_PHONE') {
-            setBotState({ step: 'AWAITING_AMOUNT', context: { ...botState.context, phone: text } });
-            reply.text = 'Please enter the amount to pay:';
+            const phone = text.replace(/[\s-]/g, '');
+            if (!/^(?:(?:\+?254)|0)?[17]\d{8}$/.test(phone)) {
+                reply.text = 'That phone number is not valid. Enter a Kenyan mobile number, for example 0712345678.';
+            } else {
+                setBotState({ step: 'AWAITING_AMOUNT', context: { ...botState.context, phone } });
+                reply.text = 'Please enter the amount to pay (a whole number greater than KES 10):';
+            }
         } else if (botState.step === 'AWAITING_AMOUNT') {
-            setBotState({ step: 'AWAITING_ADM', context: { ...botState.context, amount: text } });
-            reply.text = 'Please enter the student admission number:';
+            const amount = Number(text);
+            if (!/^\d+$/.test(text) || !Number.isSafeInteger(amount) || amount <= 10) {
+                reply.text = 'Enter a valid whole-number amount greater than KES 10.';
+            } else {
+                setBotState({ step: 'AWAITING_ADM', context: { ...botState.context, amount } });
+                reply.text = 'Please enter the student admission number:';
+            }
         } else if (botState.step === 'AWAITING_ADM') {
-            const { phone, amount } = botState.context;
-            const res = await triggerSTKPush(phone, amount, text, schoolId);
-            reply.text = res.message;
-            setBotState({ step: 'IDLE', context: {} });
+            const admissionNumber = text.trim();
+            if (!/^[A-Za-z0-9][A-Za-z0-9/-]{0,39}$/.test(admissionNumber)) {
+                reply.text = 'Enter a valid admission number using letters, numbers, hyphens, or slashes.';
+            } else {
+                const student = await findStudentByAdmissionNumber(admissionNumber, schoolId);
+                if (!student) {
+                    reply.text = `No student was found with admission number ${admissionNumber}. Please check it and try again.`;
+                } else {
+                    const studentName = `${student.firstName || ''} ${student.lastName || ''}`.trim()
+                        || student.fullName || student.name || 'Name not available';
+                    setBotState({
+                        step: 'AWAITING_PAYMENT_CONFIRMATION',
+                        context: { ...botState.context, admissionNumber, student, studentName }
+                    });
+                    reply.text = `Please confirm the student before I send the STK push:\n\nName: ${studentName}\nAdmission number: ${admissionNumber}\nAmount: KES ${botState.context.amount}\n\nReply YES to continue or NO to cancel.`;
+                }
+            }
+        } else if (botState.step === 'AWAITING_PAYMENT_CONFIRMATION') {
+            const confirmation = q.trim();
+            if (['yes', 'y', 'confirm'].includes(confirmation)) {
+                const { phone, amount, student } = botState.context;
+                const res = await triggerSTKPush(phone, amount, student, schoolId);
+                reply.text = res.message;
+                setBotState({ step: 'IDLE', context: {} });
+            } else if (['no', 'n', 'cancel'].includes(confirmation)) {
+                reply.text = 'Payment request cancelled. Type "Pay fee" to start again.';
+                setBotState({ step: 'IDLE', context: {} });
+            } else {
+                reply.text = 'Please reply YES to confirm the student and send the STK push, or NO to cancel.';
+            }
         } else if (botState.step === 'AWAITING_ADM_BALANCE') {
-            const res = await fetchFeeBalance(text, schoolId);
-            reply.text = `The fee balance for Adm No ${text} is ${res.balance}.`;
-            setBotState({ step: 'IDLE', context: {} });
+            const admissionNumber = text.trim();
+            if (!/^[A-Za-z0-9][A-Za-z0-9/-]{0,39}$/.test(admissionNumber)) {
+                reply.text = 'Enter a valid admission number using letters, numbers, hyphens, or slashes.';
+            } else {
+                const res = await fetchFeeBalance(admissionNumber, schoolId);
+                reply.text = res.success
+                    ? `The fee balance for Adm No ${admissionNumber} is ${res.balance}.`
+                    : res.balance;
+                setBotState({ step: 'IDLE', context: {} });
+            }
         } else {
             // Keyword Router
             reply = await routeKeyword(q);
@@ -122,36 +182,55 @@ export default function EduprivaChatbot() {
     };
 
     return (
-        <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9999, fontFamily: 'system-ui, sans-serif' }}>
+        <div className="chatbot-widget" style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9999, fontFamily: 'system-ui, sans-serif' }}>
             {!isOpen && (
-                <button
-                    onClick={() => setIsOpen(true)}
-                    style={{
-                        background: '#1a237e',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '50px',
-                        padding: '12px 20px',
-                        boxShadow: '0 8px 25px rgba(26, 35, 126, 0.35)',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        fontWeight: '700',
-                        fontSize: '14px',
-                        transition: 'all 0.3s ease'
-                    }}
-                    title="Chat with LABAN"
-                >
-                    <img src="/logo.png" alt="Logo" style={{ width: '28px', height: '28px', borderRadius: '50%' }} />
-                    ASSISTANT LABAN
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <button
+                        onClick={() => setIsOpen(true)}
+                        style={{
+                            background: '#1a237e',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '50px',
+                            padding: '12px 20px',
+                            boxShadow: '0 8px 25px rgba(26, 35, 126, 0.35)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '10px',
+                            fontWeight: '700',
+                            fontSize: '14px',
+                            transition: 'all 0.3s ease'
+                        }}
+                        title="Chat with LABAN"
+                    >
+                        <img src="/Logo.png" alt="EduPriva" style={{ width: '28px', height: '28px', objectFit: 'contain' }} />
+                        ASSISTANT LABAN
+                    </button>
+                    <button
+                        onClick={onClose}
+                        aria-label="Hide assistant"
+                        title="Hide assistant"
+                        style={{
+                            width: '30px',
+                            height: '30px',
+                            border: 'none',
+                            borderRadius: '50%',
+                            background: 'white',
+                            color: '#1a237e',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
             )}
 
             {isOpen && (
                 <div style={{
-                    width: '360px',
-                    height: '500px',
+                    width: 'min(360px, calc(100vw - 24px))',
+                    height: 'min(500px, calc(100dvh - 100px))',
                     background: 'white',
                     borderRadius: '16px',
                     boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
@@ -170,7 +249,7 @@ export default function EduprivaChatbot() {
                         justifyContent: 'space-between'
                     }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
-                            <img src="/logo.png" alt="Logo" style={{ width: '32px', height: '32px', borderRadius: '50%' }} />
+                            <img src="/Logo.png" alt="EduPriva" style={{ width: '32px', height: '32px', objectFit: 'contain' }} />
                             <div>
                                 <div style={{ fontWeight: '700', fontSize: '15px' }}>LABAN Assistant</div>
                                 <div style={{ fontSize: '11px', color: '#cbd5e1' }}>Online | System Guide</div>
@@ -188,6 +267,21 @@ export default function EduprivaChatbot() {
                             }}
                         >
                             <i className="fas fa-times"></i>
+                        </button>
+                        <button
+                            onClick={onClose}
+                            aria-label="Hide assistant"
+                            title="Hide assistant"
+                            style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'white',
+                                fontSize: '16px',
+                                cursor: 'pointer',
+                                padding: '4px'
+                            }}
+                        >
+                            <i className="fas fa-eye-slash"></i>
                         </button>
                     </div>
 
@@ -261,9 +355,11 @@ export default function EduprivaChatbot() {
                     }}>
                         <input
                             type="text"
+                            inputMode={botState.step === 'AWAITING_PHONE' ? 'tel' : botState.step === 'AWAITING_AMOUNT' ? 'numeric' : 'text'}
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            placeholder="Type a message or question..."
+                            placeholder={isProcessing ? 'Please wait...' : 'Type a message or question...'}
+                            disabled={isProcessing}
                             style={{
                                 flex: 1,
                                 padding: '8px 12px',
@@ -275,6 +371,7 @@ export default function EduprivaChatbot() {
                         />
                         <button
                             type="submit"
+                            disabled={isProcessing}
                             style={{
                                 background: '#1a237e',
                                 color: 'white',

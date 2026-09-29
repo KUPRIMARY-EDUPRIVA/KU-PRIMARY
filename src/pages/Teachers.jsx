@@ -20,12 +20,11 @@ import { LEVEL_SUBJECTS, LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/con
 
 export default function Teachers() {
   const navigate = useNavigate();
-  const { currentUser, userData } = useAuth();
+  const { currentUser, userData, userRole } = useAuth();
   const { getLevelClasses } = useSchool();
   const { 
     isOnline, 
     isSyncing, 
-    pendingCount,
     saveToIndexedDB,
     getFromIndexedDB,
     addToSyncQueue,
@@ -698,7 +697,12 @@ export default function Teachers() {
           if (editingTeacher.uid) {
             await updateDoc(doc(db, 'user_roles', editingTeacher.uid), { assignedClasses: data.classes });
           }
-          await AuditLogService.logAction(currentUser?.uid, 'TEACHER_UPDATED', editingTeacher.id, { email: data.email });
+          await AuditLogService.logAction(
+            schoolId,
+            { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+            'TEACHER_UPDATED',
+            { entityId: editingTeacher.id, email: data.email }
+          );
           showNotification('Teacher updated successfully', 'success');
         } else {
           // Offline - add to sync queue
@@ -733,7 +737,12 @@ export default function Teachers() {
           data.createdAt = new Date().toISOString();
           
           const docRef = await addDoc(collection(db, 'teachers'), data);
-          await AuditLogService.logAction(currentUser?.uid, 'TEACHER_CREATED', docRef.id, { email: data.email });
+          await AuditLogService.logAction(
+            schoolId,
+            { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+            'TEACHER_CREATED',
+            { entityId: docRef.id, email: data.email }
+          );
           
           if (result.existing) {
             showNotification(`Invitation resent to ${email}`, 'success');
@@ -1502,37 +1511,6 @@ export default function Teachers() {
         </div>
       )}
       
-      {/* Offline indicator */}
-      {!isOnline && (
-        <div style={{
-          background: '#fff3cd',
-          color: '#856404',
-          padding: '10px 20px',
-          borderRadius: '8px',
-          marginBottom: '20px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '10px',
-          fontSize: '14px',
-          border: '1px solid #ffc107'
-        }}>
-          <i className="fas fa-wifi-slash"></i>
-          <span>You are offline. Data is cached and will sync when back online.</span>
-          {pendingCount > 0 && (
-            <span style={{
-              background: '#ffc107',
-              color: '#856404',
-              padding: '2px 10px',
-              borderRadius: '12px',
-              fontSize: '12px',
-              fontWeight: '600'
-            }}>
-              {pendingCount} pending changes
-            </span>
-          )}
-        </div>
-      )}
-
       {/* Using cached data indicator */}
       {usingCachedData && isOnline && (
         <div style={{

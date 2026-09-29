@@ -747,91 +747,22 @@ export default function Exams() {
     return (
         <Layout title="Exams (CBC/CBE)">
             {/* Stats Grid */}
-            <div className="stats-grid" style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '20px',
-                marginBottom: '30px'
-            }}>
-                <div className="stat-card" style={{
-                    background: 'white',
-                    borderRadius: '12px',
-                    padding: '20px',
-                    boxShadow: '0 4px 6px rgba(0,0,0,0.07)'
-                }}>
-                    <div className="stat-label" style={{
-                        fontSize: '13px',
-                        color: '#95a5a6',
-                        fontWeight: '500',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                    }}>Total Exams</div>
-                    <div className="stat-value" style={{
-                        fontSize: '28px',
-                        fontWeight: '700',
-                        color: '#2c3e50',
-                        marginTop: '5px'
-                    }}>{stats.total}</div>
+            <div className="stats-grid">
+                <div className="stat-card">
+                    <div className="stat-label">Total Exams</div>
+                    <div className="stat-value">{stats.total}</div>
                 </div>
-                <div className="stat-card" style={{
-                    background: 'white',
-                    borderRadius: '12px',
-                    padding: '20px',
-                    boxShadow: '0 4px 6px rgba(0,0,0,0.07)'
-                }}>
-                    <div className="stat-label" style={{
-                        fontSize: '13px',
-                        color: '#95a5a6',
-                        fontWeight: '500',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                    }}>Active</div>
-                    <div className="stat-value" style={{
-                        fontSize: '28px',
-                        fontWeight: '700',
-                        color: '#27ae60',
-                        marginTop: '5px'
-                    }}>{stats.active}</div>
+                <div className="stat-card">
+                    <div className="stat-label">Active</div>
+                    <div className="stat-value">{stats.active}</div>
                 </div>
-                <div className="stat-card" style={{
-                    background: 'white',
-                    borderRadius: '12px',
-                    padding: '20px',
-                    boxShadow: '0 4px 6px rgba(0,0,0,0.07)'
-                }}>
-                    <div className="stat-label" style={{
-                        fontSize: '13px',
-                        color: '#95a5a6',
-                        fontWeight: '500',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                    }}>Upcoming</div>
-                    <div className="stat-value" style={{
-                        fontSize: '28px',
-                        fontWeight: '700',
-                        color: '#3498db',
-                        marginTop: '5px'
-                    }}>{stats.upcoming}</div>
+                <div className="stat-card">
+                    <div className="stat-label">Upcoming</div>
+                    <div className="stat-value">{stats.upcoming}</div>
                 </div>
-                <div className="stat-card" style={{
-                    background: 'white',
-                    borderRadius: '12px',
-                    padding: '20px',
-                    boxShadow: '0 4px 6px rgba(0,0,0,0.07)'
-                }}>
-                    <div className="stat-label" style={{
-                        fontSize: '13px',
-                        color: '#95a5a6',
-                        fontWeight: '500',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
-                    }}>Completed</div>
-                    <div className="stat-value" style={{
-                        fontSize: '28px',
-                        fontWeight: '700',
-                        color: '#95a5a6',
-                        marginTop: '5px'
-                    }}>{stats.completed}</div>
+                <div className="stat-card">
+                    <div className="stat-label">Completed</div>
+                    <div className="stat-value">{stats.completed}</div>
                 </div>
             </div>
 

@@ -1,181 +1,211 @@
-// src/pages/Transcripts.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
-import { getYearOptions } from '../utils/constants';
+import { downloadTranscriptPDF } from '../services/pdf';
+import './Transcripts.css';
+
+const isAdminRole = (role) =>
+    ['admin', 'user', 'school_admin', 'super-admin', 'super_admin'].includes(role);
+
+const toDate = (value) => {
+    if (!value) return null;
+    const date = value?.toDate?.() || new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const displayName = (student) =>
+    [student?.firstName, student?.lastName].filter(Boolean).join(' ') || 'Student';
 
 export default function Transcripts() {
     const { userData, userRole } = useAuth();
+    const schoolId = userData?.schoolId;
+    const isAdmin = [userRole, userData?.role].some(isAdminRole);
     const [archivedStudents, setArchivedStudents] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
-    const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
+    const [selectedYear, setSelectedYear] = useState('all');
     const [selectedStudent, setSelectedStudent] = useState(null);
+    const [studentScores, setStudentScores] = useState([]);
+    const [loadingScores, setLoadingScores] = useState(false);
+    const [allSchoolScores, setAllSchoolScores] = useState(null);
+    const [exporting, setExporting] = useState(false);
+    const [notice, setNotice] = useState('');
 
-    const isAdmin = userRole === 'admin' || userRole === 'user' || userRole === 'school_admin';
-    const yearOptions = getYearOptions();
-
-    useEffect(() => {
-        if (userData?.schoolId && isAdmin) {
-            loadArchivedStudents();
-        } else {
+    const loadArchivedStudents = useCallback(async () => {
+        if (!schoolId || !isAdmin) {
             setLoading(false);
+            return;
         }
-    }, [userData, isAdmin, selectedYear]);
-
-    const loadArchivedStudents = async () => {
+        setLoading(true);
+        setLoadError('');
         try {
-            setLoading(true);
-            const q = query(
+            const snapshot = await getDocs(query(
                 collection(db, 'archived_students'),
-                where('schoolId', '==', userData.schoolId)
-            );
-            const snap = await getDocs(q);
-            let list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            
-            // Filter by year if selected
-            if (selectedYear) {
-                list = list.filter(item => String(item.academicYear || item.year || '') === String(selectedYear));
-            }
-
-            setArchivedStudents(list);
-        } catch (err) {
-            console.error('Error loading archived students:', err);
-            setArchivedStudents([]);
+                where('schoolId', '==', schoolId)
+            ));
+            setArchivedStudents(snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+        } catch (error) {
+            console.error('Error loading archived students:', error);
+            setLoadError(error.message || 'Could not load archived student records.');
         } finally {
             setLoading(false);
         }
+    }, [schoolId, isAdmin]);
+
+    useEffect(() => {
+        loadArchivedStudents();
+    }, [loadArchivedStudents]);
+
+    useEffect(() => {
+        setAllSchoolScores(null);
+    }, [schoolId]);
+
+    const years = useMemo(() => [...new Set(archivedStudents
+        .map((student) => String(student.academicYear || student.year || ''))
+        .filter(Boolean))]
+        .sort((a, b) => Number(b) - Number(a)), [archivedStudents]);
+
+    const filteredStudents = useMemo(() => {
+        const term = searchTerm.trim().toLowerCase();
+        return archivedStudents
+            .filter((student) => selectedYear === 'all'
+                || String(student.academicYear || student.year || '') === selectedYear)
+            .filter((student) => {
+                const admission = String(student.admissionNumber || student.studentId || '').toLowerCase();
+                return !term || displayName(student).toLowerCase().includes(term) || admission.includes(term);
+            })
+            .sort((a, b) => displayName(a).localeCompare(displayName(b)));
+    }, [archivedStudents, searchTerm, selectedYear]);
+
+    const handleViewTranscript = async (student) => {
+        setSelectedStudent(student);
+        setStudentScores([]);
+        setNotice('');
+        setLoadingScores(true);
+        try {
+            let scores = allSchoolScores;
+            if (!scores) {
+                const scoresQuery = query(
+                    collection(db, 'student_scores'),
+                    where('schoolId', '==', schoolId)
+                );
+                const snapshot = await getDocs(scoresQuery);
+                scores = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+                setAllSchoolScores(scores);
+            }
+            const admission = String(student.admissionNumber || student.studentId || '');
+            const records = scores
+                .filter((score) => score.studentId === student.studentId
+                    || score.studentId === student.id
+                    || (admission && String(score.admissionNumber || '') === admission))
+                .sort((a, b) => {
+                    const yearDiff = Number(a.year || a.academicYear || 0) - Number(b.year || b.academicYear || 0);
+                    if (yearDiff) return yearDiff;
+                    return String(a.term || '').localeCompare(String(b.term || ''));
+                });
+            setStudentScores(records);
+            if (!records.length) {
+                setNotice('No academic score records were found for this student. Archived promotion history is shown below when available.');
+            }
+        } catch (error) {
+            console.error('Transcript score lookup failed:', error);
+            setNotice(`Could not load academic scores: ${error.message}`);
+        } finally {
+            setLoadingScores(false);
+        }
     };
 
-    const filteredStudents = archivedStudents.filter(s => {
-        const queryStr = searchTerm.toLowerCase();
-        const fullName = `${s.firstName || ''} ${s.lastName || ''}`.toLowerCase();
-        const admNo = String(s.admissionNumber || s.studentId || '').toLowerCase();
-        return fullName.includes(queryStr) || admNo.includes(queryStr);
-    });
+    const handleExport = async () => {
+        if (!selectedStudent) return;
+        setExporting(true);
+        setNotice('');
+        try {
+            const result = await downloadTranscriptPDF(selectedStudent, studentScores, userData);
+            setNotice(`Transcript saved${result?.filename ? ` as ${result.filename}` : ' to Downloads'}.`);
+        } catch (error) {
+            console.error('Transcript PDF export failed:', error);
+            setNotice(`Transcript export failed: ${error.message}`);
+        } finally {
+            setExporting(false);
+        }
+    };
 
     if (!isAdmin) {
         return (
-            <Layout>
-                <div style={{ padding: '40px', textAlign: 'center' }}>
-                    <h2>Access Denied</h2>
-                    <p style={{ color: '#64748b' }}>Student transcripts and archives are only accessible to administrators.</p>
+            <Layout title="Transcripts">
+                <div className="transcripts-denied">
+                    <h2>Access denied</h2>
+                    <p>Student transcripts and archives are available to school administrators only.</p>
                 </div>
             </Layout>
         );
     }
 
     if (loading) {
-        return (
-            <Layout>
-                <LoadingSpinner fullScreen text="Loading student archives & transcripts..." />
-            </Layout>
-        );
+        return <Layout title="Transcripts"><LoadingSpinner fullScreen text="Loading student archives..." /></Layout>;
     }
 
     return (
-        <Layout>
-            <div style={{ padding: '24px', maxWidth: '1400px', margin: '0 auto' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
+        <Layout title="Student Transcripts">
+            <main className="transcripts-page">
+                <header className="transcripts-header">
                     <div>
-                        <h1 style={{ fontSize: '24px', fontWeight: '700', color: '#1a237e', margin: '0 0 4px 0' }}>
-                            Student Transcripts & Archives
-                        </h1>
-                        <p style={{ fontSize: '14px', color: '#64748b', margin: 0 }}>
-                            Access archived student academic records, promotions, and historical transcripts by academic year.
-                        </p>
+                        <h1>Student Transcripts &amp; Archives</h1>
+                        <p>Review historical academic results and promotion records for archived students.</p>
                     </div>
-                    <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                        <label style={{ fontSize: '13px', fontWeight: '600', color: '#334155' }}>Academic Year:</label>
-                        <select
-                            value={selectedYear}
-                            onChange={(e) => setSelectedYear(e.target.value)}
-                            style={{
-                                padding: '8px 12px',
-                                border: '1px solid #cbd5e1',
-                                borderRadius: '8px',
-                                fontSize: '14px',
-                                background: '#fff',
-                                fontWeight: '600',
-                                color: '#1a237e'
-                            }}
-                        >
-                            {yearOptions.map(y => (
-                                <option key={y} value={y}>{y}</option>
-                            ))}
+                    <button type="button" className="transcripts-button secondary" onClick={loadArchivedStudents}>
+                        <i className="fas fa-sync-alt" aria-hidden="true"></i> Refresh
+                    </button>
+                </header>
+
+                {loadError && <div className="transcripts-notice error" role="alert">{loadError}</div>}
+                {notice && <div className="transcripts-notice" role="status">{notice}</div>}
+
+                <section className="transcripts-toolbar" aria-label="Transcript filters">
+                    <label>
+                        Academic year
+                        <select value={selectedYear} onChange={(event) => setSelectedYear(event.target.value)}>
+                            <option value="all">All years</option>
+                            {years.map((year) => <option key={year} value={year}>{year}</option>)}
                         </select>
-                    </div>
-                </div>
-
-                {/* Search & Overview */}
-                <div style={{ marginBottom: '20px' }}>
-                    <div style={{ position: 'relative', maxWidth: '400px' }}>
-                        <i className="fas fa-search" style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}></i>
+                    </label>
+                    <label className="transcripts-search">
+                        Search archived students
                         <input
-                            type="text"
-                            placeholder="Search by student name or admission number..."
+                            type="search"
                             value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            style={{
-                                width: '100%',
-                                padding: '10px 12px 10px 38px',
-                                border: '1px solid #cbd5e1',
-                                borderRadius: '8px',
-                                fontSize: '14px',
-                                outline: 'none',
-                                boxSizing: 'border-box'
-                            }}
+                            onChange={(event) => setSearchTerm(event.target.value)}
+                            placeholder="Name or admission number"
                         />
-                    </div>
-                </div>
+                    </label>
+                </section>
 
-                {/* Grid / List of Archived Students */}
-                <div style={{ display: 'grid', gridTemplateColumns: selectedStudent ? '1fr 1fr' : '1fr', gap: '24px' }}>
-                    <div style={{ background: '#fff', borderRadius: '12px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden', border: '1px solid #e2e8f0' }}>
-                        <div style={{ padding: '16px 20px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontWeight: '600', color: '#1e293b' }}>
-                            Archived Students ({filteredStudents.length}) - Year {selectedYear}
-                        </div>
-                        {filteredStudents.length === 0 ? (
-                            <div style={{ padding: '40px', textAlign: 'center', color: '#64748b' }}>
-                                <i className="fas fa-archive" style={{ fontSize: '40px', color: '#cbd5e1', marginBottom: '12px' }}></i>
-                                <p style={{ fontSize: '15px', fontWeight: '600', margin: '0 0 4px' }}>No archived records found for {selectedYear}</p>
-                                <p style={{ fontSize: '13px', margin: 0 }}>Student records are automatically archived upon bulk grade promotion.</p>
+                <div className={`transcripts-content${selectedStudent ? ' has-selection' : ''}`}>
+                    <section className="transcripts-card transcripts-list">
+                        <h2>Archived students <span>({filteredStudents.length})</span></h2>
+                        {!filteredStudents.length ? (
+                            <div className="transcripts-empty">
+                                <i className="fas fa-archive" aria-hidden="true"></i>
+                                <strong>No archived students found</strong>
+                                <p>Try another year or search term, or refresh the records.</p>
                             </div>
                         ) : (
-                            <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
-                                    <thead>
-                                        <tr style={{ background: '#f1f5f9', borderBottom: '1px solid #cbd5e1', color: '#475569', fontWeight: '600' }}>
-                                            <th style={{ padding: '12px 16px' }}>Adm No</th>
-                                            <th style={{ padding: '12px 16px' }}>Student Name</th>
-                                            <th style={{ padding: '12px 16px' }}>Class / Level</th>
-                                            <th style={{ padding: '12px 16px', textAlign: 'right' }}>Actions</th>
-                                        </tr>
-                                    </thead>
+                            <div className="transcripts-table-scroll">
+                                <table>
+                                    <thead><tr><th>Admission No.</th><th>Student</th><th>Class</th><th></th></tr></thead>
                                     <tbody>
-                                        {filteredStudents.map((s, idx) => (
-                                            <tr key={s.id || idx} style={{ borderBottom: '1px solid #e2e8f0', background: selectedStudent?.id === s.id ? '#f0fdf4' : (idx % 2 === 0 ? '#fff' : '#fafafa') }}>
-                                                <td style={{ padding: '12px 16px', fontWeight: '600', color: '#1a237e' }}>{s.admissionNumber || s.studentId || 'N/A'}</td>
-                                                <td style={{ padding: '12px 16px', fontWeight: '600', color: '#1e293b' }}>{s.firstName} {s.lastName}</td>
-                                                <td style={{ padding: '12px 16px', color: '#64748b' }}>{s.class || s.level || 'N/A'}</td>
-                                                <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                                                    <button
-                                                        onClick={() => setSelectedStudent(s)}
-                                                        style={{
-                                                            background: '#1a237e',
-                                                            color: '#fff',
-                                                            border: 'none',
-                                                            padding: '6px 12px',
-                                                            borderRadius: '6px',
-                                                            cursor: 'pointer',
-                                                            fontSize: '12px',
-                                                            fontWeight: '600'
-                                                        }}
-                                                    >
-                                                        View Transcript
+                                        {filteredStudents.map((student) => (
+                                            <tr key={student.id} className={selectedStudent?.id === student.id ? 'selected' : ''}>
+                                                <td>{student.admissionNumber || student.studentId || '—'}</td>
+                                                <td>{displayName(student)}</td>
+                                                <td>{student.class || student.level || '—'}</td>
+                                                <td>
+                                                    <button type="button" className="transcripts-button view" onClick={() => handleViewTranscript(student)}>
+                                                        View
                                                     </button>
                                                 </td>
                                             </tr>
@@ -184,71 +214,87 @@ export default function Transcripts() {
                                 </table>
                             </div>
                         )}
-                    </div>
+                    </section>
 
-                    {/* Transcript Detail Panel */}
                     {selectedStudent && (
-                        <div style={{ background: '#fff', borderRadius: '12px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', border: '1px solid #e2e8f0', padding: '24px', position: 'relative' }}>
-                            <button
-                                onClick={() => setSelectedStudent(null)}
-                                style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: '#64748b' }}
-                            >
-                                <i className="fas fa-times"></i>
-                            </button>
+                        <section className="transcripts-card transcripts-detail">
+                            <header>
+                                <div>
+                                    <h2>Official academic transcript</h2>
+                                    <p>{displayName(selectedStudent)} · {selectedStudent.admissionNumber || selectedStudent.studentId || '—'}</p>
+                                </div>
+                                <button type="button" className="transcripts-close" onClick={() => {
+                                    setSelectedStudent(null);
+                                    setStudentScores([]);
+                                    setNotice('');
+                                }} aria-label="Close transcript"><i className="fas fa-times"></i></button>
+                            </header>
 
-                            <div style={{ borderBottom: '2px solid #1a237e', paddingBottom: '12px', marginBottom: '20px' }}>
-                                <h2 style={{ fontSize: '18px', fontWeight: '700', color: '#1a237e', margin: '0 0 4px' }}>Official Academic Transcript</h2>
-                                <p style={{ fontSize: '12px', color: '#64748b', margin: 0 }}>Academic Year: {selectedStudent.academicYear || selectedYear}</p>
+                            <div className="transcripts-student-facts">
+                                <div><span>Academic year</span><strong>{selectedStudent.academicYear || selectedStudent.year || '—'}</strong></div>
+                                <div><span>Class / level</span><strong>{[selectedStudent.class, selectedStudent.level].filter(Boolean).join(' / ') || '—'}</strong></div>
+                                <div><span>Gender</span><strong>{selectedStudent.gender || '—'}</strong></div>
+                                <div><span>Archived</span><strong>{toDate(selectedStudent.archivedAt)?.toLocaleDateString() || '—'}</strong></div>
                             </div>
 
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px', fontSize: '13px' }}>
-                                <div><strong>Student Name:</strong> {selectedStudent.firstName} {selectedStudent.lastName}</div>
-                                <div><strong>Admission Number:</strong> {selectedStudent.admissionNumber || selectedStudent.studentId}</div>
-                                <div><strong>Class / Level:</strong> {selectedStudent.class || selectedStudent.level || 'N/A'}</div>
-                                <div><strong>Gender:</strong> {selectedStudent.gender || 'N/A'}</div>
-                                <div><strong>Status:</strong> <span style={{ textTransform: 'uppercase', fontWeight: '600', color: '#059669' }}>{selectedStudent.status || 'Archived'}</span></div>
-                                <div><strong>Archived Date:</strong> {selectedStudent.archivedAt ? new Date(selectedStudent.archivedAt).toLocaleDateString() : 'N/A'}</div>
+                            <h3>Academic results</h3>
+                            {loadingScores ? <LoadingSpinner text="Loading academic results..." /> : (
+                                <div className="transcripts-table-scroll">
+                                    <table>
+                                        <thead><tr><th>Year</th><th>Term</th><th>Assessment</th><th>Subject</th><th>Score</th><th>Grade</th></tr></thead>
+                                        <tbody>
+                                            {studentScores.map((score) => (
+                                                <tr key={score.id}>
+                                                    <td>{score.year || score.academicYear || '—'}</td>
+                                                    <td>{score.term || '—'}</td>
+                                                    <td>{score.assessmentType || score.assessment || '—'}</td>
+                                                    <td>{score.subject || score.subjectName || '—'}</td>
+                                                    <td>{score.score ?? '—'}{score.outOf ? ` / ${score.outOf}` : ''}</td>
+                                                    <td>{score.grade || '—'}</td>
+                                                </tr>
+                                            ))}
+                                            {!studentScores.length && !loadingScores && (
+                                                <tr><td colSpan="6" className="transcripts-no-results">No scores found for this archived student.</td></tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+
+                            <h3>Promotion history</h3>
+                            <div className="transcripts-table-scroll">
+                                <table>
+                                    <thead><tr><th>Year</th><th>Previous class</th><th>Promoted to</th><th>Date</th></tr></thead>
+                                    <tbody>
+                                        {(selectedStudent.historicalRecords || selectedStudent.history || [])
+                                            .filter((record) => record.type === 'promotion')
+                                            .map((record, index) => (
+                                                <tr key={`${record.year || record.academicYear || 'promotion'}-${index}`}>
+                                                    <td>{record.year || record.academicYear || '—'}</td>
+                                                    <td>{[record.fromLevel, record.fromClass].filter(Boolean).join(' / ') || '—'}</td>
+                                                    <td>{[record.toLevel, record.toClass].filter(Boolean).join(' / ') || '—'}</td>
+                                                    <td>{toDate(record.date)?.toLocaleDateString() || '—'}</td>
+                                                </tr>
+                                            ))}
+                                        {!(selectedStudent.historicalRecords || selectedStudent.history || []).some((record) => record.type === 'promotion')
+                                            && <tr><td colSpan="4" className="transcripts-no-results">No promotion history is recorded.</td></tr>}
+                                    </tbody>
+                                </table>
                             </div>
 
-                            <h3 style={{ fontSize: '14px', fontWeight: '700', color: '#1a237e', marginBottom: '10px' }}>Historical Academic Performance & Records</h3>
-                            <div style={{ background: '#f8fafc', padding: '16px', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '13px', minHeight: '150px' }}>
-                                {selectedStudent.historicalRecords && selectedStudent.historicalRecords.length > 0 ? (
-                                    <ul>
-                                        {selectedStudent.historicalRecords.map((rec, i) => (
-                                            <li key={i}>{rec.title || rec.term}: {rec.score || rec.grade || 'Completed'}</li>
-                                        ))}
-                                    </ul>
-                                ) : (
-                                    <p style={{ color: '#64748b', margin: 0, textAlign: 'center', paddingTop: '40px' }}>
-                                        Personal information and promotion history retained. Full historical marks archived successfully for {selectedStudent.academicYear || selectedYear}.
-                                    </p>
-                                )}
-                            </div>
-
-                            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
-                                <button
-                                    onClick={() => window.print()}
-                                    style={{
-                                        background: '#0284c7',
-                                        color: '#fff',
-                                        border: 'none',
-                                        padding: '8px 16px',
-                                        borderRadius: '6px',
-                                        cursor: 'pointer',
-                                        fontWeight: '600',
-                                        fontSize: '13px',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '6px'
-                                    }}
-                                >
-                                    <i className="fas fa-print"></i> Print Transcript
+                            <div className="transcripts-actions">
+                                <button type="button" className="transcripts-button secondary" onClick={() => window.print()}>
+                                    <i className="fas fa-print" aria-hidden="true"></i> Print
+                                </button>
+                                <button type="button" className="transcripts-button primary" onClick={handleExport} disabled={exporting || loadingScores}>
+                                    <i className={`fas ${exporting ? 'fa-spinner fa-spin' : 'fa-file-pdf'}`} aria-hidden="true"></i>
+                                    {exporting ? 'Saving PDF…' : 'Export PDF'}
                                 </button>
                             </div>
-                        </div>
+                        </section>
                     )}
                 </div>
-            </div>
+            </main>
         </Layout>
     );
 }

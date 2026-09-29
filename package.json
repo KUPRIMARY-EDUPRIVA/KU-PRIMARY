@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "@capacitor/android": "^7.6.9",
+    "@capacitor/core": "^7.6.9",
     "@cloudinary/react": "^1.11.0",
     "@cloudinary/url-gen": "^1.10.0",
     "axios": "^1.4.0",
@@ -29,6 +31,7 @@
     "start": "PORT=3000 HOST=0.0.0.0 react-scripts start",
     "dev": "PORT=3000 HOST=0.0.0.0 react-scripts start",
     "build": "react-scripts build",
+    "android:build": "node scripts/build-android.js",
     "lint": "eslint src",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
@@ -52,7 +55,12 @@
     ]
   },
   "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^7.6.9",
     "@types/react": "^18.2.14",
     "@types/react-dom": "^18.2.6"
+  },
+  "allowScripts": {
+    "sharp@0.32.6": true
   }
 }

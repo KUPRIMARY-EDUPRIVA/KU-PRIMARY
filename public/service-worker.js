@@ -1,224 +1,104 @@
-// public/service-worker.js
-const CACHE_NAME = 'edupriva-v1';
-const RUNTIME_CACHE = 'edupriva-runtime';
-
-// Assets to cache on install
-const PRECACHE_ASSETS = [
+const CACHE_NAME = 'edupriva-v2';
+const RUNTIME_CACHE = 'edupriva-runtime-v2';
+const CORE_ASSETS = [
     '/',
     '/index.html',
-    '/logo.png',
+    '/Logo.png',
     '/manifest.json',
-    '/favicon.ico',
-    // Add your static assets here
+    '/asset-manifest.json',
+    '/icons/icon-192.webp'
 ];
 
-// Install event - cache essential assets
-self.addEventListener('install', function(event) {
-    console.log('📦 Service Worker installing...');
-    
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(function(cache) {
-                console.log('📦 Pre-caching essential assets');
-                return cache.addAll(PRECACHE_ASSETS);
-            })
-            .then(function() {
-                console.log('✅ Service Worker installed successfully');
-                return self.skipWaiting();
-            })
-            .catch(function(error) {
-                console.error('❌ Service Worker installation failed:', error);
-            })
-    );
+self.addEventListener('install', (event) => {
+    event.waitUntil((async () => {
+        const cache = await caches.open(CACHE_NAME);
+        const manifestResponse = await fetch('/asset-manifest.json');
+        if (!manifestResponse.ok) {
+            throw new Error(`Unable to load build asset manifest (${manifestResponse.status})`);
+        }
+
+        const manifest = await manifestResponse.json();
+        const buildAssets = Object.values(manifest.files || {})
+            .filter((file) => typeof file === 'string' && file.startsWith('/static/'));
+
+        await cache.addAll([...new Set([...CORE_ASSETS, ...buildAssets])]);
+        await self.skipWaiting();
+    })());
 });
 
-// Activate event - clean up old caches
-self.addEventListener('activate', function(event) {
-    console.log('🔧 Service Worker activating...');
-    
-    const cacheWhitelist = [CACHE_NAME, RUNTIME_CACHE];
-    
-    event.waitUntil(
-        caches.keys()
-            .then(function(cacheNames) {
-                return Promise.all(
-                    cacheNames.map(function(cacheName) {
-                        if (!cacheWhitelist.includes(cacheName)) {
-                            console.log('🗑️ Deleting old cache:', cacheName);
-                            return caches.delete(cacheName);
-                        }
-                    })
-                );
-            })
-            .then(function() {
-                console.log('✅ Service Worker activated successfully');
-                return self.clients.claim();
-            })
-    );
+self.addEventListener('activate', (event) => {
+    event.waitUntil((async () => {
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames
+            .filter((name) => ![CACHE_NAME, RUNTIME_CACHE].includes(name))
+            .map((name) => caches.delete(name)));
+        await self.clients.claim();
+    })());
 });
 
-// Fetch event - serve from cache, fallback to network
-self.addEventListener('fetch', function(event) {
+self.addEventListener('fetch', (event) => {
     const request = event.request;
     const url = new URL(request.url);
-    
-    // Skip cross-origin requests
-    if (url.origin !== self.location.origin) {
+
+    if (url.origin !== self.location.origin || request.method !== 'GET') return;
+
+    if (request.mode === 'navigate') {
+        event.respondWith(fetch(request).catch(() => caches.match('/index.html')));
         return;
     }
-    
-    // Skip non-GET requests
-    if (request.method !== 'GET') {
-        return;
-    }
-    
-    // Skip Firebase and analytics requests
-    if (url.pathname.includes('firebase') || 
-        url.pathname.includes('google-analytics') ||
-        url.pathname.includes('cloudinary')) {
-        return;
-    }
-    
-    event.respondWith(
-        caches.match(request)
-            .then(function(cachedResponse) {
-                // Return cached response if available
-                if (cachedResponse) {
-                    // Update cache in background for stale-while-revalidate
-                    if (navigator.onLine) {
-                        fetch(request)
-                            .then(function(networkResponse) {
-                                if (networkResponse && networkResponse.status === 200) {
-                                    const cache = caches.open(RUNTIME_CACHE);
-                                    cache.then(function(c) {
-                                        c.put(request, networkResponse.clone());
-                                    });
-                                }
-                            })
-                            .catch(function(error) {
-                                // Silent fail
-                            });
-                    }
-                    return cachedResponse;
-                }
-                
-                // If not in cache, fetch from network
-                return fetch(request)
-                    .then(function(networkResponse) {
-                        // Cache successful responses
-                        if (networkResponse && networkResponse.status === 200) {
-                            const responseClone = networkResponse.clone();
-                            caches.open(RUNTIME_CACHE)
-                                .then(function(cache) {
-                                    cache.put(request, responseClone);
-                                })
-                                .catch(function(error) {
-                                    console.error('Error caching response:', error);
-                                });
-                        }
-                        return networkResponse;
-                    })
-                    .catch(function(error) {
-                        console.error('Fetch error:', error);
-                        // Return offline fallback for HTML pages
-                        if (request.headers.get('accept').includes('text/html')) {
-                            return caches.match('/offline.html');
-                        }
-                        // Return error response
-                        return new Response('Offline - Please check your connection.', {
-                            status: 503,
-                            statusText: 'Service Unavailable'
-                        });
-                    });
-            })
-    );
+
+    event.respondWith((async () => {
+        const cached = await caches.match(request);
+        if (cached) return cached;
+
+        const response = await fetch(request);
+        if (response.ok) {
+            const cache = await caches.open(RUNTIME_CACHE);
+            await cache.put(request, response.clone());
+        }
+        return response;
+    })());
 });
 
-// Background sync for offline operations
-self.addEventListener('sync', function(event) {
-    if (event.tag === 'sync-data') {
-        console.log('🔄 Background sync triggered');
-        event.waitUntil(
-            // Notify all clients to sync data
-            self.clients.matchAll()
-                .then(function(clients) {
-                    clients.forEach(function(client) {
-                        client.postMessage({
-                            type: 'SYNC_TRIGGERED',
-                            timestamp: Date.now()
-                        });
-                    });
-                })
-        );
-    }
-});
+self.addEventListener('sync', (event) => {
+    if (event.tag !== 'sync-data') return;
 
-// Message handling for communication with main thread
-self.addEventListener('message', function(event) {
-    const data = event.data;
-    
-    if (data.type === 'SKIP_WAITING') {
-        self.skipWaiting();
-    }
-    
-    if (data.type === 'GET_VERSION') {
-        event.ports[0].postMessage({
-            version: CACHE_NAME,
+    event.waitUntil(self.clients.matchAll().then((clients) => {
+        clients.forEach((client) => client.postMessage({
+            type: 'SYNC_TRIGGERED',
             timestamp: Date.now()
-        });
+        }));
+    }));
+});
+
+self.addEventListener('message', (event) => {
+    if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+
+    if (event.data?.type === 'GET_VERSION') {
+        event.ports[0]?.postMessage({ version: CACHE_NAME, timestamp: Date.now() });
     }
 });
 
-// Handle push notifications
-self.addEventListener('push', function(event) {
-    const data = event.data.json();
-    
-    const options = {
+self.addEventListener('push', (event) => {
+    const data = event.data?.json() || {};
+    event.waitUntil(self.registration.showNotification(data.title || 'Edupriva', {
         body: data.body || 'New notification from Edupriva',
-        icon: '/logo-192.png',
-        badge: '/logo-192.png',
-        vibrate: [200, 100, 200],
-        data: {
-            url: data.url || '/',
-            timestamp: Date.now()
-        },
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        data: { url: data.url || '/', timestamp: Date.now() },
         actions: [
-            {
-                action: 'view',
-                title: 'View'
-            },
-            {
-                action: 'dismiss',
-                title: 'Dismiss'
-            }
+            { action: 'view', title: 'View' },
+            { action: 'dismiss', title: 'Dismiss' }
         ]
-    };
-    
-    event.waitUntil(
-        self.registration.showNotification(data.title || 'Edupriva', options)
-    );
+    }));
 });
 
-// Handle notification click
-self.addEventListener('notificationclick', function(event) {
+self.addEventListener('notificationclick', (event) => {
     event.notification.close();
-    
-    const url = event.notification.data.url || '/';
-    
-    event.waitUntil(
-        clients.matchAll({ type: 'window' })
-            .then(function(windowClients) {
-                // Check if there's already a window/tab open with the target URL
-                for (let i = 0; i < windowClients.length; i++) {
-                    const client = windowClients[i];
-                    if (client.url === url && 'focus' in client) {
-                        return client.focus();
-                    }
-                }
-                // If not, open a new window
-                if (clients.openWindow) {
-                    return clients.openWindow(url);
-                }
-            })
-    );
+    const targetUrl = new URL(event.notification.data?.url || '/', self.location.origin).href;
+
+    event.waitUntil(self.clients.matchAll({ type: 'window' }).then((clients) => {
+        const existing = clients.find((client) => client.url === targetUrl);
+        return existing ? existing.focus() : self.clients.openWindow(targetUrl);
+    }));
 });

@@ -50,7 +50,9 @@ service cloud.firestore {
     function isPlatformAdmin() {
       return isSignedIn() && (
         request.auth.token.role == 'super_admin' || 
+        request.auth.token.role == 'super-admin' ||
         userRole() == 'super_admin' ||
+        userRole() == 'super-admin' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -73,6 +75,14 @@ service cloud.firestore {
       return isSignedIn() && (
         isPlatformAdmin() || 
         userSchoolId() == schoolId
+      );
+    }
+
+    function canUseSchoolCommunications(schoolId) {
+      return isSignedIn() && (
+        isPlatformAdmin() ||
+        (userSchoolId() == schoolId &&
+          userRole() in ['admin', 'user', 'school_admin'])
       );
     }
 
@@ -170,11 +180,13 @@ service cloud.firestore {
     // -------------------------------------------------------------
     match /students/{studentId} {
       allow get: if isValidId(studentId) && (
+        canUseSchoolCommunications(existing().schoolId) ||
         isSchoolAdmin(existing().schoolId) ||
         (isSchoolTeacher(existing().schoolId) && existing().class in request.auth.token.assignedClasses) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
+        canUseSchoolCommunications(resource.data.schoolId) ||
         isSchoolAdmin(userSchoolId()) ||
         (isSchoolTeacher(userSchoolId()) && resource.data.class in request.auth.token.assignedClasses) ||
         resource.data.studentId == request.auth.uid
@@ -255,11 +267,13 @@ service cloud.firestore {
     // -------------------------------------------------------------
     match /student_balances/{balanceId} {
       allow get: if isValidId(balanceId) && (
+        canUseSchoolCommunications(existing().schoolId) ||
         isSchoolAdmin(existing().schoolId) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
 
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
+        canUseSchoolCommunications(resource.data.schoolId) ||
         isSchoolAdmin(userSchoolId()) || 
         resource.data.studentId == request.auth.uid
       );
@@ -291,11 +305,13 @@ service cloud.firestore {
     // -------------------------------------------------------------
     match /student_scores/{scoreId} {
       allow get: if isValidId(scoreId) && (
+        canUseSchoolCommunications(existing().schoolId) ||
         isSchoolTeacher(existing().schoolId) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
 
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
+        canUseSchoolCommunications(resource.data.schoolId) ||
         isSchoolTeacher(userSchoolId()) ||
         resource.data.studentId == request.auth.uid
       );
@@ -428,9 +444,19 @@ service cloud.firestore {
     }
 
     match /sms_history/{smsId} {
-      allow get, list: if isSignedIn() && resource.data.schoolId == userSchoolId() && isSchoolAdmin(userSchoolId());
-      allow create: if isValidId(smsId) && isSchoolAdmin(incoming().schoolId);
+      allow get, list: if canUseSchoolCommunications(resource.data.schoolId);
+      allow create: if isValidId(smsId) && canUseSchoolCommunications(incoming().schoolId);
       allow update, delete: if false;
+    }
+
+    match /sms_templates/{templateId} {
+      allow get, list: if canUseSchoolCommunications(resource.data.schoolId);
+      allow create: if isValidId(templateId) &&
+        canUseSchoolCommunications(incoming().schoolId);
+      allow update: if isValidId(templateId) &&
+        canUseSchoolCommunications(existing().schoolId) &&
+        incoming().schoolId == existing().schoolId;
+      allow delete: if canUseSchoolCommunications(existing().schoolId);
     }
 
     match /sms_devices/{devId} {
@@ -462,8 +488,14 @@ service cloud.firestore {
     // Audit & System Supporting Collections
     // -------------------------------------------------------------
     match /audit_logs/{logId} {
-      allow get, list: if isSignedIn() && isPlatformAdmin();
-      allow create: if isValidId(logId) && isSignedIn();
+      allow get, list: if isSignedIn() && (
+        isPlatformAdmin() ||
+        (resource.data.schoolId == userSchoolId() &&
+          userRole() in ['admin', 'user', 'school_admin', 'principal', 'finance'])
+      );
+      allow create: if isValidId(logId) && isSignedIn() &&
+        incoming().schoolId is string &&
+        (incoming().schoolId == userSchoolId() || isPlatformAdmin());
       allow update, delete: if false;
     }
 

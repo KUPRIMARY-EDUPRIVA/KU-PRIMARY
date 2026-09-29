@@ -124,7 +124,7 @@
     </script>
     
     <!-- ✅ FAVICON & WEB APP MANIFEST -->
-    <link rel="icon" type="image/x-icon" href="/logo.png" />
+    <link rel="icon" type="image/png" href="/Logo.png" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#1a237e" />
     
@@ -221,61 +221,6 @@
             }
         });
     </script>
-    
-    <!-- ✅ OFFLINE INDICATOR (visible when offline) -->
-    <style>
-        /* Offline mode indicator */
-        .offline-indicator {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 99999;
-            background: #dc3545;
-            color: white;
-            padding: 10px 20px;
-            text-align: center;
-            font-family: 'Poppins', sans-serif;
-            font-size: 14px;
-            font-weight: 500;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            animation: slideDown 0.3s ease;
-        }
-        
-        .offline-indicator i {
-            margin-right: 10px;
-        }
-        
-        html.offline .offline-indicator {
-            display: block;
-        }
-        
-        @keyframes slideDown {
-            from {
-                transform: translateY(-100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-        
-        /* PWA mode adjustments */
-        html.pwa-mode .offline-indicator {
-            top: env(safe-area-inset-top, 0);
-        }
-    </style>
-    
-    <!-- Offline Indicator -->
-    <div class="offline-indicator">
-        <i class="fas fa-wifi-slash"></i>
-        You are offline. Some features may be limited. Data will sync when you reconnect.
-        <button onclick="location.reload()" style="margin-left: 10px; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 2px 12px; border-radius: 4px; cursor: pointer;">
-            Retry
-        </button>
-    </div>
     
     <!-- ✅ OPTIONAL: Fallback noscript for crawlers (visible only if JS is disabled) -->
     <noscript>

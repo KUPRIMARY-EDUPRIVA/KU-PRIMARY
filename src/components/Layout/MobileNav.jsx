@@ -162,7 +162,7 @@ export default function MobileNav() {
     // Get role-based navigation items (same as Sidebar with feature checks)
     const getNavItems = () => {
         const role = userRole || userData?.role || 'user';
-        const isAdmin = role === 'admin' || role === 'user';
+        const isAdmin = role === 'admin' || role === 'user' || role === 'school_admin';
         const isTeacher = role === 'teacher';
         const isStudent = role === 'student';
         const isSuperAdmin = role === 'super-admin';
@@ -213,6 +213,12 @@ export default function MobileNav() {
                 show: isAdmin && !isSuperAdmin && isFeatureEnabled('fees')
             },
             {
+                path: '/communications',
+                icon: 'fa-comment-sms',
+                label: 'Communications',
+                show: isAdmin && !isSuperAdmin
+            },
+            {
                 path: '/reports',
                 icon: 'fa-chart-pie',
                 label: 'Reports',
@@ -234,6 +240,12 @@ export default function MobileNav() {
                 path: '/school-profile',
                 icon: 'fa-school',
                 label: 'School Profile',
+                show: isAdmin && !isSuperAdmin
+            },
+            {
+                path: '/audit-logs',
+                icon: 'fa-shield-alt',
+                label: 'Audit Logs',
                 show: isAdmin && !isSuperAdmin
             }
         ];
@@ -294,12 +306,6 @@ export default function MobileNav() {
                 path: '/platformtower',
                 icon: 'fa-tachometer-alt',
                 label: 'Platform Dashboard',
-                show: isSuperAdmin
-            },
-            {
-                path: '/sms',
-                icon: 'fa-tachometer-alt',
-                label: 'Communication',
                 show: isSuperAdmin
             },
             {

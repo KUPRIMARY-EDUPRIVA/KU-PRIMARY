@@ -280,14 +280,14 @@ export default function StudentReports() {
         if (!selectedStudent) return;
         setGenerating(true);
         try {
-            await exportIndividualStudentReport(
+            const result = await exportIndividualStudentReport(
                 selectedStudent,
                 subjects,
                 `Term ${selectedTerm}`,
                 buildMeta(),
                 getCBCGrade
             );
-            showNotification('Report PDF downloaded', 'success');
+            showNotification(`Report saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('single PDF failed:', err);
             showNotification('Failed: ' + err.message, 'error');
@@ -305,7 +305,7 @@ export default function StudentReports() {
         try {
             // "All" mode = class PDF but naming is per-class; we reuse class
             // endpoint since the server generates one page per student anyway.
-            await downloadStudentReportCardPDF({
+            const result = await downloadStudentReportCardPDF({
                 mode: 'class',
                 students: students.map((s) => ({
                     ...s,
@@ -315,7 +315,7 @@ export default function StudentReports() {
                 subjects,
                 term: `Term ${selectedTerm}`,
             });
-            showNotification(`Generated PDF with ${students.length} report cards`, 'success');
+            showNotification(`Saved PDF with ${students.length} report cards${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('all PDF failed:', err);
             showNotification('Failed: ' + err.message, 'error');
@@ -331,14 +331,14 @@ export default function StudentReports() {
         }
         setGenerating(true);
         try {
-            await downloadStudentReportCardPDF({
+            const result = await downloadStudentReportCardPDF({
                 mode: 'class',
                 students,
                 meta: buildMeta(),
                 subjects,
                 term: `Term ${selectedTerm}`,
             });
-            showNotification(`Class PDF generated (${students.length} students)`, 'success');
+            showNotification(`Class PDF saved (${students.length} students)${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('class PDF failed:', err);
             showNotification('Failed: ' + err.message, 'error');
@@ -350,7 +350,7 @@ export default function StudentReports() {
     const downloadTemplate = useCallback(async () => {
         setGenerating(true);
         try {
-            await downloadStudentReportCardPDF({
+            const result = await downloadStudentReportCardPDF({
                 mode: 'template',
                 students: [SAMPLE_STUDENT],
                 meta: {
@@ -364,7 +364,7 @@ export default function StudentReports() {
                 subjects: SAMPLE_SUBJECTS,
                 term: 'Term 2',
             });
-            showNotification('Template PDF downloaded', 'success');
+            showNotification(`Template PDF saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('template PDF failed:', err);
             showNotification('Failed: ' + err.message, 'error');

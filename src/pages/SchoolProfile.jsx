@@ -305,7 +305,6 @@ export default function SchoolProfile() {
             if (!schoolId) throw new Error('No school found');
 
             const updatedData = {
-                name: formData.name.trim(),
                 schoolType: formData.schoolType,
                 curriculum: formData.curriculum,
                 highestLevel: formData.highestLevel,
@@ -798,14 +797,6 @@ export default function SchoolProfile() {
         <Layout title="School Profile">
             <style>{styles}</style>
 
-            {/* Offline indicator */}
-            {!isOnline && (
-                <div style={offlineBannerStyle}>
-                    <i className="fas fa-wifi-slash"></i>
-                    <span>You are offline. School data is cached and will sync when back online.</span>
-                </div>
-            )}
-
             {usingCachedData && isOnline && (
                 <div style={cachedBannerStyle}>
                     <i className="fas fa-database"></i>
@@ -871,7 +862,7 @@ export default function SchoolProfile() {
                         <div className="form-row">
                             <div className="form-group">
                                 <label>School Name <span className="required">*</span></label>
-                                <input type="text" id="name" value={formData.name} onChange={handleInputChange} required />
+                                <input type="text" id="name" value={formData.name} readOnly aria-readonly="true" />
                             </div>
                             <div className="form-group">
                                 <label>School Type</label>
@@ -1427,12 +1418,6 @@ const spinnerStyle = {
 
 const checkRowStyle = {
     display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer'
-};
-
-const offlineBannerStyle = {
-    background: '#fff3cd', color: '#856404', padding: '10px 20px',
-    borderRadius: 8, marginBottom: 20, display: 'flex',
-    alignItems: 'center', gap: 10, fontSize: 14, border: '1px solid #ffc107'
 };
 
 const cachedBannerStyle = {

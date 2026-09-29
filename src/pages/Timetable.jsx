@@ -79,6 +79,8 @@ export default function Timetable() {
   const [lastUnassigned, setLastUnassigned] = useState([]);
   const [showPeriodEditor, setShowPeriodEditor] = useState(false);
   const [editingPeriod, setEditingPeriod] = useState(null);
+  const [newSubject, setNewSubject] = useState('');
+  const [newDutyArea, setNewDutyArea] = useState({ label: '', start: '08:00', end: '09:00' });
 
   const printRef = useRef(null);
 
@@ -99,8 +101,10 @@ export default function Timetable() {
   }, [selectedLevel, getLevelClasses]);
 
   const availableSubjects = useMemo(
-    () => LEVEL_SUBJECTS[selectedLevel] || ['Mathematics', 'English', 'Kiswahili', 'Science', 'Social Studies'],
-    [selectedLevel]
+    () => customConfig?.subjectsByLevel?.[selectedLevel]
+      || LEVEL_SUBJECTS[selectedLevel]
+      || ['Mathematics', 'English', 'Kiswahili', 'Science', 'Social Studies'],
+    [selectedLevel, customConfig]
   );
 
   useEffect(() => {
@@ -464,6 +468,91 @@ export default function Timetable() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const updateDutyAreas = (transform) => {
+    setCustomConfig((current) => ({
+      ...(current || {}),
+      dutyAreas: transform([...(current?.dutyAreas || DUTY_AREAS)])
+    }));
+  };
+
+  const updateDutyArea = (areaId, updates) => {
+    updateDutyAreas((areas) => areas.map((area) => (
+      area.id === areaId ? { ...area, ...updates } : area
+    )));
+  };
+
+  const removeDutyArea = (areaId) => {
+    updateDutyAreas((areas) => areas.filter((area) => area.id !== areaId));
+    setDutyRoster((current) => Object.fromEntries(
+      Object.entries(current).map(([day, assignments]) => {
+        const updatedAssignments = { ...assignments };
+        delete updatedAssignments[areaId];
+        return [day, updatedAssignments];
+      })
+    ));
+    setDutyDirty(true);
+  };
+
+  const addDutyArea = () => {
+    const label = newDutyArea.label.trim();
+    const start = newDutyArea.start;
+    const end = newDutyArea.end;
+    if (!label || !start || !end || end <= start) {
+      notify('Enter a duty area name and valid start/end times.', 'error');
+      return;
+    }
+    const id = `duty_${safeSlug(label)}_${Date.now()}`;
+    updateDutyAreas((areas) => [
+      ...areas,
+      { id, label, start: hourValueFromTime(start), end: hourValueFromTime(end) }
+    ]);
+    setNewDutyArea({ label: '', start: '08:00', end: '09:00' });
+  };
+
+  const updateCurriculumSubjects = (transform) => {
+    setCustomConfig((current) => {
+      const subjectsByLevel = { ...(current?.subjectsByLevel || {}) };
+      const subjects = [
+        ...(subjectsByLevel[selectedLevel] || LEVEL_SUBJECTS[selectedLevel] || [])
+      ];
+      subjectsByLevel[selectedLevel] = transform(subjects);
+      return { ...(current || {}), subjectsByLevel };
+    });
+  };
+
+  const saveCurriculumAndDutySettings = async () => {
+    const dutyAreas = customConfig?.dutyAreas || DUTY_AREAS;
+    if (dutyAreas.some((area) => (
+      typeof area.label !== 'string'
+      || !area.label.trim()
+      || !Number.isFinite(area.start)
+      || !Number.isFinite(area.end)
+      || area.start < 0
+      || area.end > 24
+      || area.start >= area.end
+    ))) {
+      notify('Each duty area needs a name and an end time after its start time.', 'error');
+      return;
+    }
+    const currentSubjects = customConfig?.subjectsByLevel?.[selectedLevel] || availableSubjects;
+    const normalizedSubjects = currentSubjects.map((subject) => subject.trim().toLowerCase());
+    if (normalizedSubjects.some((subject) => !subject)
+      || new Set(normalizedSubjects).size !== normalizedSubjects.length) {
+      notify('Curriculum subjects must be non-empty and unique.', 'error');
+      return;
+    }
+
+    const subjectsByLevel = { ...(customConfig?.subjectsByLevel || {}) };
+    Object.entries(LEVEL_SUBJECTS).forEach(([level, subjects]) => {
+      if (!subjectsByLevel[level]) subjectsByLevel[level] = subjects;
+    });
+    await saveSettings({
+      ...(customConfig || {}),
+      subjectsByLevel,
+      dutyAreas
+    });
   };
 
   /* ---------------- Events ---------------- */
@@ -1250,33 +1339,195 @@ export default function Timetable() {
       </section>
 
       <section className="card">
-        <h3 className="tt-settings-title">
-          <i className="fas fa-list-check" aria-hidden="true"></i> Curriculum Subjects ({availableSubjects.length})
-        </h3>
+        <div className="tt-settings-head">
+          <div>
+            <h3 className="tt-settings-title">
+              <i className="fas fa-list-check" aria-hidden="true"></i> Curriculum Subjects ({availableSubjects.length})
+            </h3>
+            <p className="tt-settings-desc">Manage curriculum subjects for each school level.</p>
+          </div>
+          {isAdmin && (
+            <button
+              className="btn btn-success"
+              onClick={saveCurriculumAndDutySettings}
+              disabled={saving}
+            >
+              <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} aria-hidden="true"></i>
+              {saving ? 'Saving…' : 'Save Settings'}
+            </button>
+          )}
+        </div>
+        <div className="tt-filter-group" style={{ maxWidth: 300, marginBottom: 16 }}>
+          <label htmlFor="tt-subject-level">School Level</label>
+          <select
+            id="tt-subject-level"
+            value={selectedLevel}
+            onChange={(event) => setSelectedLevel(event.target.value)}
+          >
+            {SCHOOL_LEVELS.map((level) => (
+              <option key={level.value} value={level.value}>{level.label}</option>
+            ))}
+          </select>
+        </div>
         <div className="tt-subject-chips">
-          {availableSubjects.map((s) => (
-            <span key={s} className="tt-chip tt-chip-primary">{s}</span>
+          {availableSubjects.map((subject, index) => (
+            <span key={`${subject}-${index}`} className="tt-chip tt-chip-primary">
+              {isAdmin ? (
+                <>
+                  <input
+                    aria-label={`Edit subject ${subject}`}
+                    value={subject}
+                    onChange={(event) => updateCurriculumSubjects((subjects) => subjects.map(
+                      (value, subjectIndex) => subjectIndex === index ? event.target.value : value
+                    ))}
+                    style={{ width: `${Math.max(subject.length, 8)}ch`, border: 0, background: 'transparent', color: 'inherit' }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    aria-label={`Delete ${subject}`}
+                    onClick={() => updateCurriculumSubjects((subjects) => subjects.filter((_, i) => i !== index))}
+                  >
+                    <i className="fas fa-trash" aria-hidden="true"></i>
+                  </button>
+                </>
+              ) : subject}
+            </span>
           ))}
         </div>
+        {isAdmin && (
+          <form
+            className="tt-inline-form"
+            style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              const subject = newSubject.trim();
+              if (!subject) return;
+              if (availableSubjects.some((value) => value.toLowerCase() === subject.toLowerCase())) {
+                notify('That subject is already listed for this level.', 'warning');
+                return;
+              }
+              updateCurriculumSubjects((subjects) => [...subjects, subject]);
+              setNewSubject('');
+            }}
+          >
+            <input
+              value={newSubject}
+              onChange={(event) => setNewSubject(event.target.value)}
+              placeholder="Add a subject"
+              aria-label="New curriculum subject"
+              maxLength={80}
+            />
+            <button className="btn btn-primary" type="submit">
+              <i className="fas fa-plus" aria-hidden="true"></i> Add Subject
+            </button>
+          </form>
+        )}
       </section>
 
       <section className="card">
-        <h3 className="tt-settings-title">
-          <i className="fas fa-shield-halved" aria-hidden="true"></i> Duty Areas
-        </h3>
-        <p className="tt-settings-desc">
-          Predefined duty areas used for the weekly duty roster.
-        </p>
+        <div className="tt-settings-head">
+          <div>
+            <h3 className="tt-settings-title">
+              <i className="fas fa-shield-halved" aria-hidden="true"></i> Duty Areas
+            </h3>
+            <p className="tt-settings-desc">
+              Add, edit, or remove duty areas used for the weekly duty roster.
+            </p>
+          </div>
+          {isAdmin && (
+            <button
+              className="btn btn-success"
+              onClick={saveCurriculumAndDutySettings}
+              disabled={saving}
+            >
+              <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} aria-hidden="true"></i>
+              {saving ? 'Saving…' : 'Save Settings'}
+            </button>
+          )}
+        </div>
         <div className="tt-duty-areas-list">
           {(customConfig?.dutyAreas || DUTY_AREAS).map((a) => (
             <div key={a.id} className="tt-duty-area-chip">
-              <div className="tt-duty-area-label">{a.label}</div>
-              <div className="tt-duty-area-time">
-                {fmtHour(a.start)} – {fmtHour(a.end)}
-              </div>
+              {isAdmin ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) auto auto auto', gap: 8, alignItems: 'center' }}>
+                  <input
+                    value={a.label}
+                    aria-label="Duty area name"
+                    maxLength={80}
+                    onChange={(event) => updateDutyArea(a.id, { label: event.target.value })}
+                  />
+                  <input
+                    type="time"
+                    value={fmtHour(a.start)}
+                    aria-label={`Start time for ${a.label}`}
+                    onChange={(event) => event.target.value && updateDutyArea(a.id, { start: hourValueFromTime(event.target.value) })}
+                  />
+                  <input
+                    type="time"
+                    value={fmtHour(a.end)}
+                    aria-label={`End time for ${a.label}`}
+                    onChange={(event) => event.target.value && updateDutyArea(a.id, { end: hourValueFromTime(event.target.value) })}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    aria-label={`Delete duty area ${a.label}`}
+                    onClick={() => removeDutyArea(a.id)}
+                  >
+                    <i className="fas fa-trash" aria-hidden="true"></i>
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="tt-duty-area-label">{a.label}</div>
+                  <div className="tt-duty-area-time">{fmtHour(a.start)} – {fmtHour(a.end)}</div>
+                </>
+              )}
             </div>
           ))}
         </div>
+        {isAdmin && (
+          <form
+            style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap', alignItems: 'end' }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              addDutyArea();
+            }}
+          >
+            <label>
+              Duty area
+              <input
+                value={newDutyArea.label}
+                onChange={(event) => setNewDutyArea((current) => ({ ...current, label: event.target.value }))}
+                placeholder="e.g. Library supervision"
+                maxLength={80}
+                required
+              />
+            </label>
+            <label>
+              Start
+              <input
+                type="time"
+                value={newDutyArea.start}
+                onChange={(event) => setNewDutyArea((current) => ({ ...current, start: event.target.value }))}
+                required
+              />
+            </label>
+            <label>
+              End
+              <input
+                type="time"
+                value={newDutyArea.end}
+                onChange={(event) => setNewDutyArea((current) => ({ ...current, end: event.target.value }))}
+                required
+              />
+            </label>
+            <button className="btn btn-primary" type="submit">
+              <i className="fas fa-plus" aria-hidden="true"></i> Add Duty Area
+            </button>
+          </form>
+        )}
       </section>
     </div>
   );
@@ -1815,4 +2066,9 @@ function fmtHour(h) {
   const whole = Math.floor(h);
   const mins = Math.round((h - whole) * 60);
   return `${String(whole).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+}
+
+function hourValueFromTime(time) {
+  const [hours, minutes] = time.split(':').map(Number);
+  return hours + minutes / 60;
 }

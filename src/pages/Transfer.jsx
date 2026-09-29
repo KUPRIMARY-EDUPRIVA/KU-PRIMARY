@@ -2127,35 +2127,6 @@ export default function Transfer() {
       <div className="transfer-container">
 
         {/* ====================================================
-             OFFLINE
-        ===================================================== */}
-
-        {!isOnline && (
-
-          <div
-            style={{
-              background: '#fff3cd',
-              color: '#856404',
-              padding: '10px 20px',
-              borderRadius: '8px',
-              marginBottom: '20px',
-              border: '1px solid #ffc107'
-            }}
-          >
-
-            <i className="fas fa-wifi-slash"></i>
-
-            {' '}
-
-            You are offline. Student transfers require
-            an internet connection.
-
-          </div>
-
-        )}
-
-
-        {/* ====================================================
              TABS
         ===================================================== */}
 
@@ -3317,4 +3288,3 @@ export default function Transfer() {
   );
 
 }
-

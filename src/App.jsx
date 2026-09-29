@@ -43,7 +43,7 @@ const StudentFeeDetail = lazyWithRetry(() => import('./pages/StudentFeeDetail'))
 const Subscription = lazyWithRetry(() => import('./pages/Subscription'));
 const SchoolProfile = lazyWithRetry(() => import('./pages/SchoolProfile'));
 const Settings = lazyWithRetry(() => import('./pages/Settings'));
-const Sms = lazyWithRetry(() => import('./pages/BulkSMS'));
+const Communications = lazyWithRetry(() => import('./pages/Communications'));
 const Transport = lazyWithRetry(() => import('./pages/Transportation'));
 const Health = lazyWithRetry(() => import('./pages/HealthRecords'));
 const Accomodation = lazyWithRetry(() => import('./pages/Boarding'));
@@ -131,7 +131,10 @@ function AppRoutes() {
                 <Route path="/accomodation" element={<AuthWrapper><Accomodation /></AuthWrapper>} />
                 <Route path="/students" element={<AuthWrapper><Students /></AuthWrapper>} />
                 <Route path="/student-analytics" element={<AuthWrapper><StudentAnalytics /></AuthWrapper>} />
-                <Route path="/sms" element={<AuthWrapper><Sms /></AuthWrapper>} />
+                <Route path="/communications" element={
+                    <AuthWrapper allowedRoles={['admin', 'user', 'school_admin']}><Communications /></AuthWrapper>
+                } />
+                <Route path="/sms" element={<Navigate to="/communications" replace />} />
                 <Route path="/teachers" element={<AuthWrapper><Teachers /></AuthWrapper>} />
                 <Route path="/exams" element={<AuthWrapper><Exams /></AuthWrapper>} />
                 <Route path="/results" element={<AuthWrapper><Results /></AuthWrapper>} />

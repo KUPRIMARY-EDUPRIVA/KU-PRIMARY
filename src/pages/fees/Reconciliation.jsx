@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import Layout from '../../components/Layout/Layout';
 import LoadingSpinner from '../../components/Common/LoadingSpinner';
+import { useSync } from '../../context/SyncContext';
 import {
   RECON_TYPES, listAll,
   resolveOrphan, ignoreOrphan, markStuckAsTimeout, dismissError,
@@ -26,6 +27,7 @@ const fmtDate = (ts) => {
 
 export default function MpesaReconciliation() {
   const { userData, userRole, currentUser } = useAuth();
+  const { isOnline } = useSync();
   const schoolId = userData?.schoolId;
   const isAdmin = ['admin', 'user', 'school_admin', 'super-admin'].includes(userRole);
 
@@ -108,7 +110,7 @@ export default function MpesaReconciliation() {
     setBusy(true);
     try {
       await dismissError({
-        errorDoc,
+        errorDoc: errDoc,
         userId: currentUser?.uid,
         userName: userData?.fullName || '',
       });
@@ -144,7 +146,7 @@ export default function MpesaReconciliation() {
           </div>
         </header>
 
-        {error && (
+        {error && isOnline && (
           <div className="audit-error" role="alert">
             <i className="fas fa-exclamation-circle" aria-hidden="true"></i>
             <span>{error}</span>

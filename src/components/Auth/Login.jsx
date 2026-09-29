@@ -9,6 +9,10 @@ import {
 import { db } from '../../firebase';
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { useSync } from '../../context/SyncContext';
+import {
+    authenticateWithBiometrics, getBiometricLoginStatus, isDeviceBiometricAvailable,
+    saveBiometricCredentials
+} from '../../services/deviceSecurity';
 
 // ---- Cloudinary config (from env) ----
 const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
@@ -67,13 +71,14 @@ export default function Login() {
     const [verificationEmail, setVerificationEmail] = useState('');
     const [verificationTimer, setVerificationTimer] = useState(30);
     const [showRegister, setShowRegister] = useState(false);
+    const [biometricReady, setBiometricReady] = useState(false);
+    const [biometricAvailable, setBiometricAvailable] = useState(false);
 
     // ---- Upload state (File objects + previews) ----
     const [logoFile, setLogoFile] = useState(null);
     const [profileFile, setProfileFile] = useState(null);
     const [logoPreview, setLogoPreview] = useState(null);
     const [profilePreview, setProfilePreview] = useState(null);
-    const [offlineMode, setOfflineMode] = useState(false);
     const [cachedUsers, setCachedUsers] = useState([]);
 
     const verificationIntervalRef = useRef(null);
@@ -83,27 +88,22 @@ export default function Login() {
     // ---- Lifecycle / network ----
     useEffect(() => {
         if (!isOnline) {
-            setOfflineMode(true);
             loadCachedUsers();
-            showMessage('You are offline. Login may be limited.', 'warning');
         }
     }, [isOnline]);
 
     useEffect(() => {
-        const handleOnline = () => {
-            setOfflineMode(false);
-            showMessage('Back online! You can now login normally.', 'success');
-        };
-        const handleOffline = () => {
-            setOfflineMode(true);
-            showMessage('You are offline. Some features may be limited.', 'warning');
-        };
-        window.addEventListener('online', handleOnline);
-        window.addEventListener('offline', handleOffline);
-        return () => {
-            window.removeEventListener('online', handleOnline);
-            window.removeEventListener('offline', handleOffline);
-        };
+        let active = true;
+        getBiometricLoginStatus()
+            .then(({ available, enabled }) => {
+                if (!active) return;
+                setBiometricAvailable(available);
+                setBiometricReady(available && enabled);
+            })
+            .catch((error) => {
+                console.warn('Could not check biometric login status:', error.message);
+            });
+        return () => { active = false; };
     }, []);
 
     useEffect(() => {
@@ -361,38 +361,63 @@ export default function Login() {
     };
 
     // ---- Login ----
-    const handleLogin = async (e) => {
-        e.preventDefault();
+    const setupBiometricLogin = async (email, password) => {
+        if (!biometricAvailable || biometricReady || !isDeviceBiometricAvailable()) return;
+        if (!window.confirm('Would you like to enable fingerprint or biometric login on this device? Your sign-in details will be encrypted and stored securely on this device.')) return;
+        try {
+            await authenticateWithBiometrics();
+            await saveBiometricCredentials(email, password);
+            setBiometricReady(true);
+            showMessage('Biometric login enabled for this device.', 'success');
+        } catch (error) {
+            console.warn('Biometric login was not enabled:', error.message);
+            showMessage('Biometric login was not enabled. You can continue with your password.', 'warning');
+        }
+    };
+
+    const handleBiometricLogin = async () => {
+        setLoading(true);
+        try {
+            const credentials = await authenticateWithBiometrics();
+            if (!credentials.email || !credentials.password) {
+                throw new Error('Biometric sign-in has not been set up on this device.');
+            }
+            await handleLogin(null, credentials);
+        } catch (error) {
+            console.warn('Biometric sign-in failed:', error.message);
+            showMessage(error.message || 'Unable to sign in with biometrics.', 'error');
+            setLoading(false);
+        }
+    };
+
+    const handleLogin = async (e, savedCredentials = null) => {
+        e?.preventDefault();
         clearMessages();
 
-        if (!validateEmail(loginEmail)) {
+        const email = savedCredentials?.email || loginEmail;
+        const password = savedCredentials?.password || loginPassword;
+        if (!validateEmail(email)) {
             showMessage('Please enter a valid email address', 'error');
+            setLoading(false);
             return;
         }
-        if (loginPassword.length < 6) {
+        if (password.length < 6) {
             showMessage('Password must be at least 6 characters', 'error');
+            setLoading(false);
             return;
         }
         setLoading(true);
         try {
             if (!isOnline) {
-                const cachedUser = cachedUsers.find((u) => u.email === loginEmail);
-                if (cachedUser) {
-                    showMessage('✅ Offline login successful! Limited functionality available.', 'success');
-                    sessionStorage.setItem('userRole', cachedUser.collection || 'users');
-                    sessionStorage.setItem('userId', cachedUser.uid);
-                    sessionStorage.setItem('offlineMode', 'true');
-                    setTimeout(() => navigateToDashboard(cachedUser.collection || 'users'), 2000);
-                    setLoading(false);
-                    return;
-                } else {
-                    showMessage('Offline: No cached credentials found. Please connect to the internet.', 'error');
-                    setLoading(false);
-                    return;
-                }
+                showMessage(
+                    'Connect to the internet for your first sign-in. After signing in, stay signed in to use the app offline.',
+                    'error'
+                );
+                setLoading(false);
+                return;
             }
 
-            const userCredential = await signInWithEmailAndPassword(auth, loginEmail, loginPassword);
+            const userCredential = await signInWithEmailAndPassword(auth, email, password);
             const user = userCredential.user;
 
             if (!user.emailVerified) {
@@ -403,18 +428,23 @@ export default function Login() {
                 return;
             }
 
-            const userData = await findUserDocument(user.uid, loginEmail);
+            const userData = await findUserDocument(user.uid, email);
             if (userData) {
                 const { collection, docId } = userData;
                 if (isOnline) {
-                    await updateDoc(doc(db, collection, docId), { lastLogin: serverTimestamp() });
+                    try {
+                        await updateDoc(doc(db, collection, docId), { lastLogin: serverTimestamp() });
+                    } catch (error) {
+                        console.warn('Could not update last login timestamp:', error.code || error.message);
+                    }
                 }
                 await cacheUserData({
-                    uid: user.uid, email: loginEmail, collection,
+                    uid: user.uid, email, collection,
                     ...userData.data,
                 });
                 sessionStorage.setItem('userRole', collection);
                 sessionStorage.setItem('userId', docId);
+                await setupBiometricLogin(email, password);
                 const roleDisplay =
                     collection === 'users' ? 'Admin' :
                     collection === 'teachers' ? 'Teacher' : 'Student';
@@ -423,7 +453,7 @@ export default function Login() {
             } else {
                 if (isOnline) {
                     await setDoc(doc(db, 'users', user.uid), {
-                        uid: user.uid, email: loginEmail, role: 'user',
+                        uid: user.uid, email, role: 'user',
                         fullName: user.displayName || 'User',
                         emailVerified: true,
                         lastLogin: serverTimestamp(),
@@ -432,15 +462,20 @@ export default function Login() {
                     });
                 }
                 await cacheUserData({
-                    uid: user.uid, email: loginEmail, role: 'user',
+                    uid: user.uid, email, role: 'user',
                     fullName: user.displayName || 'User', collection: 'users',
                 });
                 sessionStorage.setItem('userRole', 'users');
                 sessionStorage.setItem('userId', user.uid);
+                await setupBiometricLogin(email, password);
                 showMessage('Welcome! Redirecting to dashboard...', 'success');
                 setTimeout(() => navigateToDashboard('users'), 2000);
             }
         } catch (error) {
+            console.error('Login failed:', {
+                code: error.code || 'unknown',
+                message: error.message || 'No error message provided',
+            });
             let errorMessage = 'Login failed. ';
             switch (error.code) {
                 case 'auth/invalid-credential':
@@ -449,7 +484,21 @@ export default function Login() {
                 case 'auth/user-disabled': errorMessage = 'Account disabled. Contact support'; break;
                 case 'auth/too-many-requests': errorMessage = 'Too many attempts. Try again later'; break;
                 case 'auth/network-request-failed': errorMessage = 'Network error. Check connection'; break;
-                default: errorMessage = 'An unexpected error occurred';
+                case 'auth/operation-not-allowed':
+                    errorMessage = 'Email and password sign-in is not enabled. Contact support';
+                    break;
+                case 'auth/invalid-api-key':
+                case 'auth/api-key-not-valid':
+                    errorMessage = 'Sign-in is temporarily unavailable. Contact support';
+                    break;
+                case 'auth/unauthorized-domain':
+                    errorMessage = 'This app is not authorized to sign in. Contact support';
+                    break;
+                case 'permission-denied':
+                case 'firestore/permission-denied':
+                    errorMessage = 'Your account signed in, but its profile could not be accessed. Contact your school administrator';
+                    break;
+                default: errorMessage = 'Login failed. Please check your connection and try again';
             }
             showMessage(errorMessage, 'error');
         } finally {
@@ -625,12 +674,6 @@ export default function Login() {
     // ---- Render ----
     return (
         <div className="login-container">
-            {!isOnline && (
-                <div className="offline-indicator">
-                    <i className="fas fa-wifi-slash"></i> Offline Mode
-                </div>
-            )}
-
             <div className="split-container">
                 <div className="left-panel">
                     <div className="image-overlay">
@@ -650,7 +693,9 @@ export default function Login() {
                 <div className="right-panel">
                     <div className="form-wrapper">
                         <div className="header">
-                            <div className="logo-container"><div className="logo"></div></div>
+                            <div className="logo-container">
+                                <img className="logo" src="/Logo.png" alt="EduPriva logo" />
+                            </div>
                             <h1 className="system-title">EDUPRIVA</h1>
                             <div className="system-subtitle">School Management System</div>
                         </div>
@@ -726,6 +771,11 @@ export default function Login() {
                                             <button type="submit" className="btn" disabled={loading}>
                                                 {loading ? (<><div className="loading"></div><span>Logging in...</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Login to Dashboard</span></>)}
                                             </button>
+                                            {biometricReady && (
+                                                <button type="button" className="btn" onClick={handleBiometricLogin} disabled={loading}>
+                                                    <i className="fas fa-fingerprint"></i><span>Sign in with biometrics</span>
+                                                </button>
+                                            )}
 
                                             <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
 
@@ -1032,10 +1082,7 @@ export default function Login() {
                 .logo {
                     width: 55px;
                     height: 55px;
-                    background-image: url('/logo.png');
-                    background-size: contain;
-                    background-repeat: no-repeat;
-                    background-position: center;
+                    object-fit: contain;
                 }
 
                 .system-title {
@@ -1468,26 +1515,6 @@ export default function Login() {
                     margin-right: 4px;
                 }
 
-                .offline-indicator {
-                    position: fixed;
-                    top: 12px;
-                    right: 12px;
-                    background: var(--danger);
-                    color: white;
-                    padding: 6px 14px;
-                    border-radius: 20px;
-                    font-size: 12px;
-                    font-weight: 600;
-                    z-index: 1000;
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-                    animation: pulse 2s infinite;
-                }
-
-                @keyframes pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.7; }
-                }
-
                 /* ===== RESPONSIVE ===== */
                 @media (max-width: 1024px) {
                     .split-container {
@@ -1727,12 +1754,6 @@ export default function Login() {
                         margin-top: 10px;
                     }
 
-                    .offline-indicator {
-                        font-size: 10px;
-                        padding: 4px 10px;
-                        top: 8px;
-                        right: 8px;
-                    }
                 }
 
                 @media (max-width: 380px) {

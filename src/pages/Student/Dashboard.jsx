@@ -711,25 +711,6 @@ export default function StudentDashboard() {
             `}</style>
 
             <div className="student-dashboard">
-                {/* Offline indicator */}
-                {!isOnline && (
-                    <div style={{
-                        background: '#fff3cd',
-                        color: '#856404',
-                        padding: '10px 20px',
-                        borderRadius: '8px',
-                        marginBottom: '20px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        fontSize: '14px',
-                        border: '1px solid #ffc107'
-                    }}>
-                        <i className="fas fa-wifi-slash"></i>
-                        <span>You are offline. Data is cached and will sync when back online.</span>
-                    </div>
-                )}
-
                 {/* Welcome Banner */}
                 <div className="welcome-banner">
                     <div>

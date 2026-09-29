@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
+import { saveGeneratedPdf } from './pdf';
 
 // Consistent Branding Colors
 const COLORS = {
@@ -40,7 +41,7 @@ async function addBranding(doc, meta) {
 export async function exportIndividualStudentReport(student, subjects, term, meta, getCBCGrade) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     
-    addBranding(doc, meta);
+    await addBranding(doc, meta);
 
     // Student Info
     doc.setFontSize(10);
@@ -97,5 +98,8 @@ export async function exportIndividualStudentReport(student, subjects, term, met
     doc.setTextColor(100);
     doc.text(`Generated on ${new Date().toLocaleDateString()}`, 10, 290);
     
-    doc.save(`ReportCard_${student.firstName}_${student.lastName}.pdf`);
+    return saveGeneratedPdf(
+        doc,
+        `ReportCard_${student.firstName || ''}_${student.lastName || ''}.pdf`
+    );
 }

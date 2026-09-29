@@ -791,19 +791,6 @@ export default function Settings() {
                     border-top: 1px solid var(--border);
                 }
 
-                .offline-indicator {
-                    background: #fff3cd;
-                    color: #856404;
-                    padding: 10px 20px;
-                    border-radius: 8px;
-                    margin-bottom: 20px;
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                    font-size: 14px;
-                    border: 1px solid #ffc107;
-                }
-
                 .cached-indicator {
                     background: #d1ecf1;
                     color: #0c5460;
@@ -886,14 +873,6 @@ export default function Settings() {
             `}</style>
 
             <div className="settings-container">
-                {/* Offline indicator */}
-                {!isOnline && (
-                    <div className="offline-indicator">
-                        <i className="fas fa-wifi-slash"></i>
-                        <span>You are offline. Changes will sync when back online.</span>
-                    </div>
-                )}
-
                 {/* Using cached data indicator */}
                 {usingCachedData && isOnline && (
                     <div className="cached-indicator">

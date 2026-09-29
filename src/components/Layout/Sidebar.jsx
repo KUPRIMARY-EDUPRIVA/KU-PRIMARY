@@ -382,6 +382,12 @@ export default function Sidebar({ isOpen, onClose }) {
                 show: isAdmin
             },
             {
+                path: '/communications',
+                icon: 'fa-comment-sms',
+                label: 'Communications',
+                show: isAdmin
+            },
+            {
                 path: '/reports',
                 icon: 'fa-chart-pie',
                 label: 'Reports',
@@ -746,4 +752,3 @@ export default function Sidebar({ isOpen, onClose }) {
         </>
     );
 }
-

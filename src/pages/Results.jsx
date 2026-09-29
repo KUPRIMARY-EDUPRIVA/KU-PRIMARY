@@ -11,6 +11,7 @@ import {
 import { idbGet, idbSet } from '../services/cache';
 import { downloadStudentReportCardPDF, downloadStudentReportPDF, downloadRankingPDF } from '../services/pdf';
 import { db } from '../firebase';
+import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
 import { collection, query, where, getDocs, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
@@ -28,7 +29,7 @@ export default function Results() {
     const navigate = useNavigate();
     const location = useLocation();
     const { currentUser, userData, userRole } = useAuth();
-    const { isOnline, pendingCount, addToSyncQueue } = useSync();
+    const { isOnline, addToSyncQueue } = useSync();
 
     // Fix #5: use SchoolContext directly, no local configs state
     const {
@@ -356,6 +357,15 @@ export default function Results() {
                     schoolId, selectedLevel, selectedClass, selectedSubject,
                     selectedTerm, assessmentType, entries, teacherMeta
                 );
+                await AuditLogService.logAction(
+                    schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+                    AUDIT_ACTIONS.SCORES_SAVED,
+                    {
+                        entityId: `${selectedClass}-${selectedSubject}-${assessmentType}`,
+                        message: `Saved ${entries.length} ${selectedSubject} score(s) for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
+                    }
+                );
                 showNotification(`Saved ${entries.length} scores`, 'success');
             }
 
@@ -445,6 +455,15 @@ export default function Results() {
                     [{ studentId, score }],
                     teacherMeta
                 );
+                await AuditLogService.logAction(
+                    schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+                    AUDIT_ACTIONS.SCORES_SAVED,
+                    {
+                        entityId: `${studentId}-${selectedSubject}-${assessmentType}`,
+                        message: `Saved ${selectedSubject} score for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
+                    }
+                );
                 showNotification('Score saved', 'success');
             }
 
@@ -495,6 +514,15 @@ export default function Results() {
                 schoolId, selectedLevel, selectedClass, selectedSubject,
                 selectedTerm, assessmentType, [studentId]
             );
+            await AuditLogService.logAction(
+                schoolId,
+                { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+                AUDIT_ACTIONS.SCORES_PUBLISHED,
+                {
+                    entityId: `${studentId}-${selectedSubject}-${assessmentType}`,
+                    message: `Published ${selectedSubject} results for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
+                }
+            );
             showNotification('Published', 'success');
             setStudents(prev => prev.map(s => s.id === studentId ? { ...s, status: 'published' } : s));
         } catch (err) {
@@ -539,7 +567,7 @@ export default function Results() {
         if (!student) return;
         try {
             const scores = studentScores[student.id] || [];
-            await downloadStudentReportPDF(student, scores, {
+            const result = await downloadStudentReportPDF(student, scores, {
                 schoolName,
                 schoolMotto,
                 schoolLogo: userData?.schoolLogo || '',        // ← NEW
@@ -553,7 +581,7 @@ export default function Results() {
                 assessmentType,
                 subjects: LEVEL_SUBJECTS[selectedLevel] || []
             });
-            showNotification('Report PDF downloaded', 'success');
+            showNotification(`Report saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (e) {
             console.error(e);
             showNotification('PDF generation failed', 'error');
@@ -584,7 +612,7 @@ export default function Results() {
                 };
             });
 
-            await downloadRankingPDF(data, {
+            const result = await downloadRankingPDF(data, {
                 schoolName,
                 schoolMotto,
                 level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
@@ -594,7 +622,7 @@ export default function Results() {
                 assessmentType,
                 subjects: allSubjects
             });
-            showNotification('Ranking PDF downloaded', 'success');
+            showNotification(`Ranking saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (e) {
             console.error(e);
             showNotification('Ranking PDF failed', 'error');
@@ -838,28 +866,6 @@ export default function Results() {
                 </div>
             )}
 
-            {/* Offline indicator */}
-            {!isOnline && (
-                <div style={{
-                    background: '#fff3cd', color: '#856404',
-                    padding: '10px 20px', borderRadius: '8px', marginBottom: '20px',
-                    display: 'flex', alignItems: 'center', gap: '10px',
-                    fontSize: '14px', border: '1px solid #ffc107'
-                }}>
-                    <i className="fas fa-wifi-slash"></i>
-                    <span>You are offline. Data is cached and will sync when back online.</span>
-                    {pendingCount > 0 && (
-                        <span style={{
-                            background: '#ffc107', color: '#856404',
-                            padding: '2px 10px', borderRadius: '12px',
-                            fontSize: '12px', fontWeight: '600'
-                        }}>
-                            {pendingCount} pending changes
-                        </span>
-                    )}
-                </div>
-            )}
-
             {/* Using cached data indicator */}
             {usingCachedData && isOnline && (
                 <div style={{
@@ -874,25 +880,22 @@ export default function Results() {
             )}
 
             {/* Stats Grid */}
-            <div className="stats-grid" style={{
-                display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: '20px', marginBottom: '30px'
-            }}>
-                <div className="stat-card" style={{ background: 'white', borderRadius: '12px', padding: '20px', boxShadow: '0 4px 6px rgba(0,0,0,0.07)' }}>
-                    <div className="stat-label" style={{ fontSize: '13px', color: 'var(--gray)', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total Students</div>
-                    <div className="stat-value" style={{ fontSize: '28px', fontWeight: '700', color: 'var(--secondary)', marginTop: '5px' }}>{stats.totalStudents}</div>
+            <div className="stats-grid">
+                <div className="stat-card">
+                    <div className="stat-label">Total Students</div>
+                    <div className="stat-value">{stats.totalStudents}</div>
                 </div>
-                <div className="stat-card" style={{ background: 'white', borderRadius: '12px', padding: '20px', boxShadow: '0 4px 6px rgba(0,0,0,0.07)' }}>
-                    <div className="stat-label" style={{ fontSize: '13px', color: 'var(--gray)', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Scored</div>
-                    <div className="stat-value" style={{ fontSize: '28px', fontWeight: '700', color: 'var(--success)', marginTop: '5px' }}>{stats.scored}</div>
+                <div className="stat-card">
+                    <div className="stat-label">Scored</div>
+                    <div className="stat-value">{stats.scored}</div>
                 </div>
-                <div className="stat-card" style={{ background: 'white', borderRadius: '12px', padding: '20px', boxShadow: '0 4px 6px rgba(0,0,0,0.07)' }}>
-                    <div className="stat-label" style={{ fontSize: '13px', color: 'var(--gray)', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Not Scored</div>
-                    <div className="stat-value" style={{ fontSize: '28px', fontWeight: '700', color: 'var(--danger)', marginTop: '5px' }}>{stats.notScored}</div>
+                <div className="stat-card">
+                    <div className="stat-label">Not Scored</div>
+                    <div className="stat-value">{stats.notScored}</div>
                 </div>
-                <div className="stat-card" style={{ background: 'white', borderRadius: '12px', padding: '20px', boxShadow: '0 4px 6px rgba(0,0,0,0.07)' }}>
-                    <div className="stat-label" style={{ fontSize: '13px', color: 'var(--gray)', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Average Score</div>
-                    <div className="stat-value" style={{ fontSize: '28px', fontWeight: '700', color: 'var(--secondary)', marginTop: '5px' }}>{stats.avgScore}%</div>
+                <div className="stat-card">
+                    <div className="stat-label">Average Score</div>
+                    <div className="stat-value">{stats.avgScore}%</div>
                 </div>
             </div>
 

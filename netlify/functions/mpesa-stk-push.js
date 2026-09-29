@@ -14,17 +14,40 @@ exports.handler = async (event) => {
         return json(400, { success: false, message: 'Invalid JSON body' });
     }
 
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return json(400, { success: false, message: 'Invalid request body' });
+    }
+
     const {
         phoneNumber, amount, studentId, studentName, description, schoolId,
         admissionNumber, studentClass, level, term, year, invoiceId,
         initiatedBy, initiatedByName
     } = body;
 
-    if (!phoneNumber || !amount || !studentId || !schoolId) {
+    if (
+        typeof phoneNumber !== 'string'
+        || typeof studentId !== 'string'
+        || typeof schoolId !== 'string'
+        || !phoneNumber.trim()
+        || !studentId.trim()
+        || !schoolId.trim()
+        || !/^[A-Za-z0-9_-]{1,128}$/.test(studentId)
+        || !/^[A-Za-z0-9_-]{1,128}$/.test(schoolId)
+        || !/^[A-Za-z0-9][A-Za-z0-9/-]{0,39}$/.test(String(admissionNumber || ''))
+    ) {
         return json(400, {
-            success: false,
-            message: 'Missing required fields: phoneNumber, amount, studentId, schoolId'
+            success: false, message: 'Invalid or missing phone number, student, admission number, or school.'
         });
+    }
+
+    const numericAmount = Number(amount);
+    if (!Number.isSafeInteger(numericAmount) || numericAmount <= 10) {
+        return json(400, { success: false, message: 'Amount must be a whole number greater than KES 10.' });
+    }
+
+    const submittedPhone = phoneNumber.trim().replace(/[\s-]/g, '');
+    if (!/^(?:(?:\+?254)|0)?[17]\d{8}$/.test(submittedPhone)) {
+        return json(400, { success: false, message: 'Invalid Kenyan mobile phone number.' });
     }
 
     let admin, db, schoolName = body.schoolName || 'School';
@@ -32,10 +55,26 @@ exports.handler = async (event) => {
         admin = initAdmin();
         db = admin.firestore();
     } catch (e) {
-        console.warn('Firebase Admin init optional fallback:', e.message);
+        console.error('Firebase Admin is required to verify the student before an STK push:', e.message);
+        return json(503, { success: false, message: 'Student verification is temporarily unavailable.' });
     }
 
     try {
+        const studentDoc = await db.collection('students').doc(studentId).get();
+        if (!studentDoc.exists) {
+            return json(404, { success: false, message: 'Student not found.' });
+        }
+        const verifiedStudent = studentDoc.data();
+        const verifiedAdmission = String(verifiedStudent.admissionNumber || verifiedStudent.studentId || '');
+        if (
+            verifiedStudent.schoolId !== schoolId
+            || verifiedAdmission !== String(admissionNumber)
+        ) {
+            return json(400, { success: false, message: 'Student admission details do not match.' });
+        }
+        const verifiedStudentName = `${verifiedStudent.firstName || ''} ${verifiedStudent.lastName || ''}`.trim()
+            || verifiedStudent.fullName || verifiedStudent.name || '';
+
         // ---- 1. Load credentials: from school's private Daraja doc or environment variables ----
         let daraja = {};
         if (db && schoolId) {
@@ -73,13 +112,10 @@ exports.handler = async (event) => {
         }
 
         // ---- 2. No more platform fee — the school receives the full amount ----
-        const totalAmount = Math.round(Number(amount));
-        if (!totalAmount || totalAmount <= 0) {
-            return json(400, { success: false, message: 'Invalid amount' });
-        }
+        const totalAmount = numericAmount;
 
         // ---- 3. Normalize phone number (Safaricom expects 254XXXXXXXXX) ----
-        let formattedPhone = String(phoneNumber).replace(/\D/g, '');
+        let formattedPhone = submittedPhone.replace(/^\+/, '');
         if (formattedPhone.startsWith('0')) {
             formattedPhone = '254' + formattedPhone.slice(1);
         } else if (!formattedPhone.startsWith('254')) {
@@ -187,7 +223,7 @@ exports.handler = async (event) => {
         // ---- 7. Persist pending transaction (used by the callback) ----
         const transactionData = {
             studentId,
-            studentName: studentName || '',
+            studentName: verifiedStudentName || studentName || '',
             schoolId,
             amount: totalAmount,
             phoneNumber: formattedPhone,

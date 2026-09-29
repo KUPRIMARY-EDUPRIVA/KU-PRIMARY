@@ -2,7 +2,7 @@
 import {
     collection, query, where, getDocs, doc, getDoc, setDoc,
     limit, writeBatch, deleteDoc,
-    updateDoc, serverTimestamp, runTransaction
+    updateDoc, serverTimestamp, runTransaction, increment
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getMemory, setMemory } from './cache';
@@ -291,17 +291,29 @@ export async function reconcileStudentBalance(schoolId, studentId, term, year) {
     const balanceRef = doc(db, 'student_balances', balanceId);
 
     // Read all invoices for this student in this term/year
-    const invQ = query(
-        collection(db, 'invoices'),
-        where('schoolId', '==', schoolId),
-        where('studentId', '==', studentId),
-        where('term', '==', term),
-        where('academicYear', '==', String(year))
-    );
-    const invSnap = await getDocs(invQ);
+    let invSnap;
+    try {
+        invSnap = await getDocs(query(
+            collection(db, 'invoices'),
+            where('schoolId', '==', schoolId),
+            where('studentId', '==', studentId),
+            where('term', '==', term),
+            where('academicYear', '==', String(year))
+        ));
+    } catch (error) {
+        if (error.code !== 'failed-precondition') throw error;
+        console.warn('Invoice reconciliation is using a school-scoped fallback query; deploy the invoices composite index for faster reconciliation.');
+        invSnap = await getDocs(query(
+            collection(db, 'invoices'),
+            where('schoolId', '==', schoolId)
+        ));
+    }
     const activeInvoices = invSnap.docs
         .map(d => ({ id: d.id, ref: d.ref, ...d.data() }))
-        .filter(i => i.status !== 'cancelled');
+        .filter(i => i.studentId === studentId
+            && i.term === term
+            && String(i.academicYear) === String(year)
+            && i.status !== 'cancelled');
 
     // Sort invoices by creation date (oldest first for FIFO payment allocation)
     activeInvoices.sort((a, b) => {
@@ -313,17 +325,29 @@ export async function reconcileStudentBalance(schoolId, studentId, term, year) {
     const totalInvoiced = activeInvoices.reduce((sum, i) => sum + (Number(i.total) || 0), 0);
 
     // Read all transactions
-    const txnQ = query(
-        collection(db, 'fee_transactions'),
-        where('schoolId', '==', schoolId),
-        where('studentId', '==', studentId),
-        where('term', '==', term),
-        where('year', '==', Number(year))
-    );
-    const txnSnap = await getDocs(txnQ);
+    let txnSnap;
+    try {
+        txnSnap = await getDocs(query(
+            collection(db, 'fee_transactions'),
+            where('schoolId', '==', schoolId),
+            where('studentId', '==', studentId),
+            where('term', '==', term),
+            where('year', '==', Number(year))
+        ));
+    } catch (error) {
+        if (error.code !== 'failed-precondition') throw error;
+        console.warn('Transaction reconciliation is using a school-scoped fallback query; deploy the fee transactions composite index for faster reconciliation.');
+        txnSnap = await getDocs(query(
+            collection(db, 'fee_transactions'),
+            where('schoolId', '==', schoolId)
+        ));
+    }
     const activeTxns = txnSnap.docs
         .map(d => d.data())
-        .filter(t => !t.voided);
+        .filter(t => t.studentId === studentId
+            && t.term === term
+            && Number(t.year) === Number(year)
+            && !t.voided);
 
     let totalPaid = 0;
     let totalDiscount = 0;
@@ -395,12 +419,30 @@ export async function reconcileStudentBalance(schoolId, studentId, term, year) {
 // ---------- Invoices (batch) ----------
 export async function createInvoicesBatch(schoolId, entries, meta) {
     if (!entries?.length) return { count: 0 };
-    if (entries.length > 500) throw new Error('Batch exceeds 500. Chunk before calling.');
+    if (entries.length > 250) {
+        const stamp = Date.now();
+        const prepared = entries.map((entry, index) => ({
+            ...entry,
+            suffix: entry.suffix || `${stamp}_${index}`
+        }));
+        let count = 0;
+        for (let index = 0; index < prepared.length; index += 250) {
+            const result = await createInvoicesBatch(schoolId, prepared.slice(index, index + 250), meta);
+            count += result.count;
+        }
+        return { count };
+    }
 
+    const preparedEntries = entries.map((entry, index) => ({
+        ...entry,
+        suffix: entry.suffix || `${Date.now()}_${index}`
+    }));
     const batch = writeBatch(db);
-    for (const entry of entries) {
-        const id = makeInvoiceId(schoolId, entry.studentId, entry.term, entry.academicYear, entry.suffix || `${Date.now()}`);
-        const ref = doc(db, 'invoices', id);
+    for (let index = 0; index < preparedEntries.length; index++) {
+        const entry = preparedEntries[index];
+        const ref = doc(db, 'invoices', makeInvoiceId(
+            schoolId, entry.studentId, entry.term, entry.academicYear, entry.suffix
+        ));
         batch.set(ref, {
             invoiceNumber: entry.invoiceNumber,
             studentId: entry.studentId,
@@ -433,9 +475,42 @@ export async function createInvoicesBatch(schoolId, entries, meta) {
             updatedAt: serverTimestamp()
         }, { merge: true });
     }
+
+    const newInvoiceTotals = new Map();
+    preparedEntries.forEach((entry) => {
+        const key = JSON.stringify([entry.studentId, entry.term, entry.academicYear]);
+        const current = newInvoiceTotals.get(key) || { entry, amount: 0 };
+        current.amount += Number(entry.total) || 0;
+        newInvoiceTotals.set(key, current);
+    });
+
+    if (newInvoiceTotals.size) {
+        const balanceEntries = [...newInvoiceTotals.values()];
+        balanceEntries.forEach(({ entry, amount }) => {
+            const balanceRef = doc(db, 'student_balances', makeBalanceId(
+                entry.studentId, entry.term, entry.academicYear
+            ));
+            batch.set(balanceRef, {
+                schoolId,
+                studentId: entry.studentId,
+                studentName: entry.studentName || '',
+                admissionNumber: entry.admissionNumber || '',
+                studentClass: entry.studentClass || '',
+                level: entry.studentLevel || '',
+                term: entry.term,
+                year: Number(entry.academicYear),
+                totalInvoiced: increment(amount),
+                balance: increment(amount),
+                status: 'pending',
+                updatedAt: serverTimestamp(),
+                lastReconciledAt: serverTimestamp()
+            }, { merge: true });
+        });
+    }
+
     await batch.commit();
     setMemory(`inv_${schoolId}_all_all_all_all`, null, 0);
-    return { count: entries.length };
+    return { count: preparedEntries.length };
 }
 
 export async function cancelInvoice(schoolId, invoiceId, reason, performedBy, performedByName) {

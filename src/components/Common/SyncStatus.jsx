@@ -15,7 +15,11 @@ export default function SyncStatus() {
     };
 
     return (
-        <div style={{
+        <div
+            className="sync-status"
+            title={isOnline ? 'Online' : 'Offline'}
+            aria-label={isOnline ? 'Online' : 'Offline'}
+            style={{
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
@@ -35,12 +39,12 @@ export default function SyncStatus() {
             ) : (
                 <>
                     <i className={`fas ${isOnline ? 'fa-wifi' : 'fa-wifi-slash'}`}></i>
-                    <span>{isOnline ? 'Online' : 'Offline'}</span>
+                    <span className="sync-status-label">{isOnline ? 'Online' : 'Offline'}</span>
                 </>
             )}
             
             {pendingCount > 0 && (
-                <span style={{
+                <span className="sync-status-pending" style={{
                     background: 'var(--warning)',
                     color: 'white',
                     padding: '1px 8px',
@@ -53,7 +57,7 @@ export default function SyncStatus() {
             )}
             
             {lastSync && isOnline && (
-                <span style={{ color: 'var(--gray)', fontSize: '10px' }}>
+                <span className="sync-status-time" style={{ color: 'var(--gray)', fontSize: '10px' }}>
                     {formatTime(lastSync)}
                 </span>
             )}

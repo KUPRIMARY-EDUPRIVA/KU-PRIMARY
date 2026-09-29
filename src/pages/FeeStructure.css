@@ -1,0 +1,112 @@
+.fee-structure-page {
+    width: 100%;
+    min-width: 0;
+    padding-inline: 16px;
+    box-sizing: border-box;
+}
+
+.fee-structure-page,
+.fee-structure-page * {
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.fee-structure-editor {
+    grid-template-columns: minmax(0, 1fr) 340px !important;
+}
+
+.fee-structure-form {
+    width: 100%;
+    overflow: hidden;
+}
+
+.fee-items-heading,
+.fee-item-row {
+    grid-template-columns: minmax(0, 2fr) minmax(100px, 140px) minmax(100px, 140px) minmax(70px, 90px) 40px !important;
+}
+
+.fee-item-row > input,
+.fee-item-row > select {
+    width: 100%;
+    min-width: 0;
+}
+
+.fee-structure-page button,
+.fee-structure-page input,
+.fee-structure-page select {
+    max-width: 100%;
+}
+
+.fee-structure-page table {
+    min-width: 680px;
+}
+
+@media (max-width: 960px) {
+    .fee-structure-editor {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .fee-structure-sidebar {
+        display: grid !important;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 620px) {
+    .fee-structure-page {
+        padding-inline: 10px;
+    }
+
+    .fee-structure-page > div:first-child {
+        padding: 16px !important;
+    }
+
+    .fee-structure-page h2 {
+        font-size: 19px !important;
+    }
+
+    .fee-structure-editor {
+        gap: 14px !important;
+    }
+
+    .fee-structure-form {
+        padding: 14px !important;
+    }
+
+    .fee-items-heading {
+        display: none !important;
+    }
+
+    .fee-item-row {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px !important;
+        gap: 8px !important;
+        padding: 10px !important;
+    }
+
+    .fee-item-row > input[type="text"] {
+        grid-column: 1 / -1;
+    }
+
+    .fee-item-row > input[type="number"] {
+        text-align: left !important;
+    }
+
+    .fee-item-row > div {
+        grid-column: 1;
+        text-align: left !important;
+    }
+
+    .fee-item-row > button {
+        grid-column: 3;
+        grid-row: 3;
+        justify-self: end;
+    }
+
+    .fee-structure-sidebar {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .fee-structure-page table {
+        min-width: 620px;
+    }
+}

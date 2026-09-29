@@ -296,8 +296,8 @@ export default function TeacherReports() {
         if (!score) return showNotification('Record not found', 'error');
         setExporting(true);
         try {
-            await downloadTeacherRecordPDF(buildRecordForPDF(score), buildMeta(), teacherData);
-            showNotification('PDF exported successfully', 'success');
+            const result = await downloadTeacherRecordPDF(buildRecordForPDF(score), buildMeta(), teacherData);
+            showNotification(`PDF saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('Export error:', err);
             showNotification('Failed to export PDF: ' + err.message, 'error');
@@ -314,8 +314,8 @@ export default function TeacherReports() {
         setExporting(true);
         try {
             const records = filteredScores.map(buildRecordForPDF);
-            await downloadTeacherReportsAllPDF(records, buildMeta(), teacherData);
-            showNotification('All reports exported successfully', 'success');
+            const result = await downloadTeacherReportsAllPDF(records, buildMeta(), teacherData);
+            showNotification(`Reports saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('Export all error:', err);
             showNotification('Failed to export reports: ' + err.message, 'error');

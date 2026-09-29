@@ -1,4 +1,5 @@
 // src/services/timetablePdfClient.js
+import { savePdfBlob } from './deviceSecurity';
 /**
  * Thin client for the Netlify timetable-pdf function.
  *
@@ -20,15 +21,8 @@ async function postJSON(url, body) {
   return res.blob();
 }
 
-function triggerDownload(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+async function triggerDownload(blob, filename) {
+  return savePdfBlob(blob, filename);
 }
 
 /**
@@ -72,7 +66,7 @@ export async function downloadClassTimetablePDF({
     periods: packPeriods(periods),
     levelDisplay: packLevelDisplay(levelDisplay),
   });
-  triggerDownload(blob, `Timetable_${className || 'Class'}_${term}_${year}.pdf`);
+  return triggerDownload(blob, `Timetable_${className || 'Class'}_${term}_${year}.pdf`);
 }
 
 export async function downloadTeacherTimetablePDF({
@@ -85,7 +79,7 @@ export async function downloadTeacherTimetablePDF({
     periods: packPeriods(periods),
     levelDisplay: packLevelDisplay(levelDisplay),
   });
-  triggerDownload(blob, `Timetable_${teacher?.initials || 'Teacher'}_${term}_${year}.pdf`);
+  return triggerDownload(blob, `Timetable_${teacher?.initials || 'Teacher'}_${term}_${year}.pdf`);
 }
 
 export async function downloadMasterTimetablePDF({
@@ -98,7 +92,7 @@ export async function downloadMasterTimetablePDF({
     periods: packPeriods(periods),
     levelDisplay: packLevelDisplay(levelDisplay),
   });
-  triggerDownload(blob, `Timetable_Master_${levelLabel || level}_${term}_${year}.pdf`);
+  return triggerDownload(blob, `Timetable_Master_${levelLabel || level}_${term}_${year}.pdf`);
 }
 
 export async function downloadDutyRosterPDF({
@@ -111,5 +105,5 @@ export async function downloadDutyRosterPDF({
     dutyAreas: packDutyAreas(dutyAreas),
     levelDisplay: packLevelDisplay(levelDisplay),
   });
-  triggerDownload(blob, `Duty_Roster_${term}_${year}.pdf`);
+  return triggerDownload(blob, `Duty_Roster_${term}_${year}.pdf`);
 }

@@ -68,6 +68,7 @@ export const ACTION_CATEGORY = Object.freeze({
   SCORES_SAVED: 'results', SCORES_PUBLISHED: 'results', SCORES_IMPORTED: 'results',
   LEVEL_ENTRY_OPENED: 'results', LEVEL_ENTRY_CLOSED: 'results',
   FEE_PAYMENT: 'finance', FEE_INVOICE_CREATED: 'finance', FEE_INVOICE_VOIDED: 'finance',
+  INVOICES_CREATED: 'finance',
   SCHOOL_SETTINGS_UPDATED: 'settings', SUBSCRIPTION_UPDATED: 'settings',
   OTHER: 'other',
 });
@@ -146,7 +147,14 @@ export const AuditLogService = {
       action: sanitize(action || AUDIT_ACTIONS.OTHER, MAX_ACTION_LENGTH),
       entityId: sanitize(entityId || '', 120),
       details: sanitize(
-        typeof details === 'string' ? details : (details?.message || details?.details || ''),
+        typeof details === 'string'
+          ? details
+          : details?.message
+            || details?.details
+            || Object.entries(details || {})
+              .filter(([key]) => !['entityId', 'schoolId'].includes(key))
+              .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`)
+              .join(', '),
         MAX_DETAIL_LENGTH
       ),
       // Keep the structured blob too — filters/reports may want it later.
@@ -215,12 +223,15 @@ export const AuditLogService = {
       const q = query(
         collection(db, 'audit_logs'),
         ...base,
-        limit(pageSize)
+        ...(opts.cursor ? [startAfter(opts.cursor)] : []),
+        limit(pageSize + 1)
       );
       const snap = await getDocs(q);
-      const items = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+      const docs = snap.docs;
+      const hasMore = docs.length > pageSize;
+      const items = docs.slice(0, pageSize).map((doc) => ({ id: doc.id, ...doc.data() }));
       items.sort((a, b) => millisOf(b.timestamp) - millisOf(a.timestamp));
-      return { items, nextCursor: null, hasMore: false };
+      return { items, nextCursor: hasMore ? docs[pageSize - 1] : null, hasMore };
     }
   },
 
@@ -245,7 +256,9 @@ export const AuditLogService = {
       cursor = nextCursor;
       safety += 1;
     }
-    return all.slice(0, cap);
+    return all
+      .sort((a, b) => millisOf(b.timestamp) - millisOf(a.timestamp))
+      .slice(0, cap);
   },
 };
 

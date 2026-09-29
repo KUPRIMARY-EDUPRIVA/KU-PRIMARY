@@ -6,6 +6,7 @@ import { useFee } from '../context/FeeContext';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { downloadFeeStructurePDF } from '../services/pdf';
+import './FeeStructure.css';
 import {
     SCHOOL_LEVELS,
     LEVEL_CLASSES,
@@ -62,6 +63,7 @@ export default function FeeStructure() {
     const [includeOptionalInInvoicing, setIncludeOptionalInInvoicing] = useState(false);
     const [isGeneratingInvoices, setIsGeneratingInvoices] = useState(false);
     const [singleScheduleForPDF, setSingleScheduleForPDF] = useState(null);
+    const [exportingPDF, setExportingPDF] = useState(false);
 
     // Dynamic classes based on school constants + any custom student classes
     const availableClasses = useMemo(() => {
@@ -146,14 +148,30 @@ export default function FeeStructure() {
         ]);
     };
 
-    const handleDownloadPDF = () => {
-        downloadFeeStructurePDF(savedStructures, userData, selectedYear);
-        setFeedback({ type: 'success', message: 'All Fee Schedules PDF downloaded successfully!' });
+    const handleDownloadPDF = async () => {
+        setExportingPDF(true);
+        try {
+            const result = await downloadFeeStructurePDF(savedStructures, userData, selectedYear);
+            setFeedback({ type: 'success', message: `Fee schedules saved${result?.filename ? ` as ${result.filename}` : ' to Downloads/EduPriva'}.` });
+        } catch (error) {
+            console.error('Fee schedule PDF export failed:', error);
+            setFeedback({ type: 'error', message: `Fee schedule export failed: ${error.message}` });
+        } finally {
+            setExportingPDF(false);
+        }
     };
 
-    const handleDownloadSingleSchedulePDF = (schedule) => {
-        downloadFeeStructurePDF(schedule, userData, selectedYear);
-        setFeedback({ type: 'success', message: 'Fee Schedule PDF downloaded successfully!' });
+    const handleDownloadSingleSchedulePDF = async (schedule) => {
+        setExportingPDF(true);
+        try {
+            const result = await downloadFeeStructurePDF(schedule, userData, selectedYear);
+            setFeedback({ type: 'success', message: `Fee schedule saved${result?.filename ? ` as ${result.filename}` : ' to Downloads/EduPriva'}.` });
+        } catch (error) {
+            console.error('Fee schedule PDF export failed:', error);
+            setFeedback({ type: 'error', message: `Fee schedule export failed: ${error.message}` });
+        } finally {
+            setExportingPDF(false);
+        }
     };
 
     const handleAddItem = () => {
@@ -297,7 +315,11 @@ export default function FeeStructure() {
                 createdByName: userData?.fullName || 'System'
             });
 
-            showNotification(`Successfully created ${res.count} invoices for ${eligibleStudents.length} students!`, 'success');
+            if (res.errors?.length) {
+                showNotification(`Created ${res.count} invoices; ${res.errors.length} batch(es) failed. ${res.errors[0].error}`, 'warning');
+            } else {
+                showNotification(`Created ${res.count} invoices. Outstanding balances have been updated.`, 'success');
+            }
             setShowInvoiceModal(false);
             setStructureToInvoice(null);
         } catch (err) {
@@ -309,7 +331,7 @@ export default function FeeStructure() {
 
     return (
         <Layout title="Fee Structure & Schedules">
-            <div style={{ maxWidth: 1200, margin: '0 auto', paddingBottom: 60 }}>
+            <div className="fee-structure-page" style={{ maxWidth: 1200, margin: '0 auto', paddingBottom: 60 }}>
                 {/* Header Card */}
                 <div style={{
                     background: '#fff',
@@ -337,6 +359,7 @@ export default function FeeStructure() {
                         <button
                             type="button"
                             onClick={handleDownloadPDF}
+                            disabled={exportingPDF || savedStructures.length === 0}
                             style={{
                                 background: '#1a237e',
                                 color: '#fff',
@@ -352,7 +375,7 @@ export default function FeeStructure() {
                                 boxShadow: '0 2px 6px rgba(26, 35, 126, 0.2)'
                             }}
                         >
-                            <i className="fas fa-file-pdf"></i> Export Fee Structure PDF
+                            <i className={`fas ${exportingPDF ? 'fa-spinner fa-spin' : 'fa-file-pdf'}`}></i> {exportingPDF ? 'Exporting…' : 'Export Fee Structure PDF'}
                         </button>
                         <span style={{ fontWeight: 600, color: '#444', fontSize: 14 }}>Academic Year:</span>
                         <input
@@ -392,14 +415,14 @@ export default function FeeStructure() {
                 )}
 
                 {/* Editor Container */}
-                <div style={{
+                <div className="fee-structure-editor" style={{
                     display: 'grid',
                     gridTemplateColumns: 'minmax(320px, 1fr) 340px',
                     gap: 24,
                     alignItems: 'start'
                 }}>
                     {/* Main Form Box */}
-                    <div style={{
+                    <div className="fee-structure-form" style={{
                         background: '#fff',
                         borderRadius: 14,
                         padding: 24,
@@ -566,7 +589,7 @@ export default function FeeStructure() {
 
                         {/* Fee Item Rows */}
                         <div style={{ marginBottom: 20 }}>
-                            <div style={{
+                            <div className="fee-items-heading" style={{
                                 display: 'grid',
                                 gridTemplateColumns: 'minmax(180px, 2fr) 140px 140px 90px 40px',
                                 gap: 10,
@@ -590,6 +613,7 @@ export default function FeeStructure() {
                                 {items.map((item, idx) => (
                                     <div
                                         key={idx}
+                                        className="fee-item-row"
                                         style={{
                                             display: 'grid',
                                             gridTemplateColumns: 'minmax(180px, 2fr) 140px 140px 90px 40px',
@@ -752,7 +776,7 @@ export default function FeeStructure() {
                     </div>
 
                     {/* Right Summary Sidebar */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                    <div className="fee-structure-sidebar" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
                         {/* Summary Widget */}
                         <div style={{
                             background: '#1a237e',

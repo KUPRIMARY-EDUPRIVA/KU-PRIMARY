@@ -66,7 +66,7 @@ const downloadCSV = (filename, rows) => {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
 /* ============================================================
@@ -97,6 +97,9 @@ export default function AuditLogs() {
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!isAdmin || !schoolId) {
+      if (isAdmin && !schoolId) {
+        setError('This account is not linked to a school, so school audit logs cannot be loaded.');
+      }
       setLoading(false);
       return;
     }

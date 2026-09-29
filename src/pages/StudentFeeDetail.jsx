@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useFee } from '../context/FeeContext';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
-import { downloadStudentInvoicePDF } from '../services/pdf';
+import { downloadStudentInvoicePDF, saveGeneratedPdf } from '../services/pdf';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -250,7 +250,10 @@ export default function StudentFeeDetail() {
                 { align: 'center' }
             );
 
-            pdf.save(`Fee_Statement_${student?.firstName || ''}_${student?.lastName || ''}_${new Date().toISOString().slice(0,10)}.pdf`);
+            await saveGeneratedPdf(
+                pdf,
+                `Fee_Statement_${student?.firstName || ''}_${student?.lastName || ''}_${new Date().toISOString().slice(0,10)}.pdf`
+            );
 
         } catch (error) {
             console.error('Error generating PDF:', error);
@@ -308,7 +311,7 @@ export default function StudentFeeDetail() {
     const generateInvoicePDF = async (invoice) => {
         setIsGeneratingPDF(true);
         try {
-            downloadStudentInvoicePDF(invoice, schoolData || userData);
+            await downloadStudentInvoicePDF(invoice, schoolData || userData);
         } catch (error) {
             console.error('Error generating invoice PDF:', error);
             alert('Failed to generate invoice PDF. Please try again.');

@@ -1,7 +1,6 @@
 // src/pages/Student/Results.jsx
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
-import { useSync } from '../../context/SyncContext';
 import { db } from '../../firebase';
 import { 
     collection, query, where, getDocs, 
@@ -17,8 +16,6 @@ import {
 
 export default function StudentResults() {
     const { currentUser, userData } = useAuth();
-    const { isOnline } = useSync();
-    
     const [loading, setLoading] = useState(true);
     const [student, setStudent] = useState(null);
     const [results, setResults] = useState([]);
@@ -601,25 +598,6 @@ export default function StudentResults() {
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-                )}
-
-                {/* Offline indicator */}
-                {!isOnline && (
-                    <div style={{
-                        marginTop: '25px',
-                        padding: '15px 20px',
-                        background: '#fff3cd',
-                        color: '#856404',
-                        borderRadius: '8px',
-                        border: '1px solid #ffc107',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '10px',
-                        fontSize: '14px'
-                    }}>
-                        <i className="fas fa-wifi-slash"></i>
-                        <span>You are offline. Showing cached results.</span>
                     </div>
                 )}
 
