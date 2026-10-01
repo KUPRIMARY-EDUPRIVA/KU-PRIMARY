@@ -1,12 +1,16 @@
 // src/context/FeeContext.jsx
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from './AuthContext';
 import { useSync } from './SyncContext';
 import {
     requireSchoolId, getStudents, getFeeTransactions, getInvoices, getBalancesForSchool,
     createInvoicesBatch, postTransaction, voidTransaction, getInvoiceSummary,
     isTermLocked, computeAging, getFeeStructures, upsertFeeStructure, deleteFeeStructure,
-    reconcileStudentBalance, cancelInvoice
+    reconcileStudentBalance, cancelInvoice,
+    // Paginated APIs
+    getStudentsPage, getBalancesPage, getInvoicesPage, getFeeTransactionsPage,
+    getStudentsCount, getBalancesCount, getInvoicesCount,
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 } from '../services/feeService';
 import { setMemory } from '../services/cache';
 
@@ -20,16 +24,34 @@ export function useFee() {
 const generateInvoiceNumber = (schoolId, seq) => {
     const prefix = (schoolId || 'SCH').substring(0, 4).toUpperCase();
     const d = new Date();
-    const stamp = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
-    return `${prefix}-INV-${stamp}-${String(seq % 10000).padStart(4,'0')}`;
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    return `${prefix}-INV-${stamp}-${String(seq % 10000).padStart(4, '0')}`;
 };
+
+// ============================================================
+// Pagination state shape
+// ============================================================
+const createPaginationState = (pageSize = DEFAULT_PAGE_SIZE) => ({
+    items: [],
+    pageSize,
+    cursor: null,        // cursor for next page
+    cursorPrev: null,    // cursor for prev page
+    hasMore: false,
+    hasPrev: false,
+    pageIndex: 0,        // 0-based
+    total: null,         // total count (fetched separately)
+    loading: false,
+    error: null,
+    direction: 'first'
+});
 
 export function FeeProvider({ children }) {
     const { userData, currentUser } = useAuth();
     const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
 
+    // ---- Non-paginated state (kept for compatibility) ----
     const [students, setStudents] = useState([]);
-    const [balances, setBalances] = useState({});       // map studentId -> balance
+    const [balances, setBalances] = useState({});
     const [feeTransactions, setFeeTransactions] = useState([]);
     const [invoices, setInvoices] = useState([]);
     const [summary, setSummary] = useState(null);
@@ -38,6 +60,302 @@ export function FeeProvider({ children }) {
     const [scope, setScope] = useState({ term: 'Term 1', year: new Date().getFullYear(), level: '', cls: '' });
     const [termLocked, setTermLocked] = useState(false);
     const [feeStructures, setFeeStructures] = useState([]);
+
+    // ---- Paginated state ----
+    const [studentsPage, setStudentsPage] = useState(() => createPaginationState());
+    const [balancesPage, setBalancesPage] = useState(() => createPaginationState());
+    const [invoicesPage, setInvoicesPage] = useState(() => createPaginationState());
+    const [transactionsPage, setTransactionsPage] = useState(() => createPaginationState());
+
+    // Refs to hold latest query params (avoid stale closures)
+    const studentsQueryRef = useRef({ level: '', cls: '', sortField: 'firstName', sortDirection: 'asc' });
+    const balancesQueryRef = useRef({ term: '', year: '', level: '', cls: '', status: '', sortField: 'studentName', sortDirection: 'asc' });
+    const invoicesQueryRef = useRef({ term: '', year: '', status: '', studentId: '', sortDirection: 'desc' });
+    const transactionsQueryRef = useRef({ term: '', year: '', studentId: '', type: '', sortDirection: 'desc' });
+
+    // ============================================================
+    // PAGINATED FETCHERS
+    // ============================================================
+
+    const fetchStudentsPage = useCallback(async (opts = {}) => {
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); }
+        catch (e) { return; }
+
+        const direction = opts.direction || 'first';
+        const queryParams = { ...studentsQueryRef.current, ...opts, direction };
+
+        setStudentsPage(prev => ({
+            ...prev,
+            loading: true,
+            error: null,
+            // reset cursor if starting fresh
+            cursor: direction === 'first' ? null : prev.cursor,
+            cursorPrev: direction === 'first' ? null : prev.cursorPrev,
+            pageIndex: direction === 'first' ? 0 : (opts.pageIndex ?? prev.pageIndex)
+        }));
+
+        try {
+            const res = await getStudentsPage(schoolId, {
+                pageSize: studentsPage.pageSize,
+                cursor: direction === 'prev' ? studentsPage.cursorPrev : studentsPage.cursor,
+                direction,
+                level: queryParams.level,
+                cls: queryParams.cls,
+                sortField: queryParams.sortField || 'firstName',
+                sortDirection: queryParams.sortDirection || 'asc'
+            });
+
+            setStudentsPage(prev => ({
+                ...prev,
+                items: res.items,
+                cursor: res.cursor,
+                cursorPrev: res.cursorPrev,
+                hasMore: res.hasMore,
+                hasPrev: direction !== 'first' ? true : false,
+                loading: false,
+                pageIndex: direction === 'next' ? prev.pageIndex + 1
+                    : direction === 'prev' ? Math.max(0, prev.pageIndex - 1)
+                    : 0
+            }));
+        } catch (err) {
+            console.error('fetchStudentsPage failed:', err);
+            setStudentsPage(prev => ({ ...prev, loading: false, error: err.message }));
+        }
+    }, [userData, studentsPage.pageSize, studentsPage.cursor, studentsPage.cursorPrev]);
+
+    const fetchStudentsCount = useCallback(async () => {
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); } catch { return; }
+        const count = await getStudentsCount(schoolId, {
+            level: studentsQueryRef.current.level,
+            cls: studentsQueryRef.current.cls
+        });
+        if (count !== null) {
+            setStudentsPage(prev => ({ ...prev, total: count }));
+        }
+    }, [userData]);
+
+    const fetchBalancesPage = useCallback(async (opts = {}) => {
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); }
+        catch (e) { return; }
+
+        const direction = opts.direction || 'first';
+        const queryParams = { ...balancesQueryRef.current, ...opts, direction };
+
+        setBalancesPage(prev => ({
+            ...prev,
+            loading: true,
+            error: null,
+            cursor: direction === 'first' ? null : prev.cursor,
+            cursorPrev: direction === 'first' ? null : prev.cursorPrev,
+            pageIndex: direction === 'first' ? 0 : (opts.pageIndex ?? prev.pageIndex)
+        }));
+
+        try {
+            const res = await getBalancesPage(schoolId, {
+                pageSize: balancesPage.pageSize,
+                cursor: direction === 'prev' ? balancesPage.cursorPrev : balancesPage.cursor,
+                direction,
+                term: queryParams.term || scope.term,
+                year: queryParams.year || scope.year,
+                level: queryParams.level,
+                cls: queryParams.cls,
+                status: queryParams.status,
+                sortField: queryParams.sortField || 'studentName',
+                sortDirection: queryParams.sortDirection || 'asc'
+            });
+
+            setBalancesPage(prev => ({
+                ...prev,
+                items: res.items,
+                cursor: res.cursor,
+                cursorPrev: res.cursorPrev,
+                hasMore: res.hasMore,
+                hasPrev: direction !== 'first' ? true : false,
+                loading: false,
+                pageIndex: direction === 'next' ? prev.pageIndex + 1
+                    : direction === 'prev' ? Math.max(0, prev.pageIndex - 1)
+                    : 0
+            }));
+        } catch (err) {
+            console.error('fetchBalancesPage failed:', err);
+            setBalancesPage(prev => ({ ...prev, loading: false, error: err.message }));
+        }
+    }, [userData, balancesPage.pageSize, balancesPage.cursor, balancesPage.cursorPrev, scope.term, scope.year]);
+
+    const fetchBalancesCount = useCallback(async () => {
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); } catch { return; }
+        const count = await getBalancesCount(schoolId, {
+            term: balancesQueryRef.current.term || scope.term,
+            year: balancesQueryRef.current.year || scope.year,
+            level: balancesQueryRef.current.level,
+            cls: balancesQueryRef.current.cls,
+            status: balancesQueryRef.current.status
+        });
+        if (count !== null) setBalancesPage(prev => ({ ...prev, total: count }));
+    }, [userData, scope.term, scope.year]);
+
+    const fetchInvoicesPage = useCallback(async (opts = {}) => {
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); }
+        catch (e) { return; }
+
+        const direction = opts.direction || 'first';
+        const queryParams = { ...invoicesQueryRef.current, ...opts, direction };
+
+        setInvoicesPage(prev => ({
+            ...prev,
+            loading: true,
+            error: null,
+            cursor: direction === 'first' ? null : prev.cursor,
+            cursorPrev: direction === 'first' ? null : prev.cursorPrev,
+            pageIndex: direction === 'first' ? 0 : (opts.pageIndex ?? prev.pageIndex)
+        }));
+
+        try {
+            const res = await getInvoicesPage(schoolId, {
+                pageSize: invoicesPage.pageSize,
+                cursor: direction === 'prev' ? invoicesPage.cursorPrev : invoicesPage.cursor,
+                direction,
+                term: queryParams.term,
+                year: queryParams.year,
+                status: queryParams.status,
+                studentId: queryParams.studentId,
+                sortDirection: queryParams.sortDirection || 'desc'
+            });
+
+            setInvoicesPage(prev => ({
+                ...prev,
+                items: res.items,
+                cursor: res.cursor,
+                cursorPrev: res.cursorPrev,
+                hasMore: res.hasMore,
+                hasPrev: direction !== 'first' ? true : false,
+                loading: false,
+                pageIndex: direction === 'next' ? prev.pageIndex + 1
+                    : direction === 'prev' ? Math.max(0, prev.pageIndex - 1)
+                    : 0
+            }));
+        } catch (err) {
+            console.error('fetchInvoicesPage failed:', err);
+            setInvoicesPage(prev => ({ ...prev, loading: false, error: err.message }));
+        }
+    }, [userData, invoicesPage.pageSize, invoicesPage.cursor, invoicesPage.cursorPrev]);
+
+    const fetchTransactionsPage = useCallback(async (opts = {}) => {
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); }
+        catch (e) { return; }
+
+        const direction = opts.direction || 'first';
+        const queryParams = { ...transactionsQueryRef.current, ...opts, direction };
+
+        setTransactionsPage(prev => ({
+            ...prev,
+            loading: true,
+            error: null,
+            cursor: direction === 'first' ? null : prev.cursor,
+            cursorPrev: direction === 'first' ? null : prev.cursorPrev,
+            pageIndex: direction === 'first' ? 0 : (opts.pageIndex ?? prev.pageIndex)
+        }));
+
+        try {
+            const res = await getFeeTransactionsPage(schoolId, {
+                pageSize: transactionsPage.pageSize,
+                cursor: direction === 'prev' ? transactionsPage.cursorPrev : transactionsPage.cursor,
+                direction,
+                term: queryParams.term,
+                year: queryParams.year,
+                studentId: queryParams.studentId,
+                type: queryParams.type,
+                sortDirection: queryParams.sortDirection || 'desc'
+            });
+
+            setTransactionsPage(prev => ({
+                ...prev,
+                items: res.items,
+                cursor: res.cursor,
+                cursorPrev: res.cursorPrev,
+                hasMore: res.hasMore,
+                hasPrev: direction !== 'first' ? true : false,
+                loading: false,
+                pageIndex: direction === 'next' ? prev.pageIndex + 1
+                    : direction === 'prev' ? Math.max(0, prev.pageIndex - 1)
+                    : 0
+            }));
+        } catch (err) {
+            console.error('fetchTransactionsPage failed:', err);
+            setTransactionsPage(prev => ({ ...prev, loading: false, error: err.message }));
+        }
+    }, [userData, transactionsPage.pageSize, transactionsPage.cursor, transactionsPage.cursorPrev]);
+
+    // ============================================================
+    // Filter changers (update refs then reset to first page)
+    // ============================================================
+
+    const setStudentsQuery = useCallback((patch) => {
+        studentsQueryRef.current = { ...studentsQueryRef.current, ...patch };
+        fetchStudentsPage({ direction: 'first' });
+        fetchStudentsCount();
+    }, [fetchStudentsPage, fetchStudentsCount]);
+
+    const setBalancesQuery = useCallback((patch) => {
+        balancesQueryRef.current = { ...balancesQueryRef.current, ...patch };
+        fetchBalancesPage({ direction: 'first' });
+        fetchBalancesCount();
+    }, [fetchBalancesPage, fetchBalancesCount]);
+
+    const setInvoicesQuery = useCallback((patch) => {
+        invoicesQueryRef.current = { ...invoicesQueryRef.current, ...patch };
+        fetchInvoicesPage({ direction: 'first' });
+    }, [fetchInvoicesPage]);
+
+    const setTransactionsQuery = useCallback((patch) => {
+        transactionsQueryRef.current = { ...transactionsQueryRef.current, ...patch };
+        fetchTransactionsPage({ direction: 'first' });
+    }, [fetchTransactionsPage]);
+
+    // ============================================================
+    // Page navigation helpers
+    // ============================================================
+
+    const goToNextPage = useCallback((kind) => {
+        if (kind === 'students') fetchStudentsPage({ direction: 'next' });
+        else if (kind === 'balances') fetchBalancesPage({ direction: 'next' });
+        else if (kind === 'invoices') fetchInvoicesPage({ direction: 'next' });
+        else if (kind === 'transactions') fetchTransactionsPage({ direction: 'next' });
+    }, [fetchStudentsPage, fetchBalancesPage, fetchInvoicesPage, fetchTransactionsPage]);
+
+    const goToPrevPage = useCallback((kind) => {
+        if (kind === 'students') fetchStudentsPage({ direction: 'prev' });
+        else if (kind === 'balances') fetchBalancesPage({ direction: 'prev' });
+        else if (kind === 'invoices') fetchInvoicesPage({ direction: 'prev' });
+        else if (kind === 'transactions') fetchTransactionsPage({ direction: 'prev' });
+    }, [fetchStudentsPage, fetchBalancesPage, fetchInvoicesPage, fetchTransactionsPage]);
+
+    const setPageSize = useCallback((kind, size) => {
+        const safe = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
+        if (kind === 'students') {
+            setStudentsPage(prev => ({ ...prev, pageSize: safe }));
+            setTimeout(() => fetchStudentsPage({ direction: 'first' }), 0);
+        } else if (kind === 'balances') {
+            setBalancesPage(prev => ({ ...prev, pageSize: safe }));
+            setTimeout(() => fetchBalancesPage({ direction: 'first' }), 0);
+        } else if (kind === 'invoices') {
+            setInvoicesPage(prev => ({ ...prev, pageSize: safe }));
+            setTimeout(() => fetchInvoicesPage({ direction: 'first' }), 0);
+        } else if (kind === 'transactions') {
+            setTransactionsPage(prev => ({ ...prev, pageSize: safe }));
+            setTimeout(() => fetchTransactionsPage({ direction: 'first' }), 0);
+        }
+    }, [fetchStudentsPage, fetchBalancesPage, fetchInvoicesPage, fetchTransactionsPage]);
+
+    // ============================================================
+    // Legacy load (non-paginated) - still used for backward compat
+    // ============================================================
 
     const loadFeeData = useCallback(async (overrideScope) => {
         let schoolId;
@@ -48,7 +366,6 @@ export function FeeProvider({ children }) {
         setLoading(true); setError(null);
 
         try {
-            // Cache
             const [cStud, cTxn, cInv, cBal, cStruct] = await Promise.all([
                 getFromIndexedDB(`students_${schoolId}_${s.level}_${s.cls}`),
                 getFromIndexedDB(`txn_${schoolId}_${s.term}_${s.year}`),
@@ -67,10 +384,10 @@ export function FeeProvider({ children }) {
 
             if (isOnline) {
                 const [stud, txn, inv, bal, sum, structs] = await Promise.all([
-                    getStudents(schoolId, { level: s.level, cls: s.cls }).catch(err => { console.warn('getStudents failed:', err); return []; }),
-                    getFeeTransactions(schoolId, { term: s.term, year: s.year }).catch(err => { console.warn('getFeeTransactions failed:', err); return []; }),
-                    getInvoices(schoolId, { term: s.term, year: s.year }).catch(err => { console.warn('getInvoices failed:', err); return []; }),
-                    getBalancesForSchool(schoolId, s.term, s.year, { level: s.level, cls: s.cls }).catch(err => { console.warn('getBalancesForSchool failed:', err); return []; }),
+                    getStudents(schoolId, { level: s.level, cls: s.cls }).catch(() => []),
+                    getFeeTransactions(schoolId, { term: s.term, year: s.year }).catch(() => []),
+                    getInvoices(schoolId, { term: s.term, year: s.year }).catch(() => []),
+                    getBalancesForSchool(schoolId, s.term, s.year, { level: s.level, cls: s.cls }).catch(() => []),
                     getInvoiceSummary(schoolId, s.term, s.year).catch(() => null),
                     getFeeStructures(schoolId, { year: s.year }).catch(() => [])
                 ]);
@@ -97,12 +414,35 @@ export function FeeProvider({ children }) {
         }
     }, [userData, scope, isOnline, saveToIndexedDB, getFromIndexedDB]);
 
+    // Initial mount: load both legacy data and first paginated pages
     useEffect(() => {
-        if (userData?.schoolId) loadFeeData();
+        if (!userData?.schoolId) return;
+        loadFeeData();
+        // Initialize paginated queries with scope
+        fetchStudentsPage({ direction: 'first' });
+        fetchBalancesPage({
+            direction: 'first',
+            term: scope.term,
+            year: scope.year
+        });
+        fetchInvoicesPage({ direction: 'first', term: scope.term, year: scope.year });
+        fetchTransactionsPage({ direction: 'first', term: scope.term, year: scope.year });
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [userData?.schoolId, scope.term, scope.year, scope.level, scope.cls]);
+    }, [userData?.schoolId]);
 
-    // ---------- Invoice creation ----------
+    // Reload page data when scope changes
+    useEffect(() => {
+        if (!userData?.schoolId) return;
+        fetchBalancesPage({ direction: 'first', term: scope.term, year: scope.year });
+        fetchInvoicesPage({ direction: 'first', term: scope.term, year: scope.year });
+        fetchTransactionsPage({ direction: 'first', term: scope.term, year: scope.year });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [scope.term, scope.year, scope.level, scope.cls]);
+
+    // ============================================================
+    // Mutations
+    // ============================================================
+
     const createBulkInvoices = useCallback(async (entries, meta) => {
         const schoolId = requireSchoolId(userData);
         if (termLocked) return { count: 0, errors: [{ error: 'Term is locked' }] };
@@ -124,10 +464,12 @@ export function FeeProvider({ children }) {
         }
         setMemory(`inv_${schoolId}_${meta.term}_${meta.year}_all_all`, null, 0);
         await loadFeeData();
+        // Refresh paginated views
+        fetchInvoicesPage({ direction: 'first', term: meta.term, year: meta.year });
+        fetchBalancesPage({ direction: 'first', term: meta.term, year: meta.year });
         return results;
-    }, [userData, termLocked, loadFeeData]);
+    }, [userData, termLocked, loadFeeData, fetchInvoicesPage, fetchBalancesPage]);
 
-    // ---------- Record payment (ledger) ----------
     const addFeeTransaction = useCallback(async (txnData) => {
         const schoolId = requireSchoolId(userData);
         if (termLocked) return { success: false, error: 'Term is locked' };
@@ -142,29 +484,30 @@ export function FeeProvider({ children }) {
                 performedByName: userData?.fullName || userData?.firstName || 'System'
             });
 
-            // Optimistic local update
             setFeeTransactions(prev => [{ id: result.id, ...txnData }, ...prev]);
+            // Refresh balances and transactions pages
+            fetchBalancesPage({ direction: 'first' });
+            fetchTransactionsPage({ direction: 'first' });
             return { success: true, id: result.id, alreadyExisted: result.alreadyExisted };
         } catch (err) {
             console.error('addFeeTransaction failed:', err);
             return { success: false, error: err.message };
         }
-    }, [userData, currentUser, termLocked]);
+    }, [userData, currentUser, termLocked, fetchBalancesPage, fetchTransactionsPage]);
 
-
-
-    // ---------- Void ----------
     const voidTransactionById = useCallback(async (txnId, reason) => {
         const schoolId = requireSchoolId(userData);
         try {
             await voidTransaction(schoolId, txnId, reason,
                 currentUser?.uid, userData?.fullName || userData?.firstName || 'System');
             await loadFeeData();
+            fetchBalancesPage({ direction: 'first' });
+            fetchTransactionsPage({ direction: 'first' });
             return { success: true };
         } catch (err) {
             return { success: false, error: err.message };
         }
-    }, [userData, currentUser, loadFeeData]);
+    }, [userData, currentUser, loadFeeData, fetchBalancesPage, fetchTransactionsPage]);
 
     const cancelInvoiceById = useCallback(async (invoiceId, reason) => {
         const schoolId = requireSchoolId(userData);
@@ -172,27 +515,31 @@ export function FeeProvider({ children }) {
             await cancelInvoice(schoolId, invoiceId, reason,
                 currentUser?.uid, userData?.fullName || userData?.firstName || 'System');
             await loadFeeData();
+            fetchInvoicesPage({ direction: 'first' });
+            fetchBalancesPage({ direction: 'first' });
             return { success: true };
         } catch (err) {
             return { success: false, error: err.message };
         }
-    }, [userData, currentUser, loadFeeData]);
+    }, [userData, currentUser, loadFeeData, fetchInvoicesPage, fetchBalancesPage]);
 
-    // ---------- Overdue ----------
     const checkOverdueInvoices = useCallback(async () => {
         const now = new Date();
         const overdue = invoices.filter(inv =>
             inv.status !== 'paid' && inv.status !== 'cancelled' &&
             inv.status !== 'overdue' && inv.dueDate && new Date(inv.dueDate) < now);
         if (!overdue.length) return 0;
-        // Optimistic local update only; Cloud Function does the write
         setInvoices(prev => prev.map(inv =>
             overdue.find(o => o.id === inv.id) ? { ...inv, status: 'overdue' } : inv));
         return overdue.length;
     }, [invoices]);
 
-    // ---------- Lookups ----------
+    // ============================================================
+    // Lookups
+    // ============================================================
+
     const getStudentBalance = useCallback((studentId) => balances[studentId] || null, [balances]);
+
     const getStudentInvoices = useCallback((studentId, opts = {}) =>
         invoices.filter(i => i.studentId === studentId && (opts.includeCancelled || i.status !== 'cancelled'))
             .sort((a, b) => new Date(b.createdAt?.toDate?.() || b.createdAt) - new Date(a.createdAt?.toDate?.() || a.createdAt)),
@@ -245,12 +592,45 @@ export function FeeProvider({ children }) {
         const schoolId = requireSchoolId(userData);
         const res = await reconcileStudentBalance(schoolId, studentId, term, year);
         await loadFeeData();
+        fetchBalancesPage({ direction: 'first' });
         return res;
-    }, [userData, loadFeeData]);
+    }, [userData, loadFeeData, fetchBalancesPage]);
+
+    // ============================================================
+    // Context value
+    // ============================================================
 
     const value = {
+        // Legacy
         students, feeBalances: balances, feeTransactions, invoices, loading, error,
         scope, setScope, summary, termLocked, aging, feeStructures,
+
+        // Paginated state
+        studentsPage,
+        balancesPage,
+        invoicesPage,
+        transactionsPage,
+
+        // Paginated fetchers
+        fetchStudentsPage,
+        fetchStudentsCount,
+        fetchBalancesPage,
+        fetchBalancesCount,
+        fetchInvoicesPage,
+        fetchTransactionsPage,
+
+        // Filter setters
+        setStudentsQuery,
+        setBalancesQuery,
+        setInvoicesQuery,
+        setTransactionsQuery,
+
+        // Navigation
+        goToNextPage,
+        goToPrevPage,
+        setPageSize,
+
+        // Mutations
         createInvoice: async (data) => {
             const r = await createBulkInvoices([data], {
                 term: data.term, year: data.academicYear,
@@ -259,7 +639,6 @@ export function FeeProvider({ children }) {
             return { success: r.count > 0, error: r.errors[0]?.error };
         },
         createBulkInvoices,
-
         addFeeTransaction,
         voidTransaction: voidTransactionById,
         cancelInvoice: cancelInvoiceById,
@@ -271,7 +650,13 @@ export function FeeProvider({ children }) {
         saveFeeStructure: saveFeeStructureAction,
         deleteFeeStructure: deleteFeeStructureAction,
         reconcileBalance: reconcileBalanceAction,
-        refreshData: () => loadFeeData(),
+        refreshData: () => {
+            loadFeeData();
+            fetchStudentsPage({ direction: 'first' });
+            fetchBalancesPage({ direction: 'first' });
+            fetchInvoicesPage({ direction: 'first' });
+            fetchTransactionsPage({ direction: 'first' });
+        },
         loadFeeData
     };
 
