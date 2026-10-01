@@ -10,13 +10,17 @@ import { doc, updateDoc, collection, query, where, getDocs, limit } from 'fireba
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import ReceiptModal from '../components/Fees/ReceiptModal';
+import StudentPicker from '../components/Fees/StudentPicker';
 import * as XLSX from 'xlsx';
 import { parse as parseCSV } from 'csv-parse/browser/esm';
 import {
     SCHOOL_LEVELS, LEVEL_CLASSES, LEVEL_DISPLAY_NAMES,
     getClassOptions, getLevelDisplayName
 } from '../utils/constants';
-import { requireSchoolId, getSchoolData, getFeeStructure, getFeeStructures, DEFAULT_PAGE_SIZE } from '../services/feeService';
+import {
+    requireSchoolId, getSchoolData, getFeeStructure, getFeeStructures,
+    DEFAULT_PAGE_SIZE, getStudentByAdmission
+} from '../services/feeService';
 import { downloadReceiptPDF } from '../services/pdf';
 import { AuditLogService } from '../services/auditService';
 
@@ -43,12 +47,10 @@ export default function Fees() {
     const { getLevelClasses } = useSchool();
     const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
     const {
-        // Legacy
         feeBalances, feeTransactions, loading,
         addFeeTransaction, getStudentBalance, refreshData, createBulkInvoices,
         sendInvoiceReminder, checkOverdueInvoices, getStudentInvoices,
         getInvoiceStats, reconcileBalance, feeStructures, scope,
-        // Paginated
         studentsPage, balancesPage,
         fetchStudentsPage, fetchStudentsCount,
         fetchBalancesPage, fetchBalancesCount,
@@ -56,12 +58,10 @@ export default function Fees() {
         goToNextPage, goToPrevPage, setPageSize
     } = useFee();
 
-    // Local copy of paginated students/balances
     const students = studentsPage.items;
     const paginatedBalances = balancesPage.items;
 
     // ---- UI state ----
-    const [filteredStudents, setFilteredStudents] = useState([]);
     const [showFeeModal, setShowFeeModal] = useState(false);
     const [showStatementModal, setShowStatementModal] = useState(false);
     const [showReconcileModal, setShowReconcileModal] = useState(false);
@@ -87,13 +87,9 @@ export default function Fees() {
     const [selectedClass, setSelectedClass] = useState('');
     const [searchByAdmission, setSearchByAdmission] = useState('');
     const [searchType, setSearchType] = useState('name');
-    const [localSearchFiltered, setLocalSearchFiltered] = useState(false);
 
     // ---- Selected entities ----
     const [selectedInvoice, setSelectedInvoice] = useState(null);
-    const [paymentAmount, setPaymentAmount] = useState('');
-    const [paymentMethod, setPaymentMethod] = useState('cash');
-    const [paymentNotes, setPaymentNotes] = useState('');
     const [receiptData, setReceiptData] = useState(null);
     const [schoolData, setSchoolData] = useState({
         schoolName: '', schoolLogo: '', schoolAddress: '', schoolPhone: '', schoolEmail: ''
@@ -101,6 +97,7 @@ export default function Fees() {
 
     // ---- Forms ----
     const [feeForm, setFeeForm] = useState({
+        student: null,
         studentId: '', studentAdmission: '', amount: '', description: '',
         paymentMethod: 'cash', paymentDate: new Date().toISOString().split('T')[0],
         reference: '', class: '', level: '', term: 'Term 1', year: new Date().getFullYear()
@@ -120,6 +117,7 @@ export default function Fees() {
     });
 
     const [mpesaForm, setMpesaForm] = useState({
+        student: null,
         studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: ''
     });
 
@@ -166,7 +164,7 @@ export default function Fees() {
         return () => clearInterval(interval);
     }, [userData, isOnline, getFromIndexedDB, checkOverdueInvoices]);
 
-    // ---- Server-side filter: push level/class changes to context ----
+    // ---- Server-side filter: level/class change ----
     useEffect(() => {
         setStudentsQuery({
             level: selectedLevel,
@@ -183,27 +181,12 @@ export default function Fees() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedLevel, selectedClass]);
 
-    // ---- Local client-side text search on current page ----
-    useEffect(() => {
-        const term = searchTerm.toLowerCase().trim();
-        const admission = searchByAdmission.toLowerCase().trim();
-
-        if (!term && !admission) {
-            setLocalSearchFiltered(false);
-            return;
-        }
-
-        setLocalSearchFiltered(true);
-    }, [searchTerm, searchByAdmission, searchType, students]);
-
     // ---- Filter students for rendering (client-side on current page) ----
     const displayedStudents = useMemo(() => {
         const term = searchTerm.toLowerCase().trim();
         const admission = searchByAdmission.toLowerCase().trim();
         const hasLocalFilter = !!(term || admission);
-
         if (!hasLocalFilter) return students;
-
         return students.filter(student => {
             const name = `${student.firstName || ''} ${student.lastName || ''}`.toLowerCase();
             const studentAdmission = (student.admissionNumber || student.studentId || '').toLowerCase();
@@ -258,16 +241,6 @@ export default function Fees() {
         return [...set].sort();
     }, [students, bulkFeeForm.level, getClassesForLevel]);
 
-    const findStudentByAdmission = useCallback((admissionNumber) => {
-        if (!admissionNumber) return null;
-        const normalized = admissionNumber.trim().toUpperCase();
-        return students.find(s => {
-            const studentId = (s.studentId || '').toUpperCase();
-            const admission = (s.admissionNumber || '').toUpperCase();
-            return studentId === normalized || admission === normalized;
-        });
-    }, [students]);
-
     const generateReceiptNumber = () => {
         const prefix = 'RCP';
         const d = new Date();
@@ -280,7 +253,8 @@ export default function Fees() {
 
     const generateReceipt = useCallback(async (transaction) => {
         try {
-            const student = students.find(s => s.id === transaction.studentId);
+            const student = transaction._student
+                || students.find(s => s.id === transaction.studentId);
             if (!student) { console.error('Student not found for receipt'); return; }
             const balance = getStudentBalance(transaction.studentId);
             const studentInvoices = getStudentInvoices(transaction.studentId)
@@ -326,12 +300,6 @@ export default function Fees() {
     const handleFeeFormChange = (e) => {
         const { name, value } = e.target;
         setFeeForm(prev => ({ ...prev, [name]: value }));
-        if (name === 'studentAdmission' && value) {
-            const student = findStudentByAdmission(value);
-            if (student) {
-                setFeeForm(prev => ({ ...prev, studentId: student.id, class: student.class || '', level: student.level || '' }));
-            }
-        }
     };
 
     const handleInvoiceFormChange = (e) => {
@@ -371,43 +339,109 @@ export default function Fees() {
         setMpesaForm(prev => ({ ...prev, [name]: value }));
     };
 
-    const openFeeModal = (studentId = null) => {
-        if (studentId) {
-            const student = students.find(s => s.id === studentId);
+    // ---- Reconstruct a student object from a balance hint ----
+    const studentFromBalance = (balance) => {
+        if (!balance) return null;
+        const fullName = (balance.studentName || '').trim();
+        const [firstName, ...rest] = fullName.split(/\s+/);
+        return {
+            id: balance.studentId,
+            firstName: firstName || '',
+            lastName: rest.join(' ') || '',
+            admissionNumber: balance.admissionNumber || '',
+            class: balance.studentClass || '',
+            level: balance.level || ''
+        };
+    };
+
+    // ---- Modal openers ----
+    const openFeeModal = (studentId = null, balanceHint = null) => {
+        if (balanceHint) {
+            const student = studentFromBalance(balanceHint);
             setFeeForm(prev => ({
-                ...prev, studentId,
-                studentAdmission: student?.admissionNumber || student?.studentId || '',
-                class: student?.class || '', level: student?.level || ''
+                ...prev,
+                student,
+                studentId: student?.id || '',
+                studentAdmission: student?.admissionNumber || '',
+                class: student?.class || '',
+                level: student?.level || ''
             }));
+        } else if (studentId) {
+            const local = students.find(s => s.id === studentId);
+            if (local) {
+                setFeeForm(prev => ({
+                    ...prev,
+                    student: local,
+                    studentId: local.id,
+                    studentAdmission: local.admissionNumber || local.studentId || '',
+                    class: local.class || '',
+                    level: local.level || ''
+                }));
+            } else {
+                // Not on current page — try one-shot fetch
+                (async () => {
+                    try {
+                        const schoolId = requireSchoolId(userData);
+                        const fetched = await getStudentByAdmission(schoolId, studentId);
+                        if (fetched) {
+                            setFeeForm(prev => ({
+                                ...prev,
+                                student: fetched,
+                                studentId: fetched.id,
+                                studentAdmission: fetched.admissionNumber || fetched.studentId || '',
+                                class: fetched.class || '',
+                                level: fetched.level || ''
+                            }));
+                        } else {
+                            setFeeForm(prev => ({
+                                ...prev, student: null, studentId: '',
+                                studentAdmission: '', class: '', level: ''
+                            }));
+                        }
+                    } catch { /* ignore */ }
+                })();
+            }
         } else {
-            setFeeForm(prev => ({ ...prev, studentId: '', studentAdmission: '', class: '', level: '' }));
+            setFeeForm(prev => ({ ...prev, student: null, studentId: '', studentAdmission: '', class: '', level: '' }));
         }
         setShowFeeModal(true);
     };
 
-    const openMpesaModal = (studentId = null) => {
-        if (studentId) {
-            const student = students.find(s => s.id === studentId);
+    const openMpesaModal = (studentId = null, balanceHint = null) => {
+        if (balanceHint) {
+            const student = studentFromBalance(balanceHint);
             setMpesaForm(prev => ({
-                ...prev, studentId,
-                studentAdmission: student?.admissionNumber || student?.studentId || ''
+                ...prev,
+                student,
+                studentId: student?.id || '',
+                studentAdmission: student?.admissionNumber || ''
             }));
+        } else if (studentId) {
+            const local = students.find(s => s.id === studentId);
+            if (local) {
+                setMpesaForm(prev => ({
+                    ...prev,
+                    student: local,
+                    studentId: local.id,
+                    studentAdmission: local.admissionNumber || local.studentId || ''
+                }));
+            } else {
+                setMpesaForm(prev => ({ ...prev, student: null, studentId: '', studentAdmission: '' }));
+            }
         } else {
-            setMpesaForm(prev => ({ ...prev, studentId: '', studentAdmission: '' }));
+            setMpesaForm(prev => ({ ...prev, student: null, studentId: '', studentAdmission: '' }));
         }
         setShowMpesaModal(true);
     };
 
+    // ---- Fee submit ----
     const handleFeeSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
         try {
-            let student = null;
-            if (feeForm.studentId) student = students.find(s => s.id === feeForm.studentId);
-            else if (feeForm.studentAdmission) student = findStudentByAdmission(feeForm.studentAdmission);
-
+            const student = feeForm.student;
             if (!student) {
-                showNotification('Please select a student or enter a valid admission number', 'warning');
+                showNotification('Please search and select a student', 'warning');
                 setIsProcessing(false); return;
             }
 
@@ -426,7 +460,8 @@ export default function Fees() {
                 type: 'payment', status: 'completed',
                 recordedBy: currentUser?.uid,
                 recordedByName: userData?.fullName || userData?.firstName || 'System',
-                receiptNumber
+                receiptNumber,
+                _student: student  // for receipt enrichment
             };
 
             const result = await addFeeTransaction(transaction);
@@ -453,18 +488,17 @@ export default function Fees() {
 
     const resetFeeForm = () => {
         setFeeForm({
-            studentId: '', studentAdmission: '', amount: '', description: '',
+            student: null, studentId: '', studentAdmission: '', amount: '', description: '',
             paymentMethod: 'cash', paymentDate: new Date().toISOString().split('T')[0],
             reference: '', class: '', level: '', term: 'Term 1', year: new Date().getFullYear()
         });
     };
 
+    // ---- Invoice submit ----
     const handleInvoiceSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
         try {
-            // For "All / Level / Class", we need the full student list. For MVP we use current page + fallback.
-            // In production, you'd want a dedicated "fetch all IDs" service. Here we use local page.
             let selectedStudents = [];
             if (invoiceForm.invoiceAll) {
                 selectedStudents = students;
@@ -612,16 +646,14 @@ export default function Fees() {
         } finally { setIsProcessing(false); }
     };
 
+    // ---- M-Pesa submit ----
     const handleMpesaPayment = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
         try {
-            let student = null;
-            if (mpesaForm.studentId) student = students.find(s => s.id === mpesaForm.studentId);
-            else if (mpesaForm.studentAdmission) student = findStudentByAdmission(mpesaForm.studentAdmission);
-
+            const student = mpesaForm.student;
             if (!student) {
-                showNotification('Please select a student or enter a valid admission number', 'warning');
+                showNotification('Please search and select a student', 'warning');
                 setIsProcessing(false); return;
             }
 
@@ -629,9 +661,18 @@ export default function Fees() {
             if (phone.startsWith('0')) phone = '254' + phone.substring(1);
             else if (!phone.startsWith('254')) phone = '254' + phone;
 
+            // Attach Firebase ID token so the function can authenticate the caller
+            let token = '';
+            try {
+                if (currentUser?.getIdToken) token = await currentUser.getIdToken();
+            } catch { /* ignore */ }
+
             const response = await fetch('/api/mpesa-stk-push', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                },
                 body: JSON.stringify({
                     phoneNumber: phone,
                     amount: parseFloat(mpesaForm.amount),
@@ -665,7 +706,7 @@ export default function Fees() {
                 });
                 showNotification('M-Pesa STK push sent! Check the phone to complete payment.', 'success');
                 setShowMpesaModal(false);
-                setMpesaForm({ studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
+                setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
             } else {
                 showNotification('Failed to send M-Pesa STK push: ' + result.message, 'error');
             }
@@ -956,8 +997,12 @@ export default function Fees() {
         const studentTransactions = feeTransactions
             .filter(t => t.studentId === studentId && t.type === 'payment')
             .sort((a, b) => new Date(b.paymentDate) - new Date(a.paymentDate));
-        if (studentTransactions.length > 0) await generateReceipt(studentTransactions[0]);
-        else showNotification('No transactions found for this student', 'warning');
+        if (studentTransactions.length > 0) {
+            const student = students.find(s => s.id === studentId);
+            await generateReceipt({ ...studentTransactions[0], _student: student });
+        } else {
+            showNotification('No transactions found for this student', 'warning');
+        }
     };
 
     const handleDownloadReceiptPDF = useCallback(async () => {
@@ -1012,16 +1057,6 @@ export default function Fees() {
                         </div>
                         <div style={{ fontSize: '12px', color: 'var(--gray)' }}>
                             Adm: {balance.admissionNumber || 'N/A'} • Invoiced: KES {(balance.totalInvoiced || 0).toLocaleString()} • Paid: KES {(balance.totalPaid || 0).toLocaleString()}
-                            {balance.invoiceSummary && balance.invoiceSummary.unpaid > 0 && (
-                                <span style={{ marginLeft: '10px' }}>
-                                    <i className="fas fa-file-invoice"></i> {balance.invoiceSummary.unpaid} unpaid invoices
-                                    {balance.invoiceSummary.overdue > 0 && (
-                                        <span style={{ color: 'var(--danger)', marginLeft: '5px' }}>
-                                            ({balance.invoiceSummary.overdue} overdue)
-                                        </span>
-                                    )}
-                                </span>
-                            )}
                         </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
@@ -1037,10 +1072,10 @@ export default function Fees() {
                     </div>
                 </div>
                 <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button className="btn btn-sm btn-primary" onClick={() => openFeeModal(balance.studentId)} style={smallBtn('var(--primary)')}>
+                    <button className="btn btn-sm btn-primary" onClick={() => openFeeModal(balance.studentId, balance)} style={smallBtn('var(--primary)')}>
                         <i className="fas fa-plus"></i> Pay
                     </button>
-                    <button className="btn btn-sm btn-success" onClick={() => openMpesaModal(balance.studentId)} style={smallBtn('#25D366')}>
+                    <button className="btn btn-sm btn-success" onClick={() => openMpesaModal(balance.studentId, balance)} style={smallBtn('#25D366')}>
                         <i className="fas fa-mobile-alt"></i> M-Pesa
                     </button>
                     <button className="btn btn-sm btn-info" onClick={() => navigate(`/student-fees/${balance.studentId}`)} style={smallBtn('var(--info)')}>
@@ -1065,7 +1100,7 @@ export default function Fees() {
         );
     };
 
-    // ---- Pagination footer (server-side) ----
+    // ---- Pagination footer ----
     const renderPagination = () => {
         const totalPages = balancesPage.total !== null
             ? Math.ceil(balancesPage.total / balancesPage.pageSize)
@@ -1209,7 +1244,7 @@ export default function Fees() {
                     }}><i className="fas fa-times"></i> Clear</button>
                 </div>
 
-                {/* Balance List (current page only) */}
+                {/* Balance List */}
                 {balancesPage.loading && paginatedBalances.length === 0 ? (
                     <div style={{ padding: '40px', textAlign: 'center', color: 'var(--gray)' }}>
                         <i className="fas fa-spinner fa-spin" style={{ fontSize: '32px' }}></i>
@@ -1261,30 +1296,34 @@ export default function Fees() {
                         <form onSubmit={handleFeeSubmit}>
                             <div className="form-group">
                                 <label>Student <span className="required">*</span></label>
-                                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                    <select name="studentId" value={feeForm.studentId} onChange={handleFeeFormChange}
-                                        style={{ flex: 1, minWidth: '200px', padding: '10px 15px', border: '2px solid var(--border)', borderRadius: '8px' }}>
-                                        <option value="">Select Student (from current page)</option>
-                                        {students.map(s => (
-                                            <option key={s.id} value={s.id}>
-                                                {s.firstName || ''} {s.lastName || ''} - {s.admissionNumber || s.studentId || 'N/A'} ({s.class || 'N/A'})
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <span style={{ display: 'flex', alignItems: 'center', color: 'var(--gray)', fontSize: '13px' }}>OR</span>
-                                    <input type="text" name="studentAdmission" placeholder="Admission Number" value={feeForm.studentAdmission} onChange={handleFeeFormChange}
-                                        style={{ flex: 1, minWidth: '150px', padding: '10px 15px', border: '2px solid var(--primary)', borderRadius: '8px' }} />
+                                <StudentPicker
+                                    schoolId={userData?.schoolId}
+                                    value={feeForm.student}
+                                    onChange={(student) => {
+                                        setFeeForm(prev => ({
+                                            ...prev,
+                                            student,
+                                            studentId: student?.id || '',
+                                            studentAdmission: student?.admissionNumber || student?.studentId || '',
+                                            class: student?.class || '',
+                                            level: student?.level || ''
+                                        }));
+                                    }}
+                                    autoFocus
+                                />
+                                <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
+                                    Type at least 2 characters to search across all students (any page).
                                 </div>
                             </div>
 
-                            {feeForm.studentId && (() => {
-                                const stBal = feeBalances[feeForm.studentId];
+                            {feeForm.student && (() => {
+                                const stBal = feeBalances[feeForm.student.id];
                                 const totalOwed = stBal ? stBal.balance : 0;
                                 return (
                                     <div style={{ marginBottom: '15px', padding: '12px', background: 'var(--light)', borderRadius: '8px' }}>
                                         <div style={{ fontSize: '13px' }}>
-                                            <strong>Student:</strong> {students.find(s => s.id === feeForm.studentId)?.firstName} {students.find(s => s.id === feeForm.studentId)?.lastName}
-                                            <br /><strong>Class:</strong> {feeForm.class || 'N/A'} | <strong>Level:</strong> {feeForm.level || 'N/A'}
+                                            <strong>Student:</strong> {feeForm.student.firstName} {feeForm.student.lastName}
+                                            <br /><strong>Class:</strong> {feeForm.student.class || 'N/A'} | <strong>Level:</strong> {feeForm.student.level || 'N/A'}
                                             <br /><strong>Total Balance Owed:</strong> <span style={{ color: totalOwed > 0 ? 'var(--danger)' : 'var(--success)', fontWeight: '700' }}>KES {totalOwed.toLocaleString()}</span>
                                         </div>
                                     </div>
@@ -1350,7 +1389,7 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* Invoice Modal */}
+                {/* Invoice Modal — unchanged from your version */}
                 {showInvoiceModal && (
                     <Modal onClose={() => setShowInvoiceModal(false)} title="Create Invoice">
                         <form onSubmit={handleInvoiceSubmit}>
@@ -1521,19 +1560,21 @@ export default function Fees() {
                         <form onSubmit={handleMpesaPayment}>
                             <div className="form-group">
                                 <label>Student <span className="required">*</span></label>
-                                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                    <select name="studentId" value={mpesaForm.studentId} onChange={handleMpesaFormChange}
-                                        style={{ flex: 1, minWidth: '200px', padding: '10px 15px', border: '2px solid var(--border)', borderRadius: '8px' }}>
-                                        <option value="">Select Student (from current page)</option>
-                                        {students.map(s => (
-                                            <option key={s.id} value={s.id}>
-                                                {s.firstName || ''} {s.lastName || ''} - {s.admissionNumber || s.studentId || 'N/A'} ({s.class || 'N/A'})
-                                            </option>
-                                        ))}
-                                    </select>
-                                    <span style={{ display: 'flex', alignItems: 'center', color: 'var(--gray)', fontSize: '13px' }}>OR</span>
-                                    <input type="text" name="studentAdmission" placeholder="Admission Number" value={mpesaForm.studentAdmission} onChange={handleMpesaFormChange}
-                                        style={{ flex: 1, minWidth: '150px', padding: '10px 15px', border: '2px solid var(--primary)', borderRadius: '8px' }} />
+                                <StudentPicker
+                                    schoolId={userData?.schoolId}
+                                    value={mpesaForm.student}
+                                    onChange={(student) => {
+                                        setMpesaForm(prev => ({
+                                            ...prev,
+                                            student,
+                                            studentId: student?.id || '',
+                                            studentAdmission: student?.admissionNumber || student?.studentId || ''
+                                        }));
+                                    }}
+                                    autoFocus
+                                />
+                                <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
+                                    Type at least 2 characters to search across all students (any page).
                                 </div>
                             </div>
 
