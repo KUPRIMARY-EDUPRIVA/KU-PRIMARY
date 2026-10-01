@@ -4,13 +4,11 @@ import { searchStudentsLive } from '../../services/feeService';
 
 /**
  * Live student search picker.
- * 
  * Props:
  *   schoolId      - required
- *   value         - currently selected student object | null
+ *   value         - selected student object | null
  *   onChange      - (student | null) => void
- *   level         - optional filter
- *   cls           - optional filter
+ *   level, cls    - optional server-side filters
  *   placeholder   - input placeholder
  *   autoFocus     - boolean
  */
@@ -40,7 +38,7 @@ export default function StudentPicker({
         return () => document.removeEventListener('mousedown', onDocClick);
     }, []);
 
-    // Debounced search
+    // Debounced server search
     useEffect(() => {
         if (!schoolId) return;
         if (query.trim().length < 2) {
@@ -91,7 +89,7 @@ export default function StudentPicker({
     const displayName = (s) =>
         `${s.firstName || ''} ${s.lastName || ''}`.trim() || s.fullName || s.name || 'Unnamed';
 
-    // --- Selected state ---
+    // Selected state
     if (value) {
         return (
             <div style={{
@@ -122,7 +120,7 @@ export default function StudentPicker({
         );
     }
 
-    // --- Search state ---
+    // Search state
     return (
         <div ref={wrapRef} style={{ position: 'relative' }}>
             <input
