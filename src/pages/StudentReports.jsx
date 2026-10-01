@@ -1,6 +1,7 @@
 // src/pages/StudentReports.jsx
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useSchool } from '../context/SchoolContext';
 import { db } from '../firebase';
 import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
@@ -45,8 +46,21 @@ const SAMPLE_STUDENT = {
     },
 };
 
+// ----------------------------------------------------------------
+// Resolve the class list for a level. Custom classes from SchoolContext
+// win; built-in LEVEL_CLASSES is only a fallback for schools that haven't
+// configured custom classes yet. Mirrors the logic in Students.jsx.
+// ----------------------------------------------------------------
+const resolveClassList = (level, getLevelClassesFn) => {
+    if (!level) return [];
+    const custom = getLevelClassesFn ? getLevelClassesFn(level) : null;
+    if (Array.isArray(custom) && custom.length > 0) return custom;
+    return LEVEL_CLASSES[level] || [];
+};
+
 export default function StudentReports() {
     const { userData } = useAuth();
+    const { getLevelClasses } = useSchool();
 
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
@@ -66,24 +80,29 @@ export default function StudentReports() {
     // ------------------------------------------------------------------
     const subjects = useMemo(() => LEVEL_SUBJECTS[selectedLevel] || [], [selectedLevel]);
 
-  const schoolBranding = useMemo(() => ({
-    schoolName: userData?.schoolName || 'EDUPRIVA',
-    schoolMotto: userData?.schoolMotto || 'Powering Modern Education',
-    schoolLogo: userData?.schoolLogo || '',
-    schoolAddress: userData?.schoolAddress || '',
-    schoolPhone: userData?.schoolPhone || '',
-    schoolEmail: userData?.schoolEmail || '',
-    website: userData?.website || '',
-    schoolCode: userData?.schoolCode || '',
-    schoolStamp: userData?.schoolStamp || '',
-    principalSignature: userData?.principalSignature || '',
-    principalName: userData?.principalName || '',
-    classTeacherName: userData?.classTeacherName || '',
-    currentTermStart: userData?.currentTermStart || '',
-    currentTermEnd: userData?.currentTermEnd || '',
-    nextTermStart: userData?.nextTermStart || '',
-    year: new Date().getFullYear(),
-}), [userData]);
+    const classOptions = useMemo(
+        () => resolveClassList(selectedLevel, getLevelClasses),
+        [selectedLevel, getLevelClasses]
+    );
+
+    const schoolBranding = useMemo(() => ({
+        schoolName: userData?.schoolName || 'EDUPRIVA',
+        schoolMotto: userData?.schoolMotto || 'Powering Modern Education',
+        schoolLogo: userData?.schoolLogo || '',
+        schoolAddress: userData?.schoolAddress || '',
+        schoolPhone: userData?.schoolPhone || '',
+        schoolEmail: userData?.schoolEmail || '',
+        website: userData?.website || '',
+        schoolCode: userData?.schoolCode || '',
+        schoolStamp: userData?.schoolStamp || '',
+        principalSignature: userData?.principalSignature || '',
+        principalName: userData?.principalName || '',
+        classTeacherName: userData?.classTeacherName || '',
+        currentTermStart: userData?.currentTermStart || '',
+        currentTermEnd: userData?.currentTermEnd || '',
+        nextTermStart: userData?.nextTermStart || '',
+        year: new Date().getFullYear(),
+    }), [userData]);
 
     const sortedStudents = useMemo(
         () => [...students].sort((a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)),
@@ -345,7 +364,7 @@ export default function StudentReports() {
                             setSelectedClass(e.target.value); setStudents([]); setHasLoadedOnce(false);
                         }} style={selectStyle}>
                         <option value="">Select Class</option>
-                        {(LEVEL_CLASSES[selectedLevel] || []).map((c) => (
+                        {classOptions.map((c) => (
                             <option key={c} value={c}>{c}</option>
                         ))}
                     </select>
