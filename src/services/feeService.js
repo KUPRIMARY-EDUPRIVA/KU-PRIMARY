@@ -178,7 +178,7 @@ export async function voidTransaction(schoolId, txnId, reason, performedBy, perf
 }
 
 // ---------- Students ----------
-export async function getStudents(schoolId, { level, cls, maxResults = 1000 } = {}) {
+export async function getStudents(schoolId, { level, cls, maxResults = 1000000 } = {}) {
     const cacheKey = `students_${schoolId}_${level || 'all'}_${cls || 'all'}`;
     const cached = getMemory(cacheKey);
     if (cached) return cached;
