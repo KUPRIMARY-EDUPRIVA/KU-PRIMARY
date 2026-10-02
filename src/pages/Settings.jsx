@@ -9,11 +9,23 @@ import { updatePassword, updateEmail, updateProfile, reauthenticateWithCredentia
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
+// Roles that can only be assigned by existing admins.
+const ASSIGNABLE_ROLES = [
+    { value: 'user',         label: 'User' },
+    { value: 'staff',        label: 'Staff' },
+    { value: 'teacher',      label: 'Teacher' },
+    { value: 'admin',        label: 'Administrator' },
+    { value: 'school_admin', label: 'School Administrator' },
+    { value: 'super-admin',  label: 'Super Administrator' },
+];
+
+const ADMIN_ROLES = new Set(['admin', 'school_admin', 'super-admin']);
+
 export default function Settings() {
     const navigate = useNavigate();
-    const { currentUser, userData, updateUserData } = useAuth();
+    const { currentUser, userData, userRole, updateUserData } = useAuth();
     const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
-    
+
     // State
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -30,6 +42,12 @@ export default function Settings() {
     // Cloudinary config
     const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME || 'your-cloud-name';
     const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET || 'school_profile';
+
+    // The role of the *currently signed-in* user determines whether they
+    // may edit the role field. Read from either the auth context or the
+    // loaded profile, whichever is available.
+    const currentRole = userRole || userData?.role || userProfile?.role || 'user';
+    const canEditRole = ADMIN_ROLES.has(currentRole);
 
     // Form states
     const [profileForm, setProfileForm] = useState({
@@ -138,7 +156,7 @@ export default function Settings() {
 
             const xhr = new XMLHttpRequest();
             xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, true);
-            
+
             xhr.upload.onprogress = (event) => {
                 if (event.lengthComputable) {
                     const progress = Math.round((event.loaded / event.total) * 100);
@@ -172,7 +190,6 @@ export default function Settings() {
             return;
         }
 
-        // Validate file type
         const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
         if (!validTypes.includes(file.type)) {
             showNotification('Please upload a valid image (JPEG, PNG, GIF, WEBP)', 'error');
@@ -183,17 +200,14 @@ export default function Settings() {
         setUploadProgress(0);
 
         try {
-            // Upload to Cloudinary
             const downloadUrl = await uploadToCloudinary(file);
 
-            // Update Firestore with Cloudinary URL
             const userRef = doc(db, 'users', currentUser.uid);
             await updateDoc(userRef, {
                 profileImageUrl: downloadUrl,
                 updatedAt: new Date().toISOString()
             });
 
-            // Update local state
             setImagePreview(downloadUrl);
             setUserProfile(prev => ({ ...prev, profileImageUrl: downloadUrl }));
             await saveToIndexedDB('user_profile', { ...userProfile, profileImageUrl: downloadUrl, uid: currentUser.uid });
@@ -205,13 +219,24 @@ export default function Settings() {
         } finally {
             setSaving(false);
             setUploadProgress(0);
-            // Reset file input
             e.target.value = '';
         }
     };
 
+    /**
+     * Save the profile. This is where the role change is persisted.
+     * - If the signed-in user is an admin, they can change the role.
+     * - If not, the role field is not editable in the UI, and the update
+     *   payload strips out `role` to prevent accidental escalation.
+     */
     const handleSaveProfile = async () => {
         if (saving) return;
+
+        // Only include role in the update if the current user is allowed
+        // to change it AND they actually changed it.
+        const originalRole = userProfile?.role || 'user';
+        const roleChanged = canEditRole && profileForm.role && profileForm.role !== originalRole;
+
         setSaving(true);
 
         try {
@@ -223,20 +248,58 @@ export default function Settings() {
                 updatedAt: new Date().toISOString()
             };
 
-            // Update online if available
+            // Only add the role key when it's safe to write.
+            if (roleChanged) {
+                updates.role = profileForm.role;
+                // Keep role in user_roles in sync if it exists there too.
+                // This is what the auth helpers read from.
+                updates.roleUpdatedAt = new Date().toISOString();
+                updates.roleUpdatedBy = currentUser.uid;
+            }
+
             if (isOnline) {
-                // Update users collection
                 const userRef = doc(db, 'users', currentUser.uid);
                 await updateDoc(userRef, updates);
+
+                // If the role changed, mirror to user_roles so any function
+                // or context that reads from that collection sees the new
+                // value too.
+                if (roleChanged) {
+                    try {
+                        const roleRef = doc(db, 'user_roles', currentUser.uid);
+                        const roleSnap = await getDoc(roleRef);
+                        if (roleSnap.exists()) {
+                            await updateDoc(roleRef, {
+                                role: updates.role,
+                                updatedAt: new Date().toISOString(),
+                            });
+                        }
+                    } catch (roleErr) {
+                        console.warn('Could not mirror role to user_roles:', roleErr.message);
+                    }
+
+                    // Force a token refresh so the new role shows up in
+                    // the ID token claims on the next request. Firebase
+                    // caches claims for up to 1 hour otherwise.
+                    try {
+                        await currentUser.getIdToken(true);
+                    } catch (refreshErr) {
+                        console.warn('Could not refresh token after role change:', refreshErr.message);
+                    }
+                }
 
                 // Update display name in auth
                 await updateProfile(currentUser, {
                     displayName: updates.fullName
                 });
 
-                showNotification('Profile updated successfully!', 'success');
+                showNotification(
+                    roleChanged
+                        ? `Profile and role updated to "${updates.role}".`
+                        : 'Profile updated successfully!',
+                    'success'
+                );
             } else {
-                // Offline - add to sync queue
                 await addToSyncQueue('users', 'update', { id: currentUser.uid, ...updates });
                 showNotification('Profile saved offline - will sync when online', 'info');
             }
@@ -277,11 +340,8 @@ export default function Settings() {
 
         setSaving(true);
         try {
-            // Re-authenticate user
             const credential = EmailAuthProvider.credential(currentUser.email, currentPassword);
             await reauthenticateWithCredential(currentUser, credential);
-
-            // Update password
             await updatePassword(currentUser, newPassword);
 
             setShowPasswordModal(false);
@@ -323,13 +383,11 @@ export default function Settings() {
 
         setSaving(true);
         try {
-            // Delete user document
             await updateDoc(doc(db, 'users', currentUser.uid), {
                 status: 'deleted',
                 deletedAt: new Date().toISOString()
             });
 
-            // Delete the user account
             await currentUser.delete();
 
             showNotification('Account deleted successfully', 'success');
@@ -443,27 +501,15 @@ export default function Settings() {
                     gap: 8px;
                 }
 
-                .settings-tab:hover {
-                    color: var(--secondary);
-                }
-
+                .settings-tab:hover { color: var(--secondary); }
                 .settings-tab.active {
                     color: var(--primary);
                     border-bottom-color: var(--primary);
                 }
 
-                .settings-body {
-                    padding: 30px;
-                }
-
-                .settings-section {
-                    display: none;
-                    animation: fadeIn 0.3s ease;
-                }
-
-                .settings-section.active {
-                    display: block;
-                }
+                .settings-body { padding: 30px; }
+                .settings-section { display: none; animation: fadeIn 0.3s ease; }
+                .settings-section.active { display: block; }
 
                 .profile-avatar-section {
                     display: flex;
@@ -492,11 +538,7 @@ export default function Settings() {
                     position: relative;
                 }
 
-                .profile-avatar img {
-                    width: 100%;
-                    height: 100%;
-                    object-fit: cover;
-                }
+                .profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
 
                 .profile-avatar .avatar-placeholder {
                     font-weight: 700;
@@ -518,26 +560,15 @@ export default function Settings() {
                     opacity: 0;
                 }
 
-                .profile-avatar:hover .upload-overlay {
-                    opacity: 1;
-                }
-
+                .profile-avatar:hover .upload-overlay { opacity: 1; }
                 .profile-avatar .upload-overlay i {
                     display: block;
                     font-size: 14px;
                     margin-bottom: 2px;
                 }
 
-                .avatar-info h4 {
-                    font-size: 18px;
-                    color: var(--secondary);
-                    margin-bottom: 5px;
-                }
-
-                .avatar-info p {
-                    color: var(--gray);
-                    font-size: 14px;
-                }
+                .avatar-info h4 { font-size: 18px; color: var(--secondary); margin-bottom: 5px; }
+                .avatar-info p { color: var(--gray); font-size: 14px; }
 
                 .upload-progress {
                     width: 100%;
@@ -555,9 +586,7 @@ export default function Settings() {
                     border-radius: 2px;
                 }
 
-                .form-group {
-                    margin-bottom: 20px;
-                }
+                .form-group { margin-bottom: 20px; }
 
                 .form-group label {
                     display: block;
@@ -567,9 +596,7 @@ export default function Settings() {
                     margin-bottom: 5px;
                 }
 
-                .form-group label .required {
-                    color: var(--danger);
-                }
+                .form-group label .required { color: var(--danger); }
 
                 .form-group input,
                 .form-group select {
@@ -589,9 +616,11 @@ export default function Settings() {
                     border-color: var(--primary);
                 }
 
-                .form-group input:disabled {
+                .form-group input:disabled,
+                .form-group select:disabled {
                     background: var(--light);
                     cursor: not-allowed;
+                    opacity: 0.7;
                 }
 
                 .form-row {
@@ -622,62 +651,30 @@ export default function Settings() {
                     font-size: 14px;
                 }
 
-                .btn-primary {
-                    background: var(--primary);
-                    color: white;
-                }
-
+                .btn-primary { background: var(--primary); color: white; }
                 .btn-primary:hover {
                     background: var(--primary-dark);
                     transform: translateY(-2px);
                     box-shadow: var(--shadow-lg);
                 }
 
-                .btn-danger {
-                    background: var(--danger);
-                    color: white;
-                }
-
-                .btn-danger:hover {
-                    opacity: 0.9;
-                    transform: translateY(-2px);
-                }
+                .btn-danger { background: var(--danger); color: white; }
+                .btn-danger:hover { opacity: 0.9; transform: translateY(-2px); }
 
                 .btn-outline {
                     background: transparent;
                     border: 2px solid var(--border);
                     color: var(--secondary);
                 }
+                .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
 
-                .btn-outline:hover {
-                    border-color: var(--primary);
-                    color: var(--primary);
-                }
+                .btn-success { background: var(--success); color: white; }
+                .btn-success:hover { opacity: 0.9; transform: translateY(-2px); }
 
-                .btn-success {
-                    background: var(--success);
-                    color: white;
-                }
+                .btn-warning { background: var(--warning); color: white; }
+                .btn-warning:hover { opacity: 0.9; transform: translateY(-2px); }
 
-                .btn-success:hover {
-                    opacity: 0.9;
-                    transform: translateY(-2px);
-                }
-
-                .btn-warning {
-                    background: var(--warning);
-                    color: white;
-                }
-
-                .btn-warning:hover {
-                    opacity: 0.9;
-                    transform: translateY(-2px);
-                }
-
-                .btn-sm {
-                    padding: 6px 14px;
-                    font-size: 12px;
-                }
+                .btn-sm { padding: 6px 14px; font-size: 12px; }
 
                 .password-section {
                     background: var(--light);
@@ -727,10 +724,7 @@ export default function Settings() {
 
                 .modal-overlay {
                     position: fixed;
-                    top: 0;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
+                    top: 0; left: 0; right: 0; bottom: 0;
                     background: rgba(0, 0, 0, 0.5);
                     z-index: 1000;
                     display: none;
@@ -740,9 +734,7 @@ export default function Settings() {
                     backdrop-filter: blur(4px);
                 }
 
-                .modal-overlay.active {
-                    display: flex;
-                }
+                .modal-overlay.active { display: flex; }
 
                 .modal {
                     background: white;
@@ -762,10 +754,7 @@ export default function Settings() {
                     margin-bottom: 25px;
                 }
 
-                .modal-header h2 {
-                    font-size: 22px;
-                    color: var(--secondary);
-                }
+                .modal-header h2 { font-size: 22px; color: var(--secondary); }
 
                 .modal-close {
                     width: 40px;
@@ -777,10 +766,7 @@ export default function Settings() {
                     font-size: 18px;
                     transition: all 0.3s;
                 }
-
-                .modal-close:hover {
-                    background: var(--border);
-                }
+                .modal-close:hover { background: var(--border); }
 
                 .modal-footer {
                     display: flex;
@@ -804,6 +790,15 @@ export default function Settings() {
                     border: 1px solid #bee5eb;
                 }
 
+                .role-locked-hint {
+                    font-size: 12px;
+                    color: var(--gray);
+                    margin-top: 4px;
+                    display: flex;
+                    align-items: center;
+                    gap: 5px;
+                }
+
                 @keyframes slideUp {
                     from { transform: translateY(20px); opacity: 0; }
                     to { transform: translateY(0); opacity: 1; }
@@ -819,61 +814,24 @@ export default function Settings() {
                 }
 
                 @media (max-width: 768px) {
-                    .settings-header {
-                        padding: 20px;
-                    }
-
-                    .settings-tabs {
-                        padding: 0 15px;
-                    }
-
-                    .settings-tab {
-                        padding: 10px 16px;
-                        font-size: 13px;
-                    }
-
-                    .settings-body {
-                        padding: 20px;
-                    }
-
-                    .form-row {
-                        grid-template-columns: 1fr;
-                    }
-
-                    .profile-avatar-section {
-                        flex-direction: column;
-                        text-align: center;
-                    }
-
-                    .danger-zone .delete-input {
-                        flex-direction: column;
-                    }
-
-                    .danger-zone .delete-input input {
-                        width: 100%;
-                    }
+                    .settings-header { padding: 20px; }
+                    .settings-tabs { padding: 0 15px; }
+                    .settings-tab { padding: 10px 16px; font-size: 13px; }
+                    .settings-body { padding: 20px; }
+                    .form-row { grid-template-columns: 1fr; }
+                    .profile-avatar-section { flex-direction: column; text-align: center; }
+                    .danger-zone .delete-input { flex-direction: column; }
+                    .danger-zone .delete-input input { width: 100%; }
                 }
 
                 @media (max-width: 480px) {
-                    .profile-avatar {
-                        width: 80px;
-                        height: 80px;
-                        font-size: 36px;
-                    }
-
-                    .settings-tab {
-                        padding: 8px 12px;
-                        font-size: 12px;
-                    }
-
-                    .settings-tab i {
-                        font-size: 12px;
-                    }
+                    .profile-avatar { width: 80px; height: 80px; font-size: 36px; }
+                    .settings-tab { padding: 8px 12px; font-size: 12px; }
+                    .settings-tab i { font-size: 12px; }
                 }
             `}</style>
 
             <div className="settings-container">
-                {/* Using cached data indicator */}
                 {usingCachedData && isOnline && (
                     <div className="cached-indicator">
                         <i className="fas fa-database"></i>
@@ -882,7 +840,6 @@ export default function Settings() {
                 )}
 
                 <div className="settings-card">
-                    {/* Header */}
                     <div className="settings-header">
                         <div>
                             <h2><i className="fas fa-cog"></i> Settings</h2>
@@ -894,10 +851,10 @@ export default function Settings() {
                                 borderRadius: '20px',
                                 fontSize: '12px',
                                 fontWeight: '600',
-                                background: userProfile?.role === 'admin' ? '#d4edda' : '#d1ecf1',
-                                color: userProfile?.role === 'admin' ? '#155724' : '#0c5460'
+                                background: ADMIN_ROLES.has(profileForm.role) ? '#d4edda' : '#d1ecf1',
+                                color: ADMIN_ROLES.has(profileForm.role) ? '#155724' : '#0c5460'
                             }}>
-                                {userProfile?.role || 'User'}
+                                {profileForm.role || 'user'}
                             </span>
                             <span style={{
                                 padding: '4px 12px',
@@ -913,7 +870,6 @@ export default function Settings() {
                         </div>
                     </div>
 
-                    {/* Tabs */}
                     <div className="settings-tabs">
                         <button
                             className={`settings-tab ${activeTab === 'profile' ? 'active' : ''}`}
@@ -935,11 +891,9 @@ export default function Settings() {
                         </button>
                     </div>
 
-                    {/* Body */}
                     <div className="settings-body">
                         {/* Profile Section */}
                         <div className={`settings-section ${activeTab === 'profile' ? 'active' : ''}`}>
-                            {/* Avatar */}
                             <div className="profile-avatar-section">
                                 <div className="profile-avatar">
                                     {imagePreview ? (
@@ -968,7 +922,6 @@ export default function Settings() {
                                 </div>
                             </div>
 
-                            {/* Hidden file input */}
                             <input
                                 type="file"
                                 ref={fileInputRef}
@@ -977,7 +930,6 @@ export default function Settings() {
                                 onChange={handleFileChange}
                             />
 
-                            {/* Profile Form */}
                             <form onSubmit={(e) => { e.preventDefault(); handleSaveProfile(); }}>
                                 <div className="form-row">
                                     <div className="form-group">
@@ -1028,14 +980,33 @@ export default function Settings() {
                                 </div>
 
                                 <div className="form-row">
+                                    {/* === ROLE — editable by admins only === */}
                                     <div className="form-group">
-                                        <label>Role</label>
-                                        <input
-                                            type="text"
+                                        <label>
+                                            Role{' '}
+                                            {canEditRole && <span className="required">*</span>}
+                                        </label>
+                                        <select
                                             id="role"
                                             value={profileForm.role}
-                                            disabled
-                                        />
+                                            onChange={handleProfileChange}
+                                            disabled={!canEditRole}
+                                        >
+                                            {ASSIGNABLE_ROLES.map((r) => (
+                                                <option key={r.value} value={r.value}>{r.label}</option>
+                                            ))}
+                                        </select>
+                                        {canEditRole ? (
+                                            <div className="role-locked-hint">
+                                                <i className="fas fa-shield-alt" style={{ color: 'var(--success)' }}></i>
+                                                You can change roles. Changes take effect on the next sign-in.
+                                            </div>
+                                        ) : (
+                                            <div className="role-locked-hint">
+                                                <i className="fas fa-lock" style={{ color: 'var(--warning)' }}></i>
+                                                Role changes require administrator privileges.
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="form-group">
                                         <label>School ID</label>
@@ -1083,98 +1054,4 @@ export default function Settings() {
                                 </button>
                                 {!isOnline && (
                                     <div style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '8px' }}>
-                                        <i className="fas fa-info-circle"></i> You need to be online to change password.
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        {/* Danger Zone */}
-                        <div className={`settings-section ${activeTab === 'danger' ? 'active' : ''}`}>
-                            <div className="danger-zone">
-                                <h4><i className="fas fa-exclamation-triangle"></i> Delete Account</h4>
-                                <p>
-                                    Once you delete your account, there is no going back. Please be certain.
-                                    This action will permanently delete all your data.
-                                </p>
-                                <div className="delete-input">
-                                    <input
-                                        type="text"
-                                        placeholder='Type "DELETE" to confirm'
-                                        value={deleteConfirm}
-                                        onChange={(e) => setDeleteConfirm(e.target.value)}
-                                    />
-                                    <button
-                                        className="btn btn-danger"
-                                        onClick={handleDeleteAccount}
-                                        disabled={!isOnline || saving}
-                                    >
-                                        <i className="fas fa-trash"></i> Delete Account
-                                    </button>
-                                </div>
-                                {!isOnline && (
-                                    <div style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '10px' }}>
-                                        <i className="fas fa-info-circle"></i> You need to be online to delete your account.
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Change Password Modal */}
-            <div className={`modal-overlay ${showPasswordModal ? 'active' : ''}`}>
-                <div className="modal">
-                    <div className="modal-header">
-                        <h2>Change Password</h2>
-                        <button className="modal-close" onClick={() => setShowPasswordModal(false)}>
-                            <i className="fas fa-times"></i>
-                        </button>
-                    </div>
-                    <form onSubmit={handleChangePassword}>
-                        <div className="form-group">
-                            <label>Current Password <span className="required">*</span></label>
-                            <input
-                                type="password"
-                                id="currentPassword"
-                                value={passwordForm.currentPassword}
-                                onChange={handlePasswordChange}
-                                required
-                            />
-                        </div>
-                        <div className="form-group">
-                            <label>New Password <span className="required">*</span></label>
-                            <input
-                                type="password"
-                                id="newPassword"
-                                value={passwordForm.newPassword}
-                                onChange={handlePasswordChange}
-                                required
-                                placeholder="Minimum 6 characters"
-                            />
-                        </div>
-                        <div className="form-group">
-                            <label>Confirm New Password <span className="required">*</span></label>
-                            <input
-                                type="password"
-                                id="confirmPassword"
-                                value={passwordForm.confirmPassword}
-                                onChange={handlePasswordChange}
-                                required
-                            />
-                        </div>
-                        <div className="modal-footer">
-                            <button type="button" className="btn btn-outline" onClick={() => setShowPasswordModal(false)}>
-                                Cancel
-                            </button>
-                            <button type="submit" className="btn btn-primary" disabled={saving}>
-                                {saving ? 'Updating...' : 'Update Password'}
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </Layout>
-    );
-}
+                                        <i className="fas fa-info-circle"></i
