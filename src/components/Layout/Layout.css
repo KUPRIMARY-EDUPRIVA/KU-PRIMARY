@@ -73,6 +73,7 @@
     flex-shrink: 0;
 }
 
+/* Full school name — visible by default, hidden on mobile */
 .school-name-header {
     font-size: 22px;
     font-weight: 700;
@@ -83,6 +84,23 @@
     max-width: none;
     white-space: nowrap;
     min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    align-self: center;
+    display: block;
+}
+
+/* Short school name — hidden by default, shown on mobile */
+.school-name-short {
+    display: none;
+    font-size: 18px;
+    font-weight: 700;
+    color: #1a237e;
+    letter-spacing: 0.5px;
+    text-align: left;
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     align-self: center;
@@ -943,8 +961,14 @@
         padding: 0 12px;
     }
 
+    /* Hide full school name on mobile, show short version instead */
     .school-name-header {
-        font-size: 18px;  /* Just like White Doves - only font size changes */
+        display: none;
+    }
+
+    .school-name-short {
+        display: block;
+        font-size: 18px;
     }
 
     .logo-img {
@@ -1116,7 +1140,12 @@
     }
 
     .school-name-header {
-        font-size: 16px;  /* Just like White Doves - only font size changes */
+        display: none;
+    }
+
+    .school-name-short {
+        display: block;
+        font-size: 16px;
     }
 
     .logo-img {
@@ -1278,7 +1307,12 @@
     }
 
     .school-name-header {
-        font-size: 14px;  /* Just like White Doves - only font size changes */
+        display: none;
+    }
+
+    .school-name-short {
+        display: block;
+        font-size: 14px;
     }
 
     .logo-img {
@@ -1371,6 +1405,10 @@
     }
 
     .school-name-header {
+        color: #e0e0e0;
+    }
+
+    .school-name-short {
         color: #e0e0e0;
     }
 
