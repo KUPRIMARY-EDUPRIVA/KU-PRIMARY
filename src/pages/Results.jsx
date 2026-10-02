@@ -66,7 +66,17 @@ export default function Results() {
     const [assessmentDeadline, setAssessmentDeadline] = useState('');
     const [deadlineAssessmentType, setDeadlineAssessmentType] = useState('Assessment 1');
     const [controlAssessmentType, setControlAssessmentType] = useState('Assessment 1');
-    const [teacherAccess, setTeacherAccess] = useState({ level: '', subjects: [], classes: [] });
+
+    // `teacherAccess` now includes a `levels` array so multi-level teachers
+    // work correctly. `level` remains as the "primary" level for backwards
+    // compatibility with existing code paths.
+    const [teacherAccess, setTeacherAccess] = useState({
+        level: '',
+        levels: [],
+        subjects: [],
+        classes: []
+    });
+
     const [isAdmin, setIsAdmin] = useState(false);
     const [levelPermissions, setLevelPermissions] = useState({});
     const [showRoleAlert, setShowRoleAlert] = useState(true);
@@ -170,36 +180,127 @@ export default function Results() {
         if (examId) console.log('Loading results for exam:', examId);
     }, [location]);
 
+    // ------------------------------------------------------------
+    // Teacher access resolution
+    //
+    // Priority order:
+    //   1. Firebase Auth custom claims (if a Cloud Function has set them)
+    //   2. Firestore `users/{uid}` doc, exposed via AuthContext as `userData`
+    //      (this is what the Teachers page now writes to)
+    //
+    // The Teachers page has NO way to set custom claims — that requires
+    // the Admin SDK. So in practice path #2 is what makes teachers work.
+    // ------------------------------------------------------------
     const loadTeacherAccess = async () => {
+        // 1) Try custom claims first (kept for forward compatibility)
         try {
-            const claims = await currentUser.getIdTokenResult(true);
-            const c = claims.claims || {};
+            const tokenResult = await currentUser.getIdTokenResult(true);
+            const c = tokenResult.claims || {};
             if (c.classes || c.subjects || c.level) {
+                const claimsClasses = Array.isArray(c.classes) ? c.classes : [];
+                const claimsSubjects = Array.isArray(c.subjects) ? c.subjects : [];
+                const claimsLevels = Array.isArray(c.levels)
+                    ? c.levels
+                    : (c.level ? [c.level] : []);
+
                 setTeacherAccess({
-                    level: c.level || '',
-                    subjects: Array.isArray(c.subjects) ? c.subjects : [],
-                    classes: Array.isArray(c.classes) ? c.classes : []
+                    level: c.level || claimsLevels[0] || '',
+                    levels: claimsLevels,
+                    subjects: claimsSubjects,
+                    classes: claimsClasses
                 });
                 if (c.level) setSelectedLevel(c.level);
-                if (Array.isArray(c.subjects) && c.subjects.length === 1) setSelectedSubject(c.subjects[0]);
-                if (Array.isArray(c.classes) && c.classes.length === 1) setSelectedClass(c.classes[0]);
+                if (claimsSubjects.length === 1) setSelectedSubject(claimsSubjects[0]);
+                if (claimsClasses.length === 1) setSelectedClass(claimsClasses[0]);
+                return;
             }
         } catch (e) {
-            console.error('Failed to read teacher claims:', e);
+            console.warn('Custom claims read failed, falling back to userData:', e);
         }
+
+        // 2) Fallback: the Firestore `users/{uid}` doc via AuthContext
+        if (!userData) return;
+
+        const assignments = Array.isArray(userData.assignments) ? userData.assignments : [];
+
+        // Prefer the new `assignments` shape — [{ subject, classes: [...] }]
+        const classesFromAssignments = [...new Set(
+            assignments.flatMap(a => Array.isArray(a.classes) ? a.classes : [])
+        )];
+        const subjectsFromAssignments = [...new Set(
+            assignments.map(a => a.subject).filter(Boolean)
+        )];
+
+        // Legacy fields (kept for older teacher docs)
+        const legacyClasses = Array.isArray(userData.classes)
+            ? userData.classes
+            : (userData.class ? [userData.class] : []);
+        const legacySubjects = Array.isArray(userData.subjects)
+            ? userData.subjects
+            : (userData.subject ? [userData.subject] : []);
+        const legacyLevels = Array.isArray(userData.levels)
+            ? userData.levels
+            : (userData.level ? [userData.level] : []);
+
+        const effectiveClasses = classesFromAssignments.length > 0
+            ? classesFromAssignments
+            : legacyClasses;
+        const effectiveSubjects = subjectsFromAssignments.length > 0
+            ? subjectsFromAssignments
+            : legacySubjects;
+
+        // Derive levels from class list if we still don't have any
+        let effectiveLevels = legacyLevels;
+        if (effectiveLevels.length === 0 && effectiveClasses.length > 0) {
+            const set = new Set();
+            effectiveClasses.forEach((cls) => {
+                Object.entries(LEVEL_CLASSES).forEach(([lvl, list]) => {
+                    if (list.includes(cls)) set.add(lvl);
+                });
+            });
+            effectiveLevels = [...set];
+        }
+
+        // Primary level: explicit `userData.level` wins, else first derived
+        const primaryLevel = userData.level || effectiveLevels[0] || '';
+
+        setTeacherAccess({
+            level: primaryLevel,
+            levels: effectiveLevels,
+            subjects: effectiveSubjects,
+            classes: effectiveClasses
+        });
+
+        if (primaryLevel) setSelectedLevel(primaryLevel);
+        if (effectiveSubjects.length === 1) setSelectedSubject(effectiveSubjects[0]);
+        if (effectiveClasses.length === 1) setSelectedClass(effectiveClasses[0]);
     };
 
     // ---- Access checks ----
-    const hasClassAccess = useCallback((cls) => isAdmin || teacherAccess.classes.includes(cls), [isAdmin, teacherAccess]);
-    const hasSubjectAccess = useCallback((s) => isAdmin || teacherAccess.subjects.includes(s), [isAdmin, teacherAccess]);
-    const hasLevelAccess = useCallback((l) => isAdmin || teacherAccess.level === l, [isAdmin, teacherAccess]);
+    const hasClassAccess = useCallback(
+        (cls) => isAdmin || teacherAccess.classes.includes(cls),
+        [isAdmin, teacherAccess]
+    );
+    const hasSubjectAccess = useCallback(
+        (s) => isAdmin || teacherAccess.subjects.includes(s),
+        [isAdmin, teacherAccess]
+    );
+    const hasLevelAccess = useCallback(
+        (l) => isAdmin
+            || (teacherAccess.levels && teacherAccess.levels.length
+                ? teacherAccess.levels.includes(l)
+                : teacherAccess.level === l),
+        [isAdmin, teacherAccess]
+    );
 
     // ---- Memoized dropdown options ----
     const availableLevels = useMemo(() => (
         isAdmin
             ? ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school']
-            : [teacherAccess.level].filter(Boolean)
-    ), [isAdmin, teacherAccess.level]);
+            : (teacherAccess.levels && teacherAccess.levels.length
+                ? teacherAccess.levels
+                : [teacherAccess.level].filter(Boolean))
+    ), [isAdmin, teacherAccess]);
 
     const availableClasses = useMemo(() => {
         const levelClasses = getLevelClasses ? getLevelClasses(selectedLevel) : (LEVEL_CLASSES[selectedLevel] || []);
@@ -570,14 +671,14 @@ export default function Results() {
             const result = await downloadStudentReportPDF(student, scores, {
                 schoolName,
                 schoolMotto,
-                schoolLogo: userData?.schoolLogo || '',        // ← NEW
-                schoolAddress: userData?.schoolAddress || '',  // ← NEW
-                schoolPhone: userData?.schoolPhone || '',      // ← NEW
+                schoolLogo: userData?.schoolLogo || '',
+                schoolAddress: userData?.schoolAddress || '',
+                schoolPhone: userData?.schoolPhone || '',
                 schoolEmail: userData?.schoolEmail || '',
                 level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
                 cls: selectedClass,
                 term: selectedTerm,
-                year: new Date().getFullYear(), 
+                year: new Date().getFullYear(),
                 assessmentType,
                 subjects: LEVEL_SUBJECTS[selectedLevel] || []
             });
@@ -848,7 +949,7 @@ export default function Results() {
                     <span>
                         {isAdmin
                             ? 'Admin Access - Full control over all classes and subjects'
-                            : `Teacher Access - You can only view and manage ${teacherAccess.classes.join(', ')} classes and ${teacherAccess.subjects.join(', ')} subjects`}
+                            : `Teacher Access - You can only view and manage ${teacherAccess.classes.join(', ') || 'no assigned'} classes and ${teacherAccess.subjects.join(', ') || 'no assigned'} subjects`}
                     </span>
                 </div>
             )}
@@ -917,7 +1018,7 @@ export default function Results() {
                     >
                         <option value="">Select Level</option>
                         {availableLevels.map(level => (
-                            <option key={level} value={level}>{LEVEL_DISPLAY_NAMES[level]}</option>
+                            <option key={level} value={level}>{LEVEL_DISPLAY_NAMES[level] || level}</option>
                         ))}
                     </select>
                     {!isAdmin && (
