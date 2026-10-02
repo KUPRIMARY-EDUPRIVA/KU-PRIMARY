@@ -33,14 +33,9 @@ function firstNameOf(userData, currentUser) {
 }
 
 /* ============================================================
-   Keyword intent detection (runs against the whole sentence)
+   Keyword intent detection
    ============================================================ */
 
-/**
- * Returns true if any of the `patterns` appears as a whole-word-ish
- * match inside the lowercased query. This is deliberately liberal —
- * we strip punctuation and check substring for word stems.
- */
 function containsAny(q, patterns) {
     for (const p of patterns) {
         if (q.includes(p)) return true;
@@ -48,65 +43,109 @@ function containsAny(q, patterns) {
     return false;
 }
 
-function detectIntent(raw) {
-    const q = ` ${String(raw || '').toLowerCase().replace(/[^\w\s/?+-]/g, ' ')} `;
+function normalise(raw) {
+    return ` ${String(raw || '').toLowerCase().replace(/[^\w\s/?+.'-]/g, ' ').replace(/\s+/g, ' ').trim()} `;
+}
 
-    // Balance / fees
-    if (containsAny(q, [' fee balance', ' check balance', ' balance for ', 'fee balance of', 'outstanding', 'how much does', 'how much is', 'arrears', 'owed'])) {
-        return 'check_balance';
+// Best-effort extraction of a class/grade name from free text.
+// Recognises: Grade 7, Grade 8 East, PP1, PP2, Form 3, Form 4 West,
+// Grade 10 North, and custom variants like "Grade 3 Hope".
+function extractClassFromQuery(raw) {
+    const q = String(raw || '');
+    // Grade X with optional trailing word
+    let m = q.match(/\b(Grade\s*\d+[A-Za-z]?(?:\s+[A-Z][a-z]+)?)/i);
+    if (m) return m[1].replace(/\s+/g, ' ').trim();
+    // Form X with optional trailing word
+    m = q.match(/\b(Form\s*\d+[A-Za-z]?(?:\s+[A-Z][a-z]+)?)/i);
+    if (m) return m[1].replace(/\s+/g, ' ').trim();
+    // PP1 / PP2
+    m = q.match(/\b(PP\s*\d+)\b/i);
+    if (m) return m[1].replace(/\s+/g, '').toUpperCase();
+    return null;
+}
+
+// Best-effort extraction of an admission number. Accepts digits,
+// hyphenated, or slash-separated tokens that look like IDs.
+function extractAdmissionNumber(raw) {
+    const q = String(raw || '');
+    // Slash or hyphen patterns first
+    let m = q.match(/\b([A-Za-z]{0,4}[-\/]?\d{2,10})\b/);
+    if (m && /\d/.test(m[1]) && m[1].length >= 3) return m[1];
+    // Fallback: any 3+ digit number that isn't a year
+    m = q.match(/\b(\d{3,10})\b/);
+    if (m && !/^(19|20)\d{2}$/.test(m[1])) return m[1];
+    return null;
+}
+
+function detectIntent(raw) {
+    const q = normalise(raw);
+
+    // --- Greeting / small talk (checked early) ---
+    if (/^\s*(hi|hello|hey|hiya|yo|habari|jambo|mambo|sasa|niaje|good\s+(morning|afternoon|evening|day))\b/.test(q.trim())) {
+        return 'greeting';
     }
-    if (containsAny(q, ['pay fee', 'pay school fee', 'pay the fee', 'stk push', 'pay fees', 'make payment', 'send money', 'mpesa payment', 'm-pesa payment'])) {
+    if (containsAny(q, [' thank', ' thanks', ' asante', ' cheers', ' nice one', ' great '])) return 'gratitude';
+    if (containsAny(q, [' bye ', ' goodbye', ' kwaheri', ' see you', ' later ', ' goodnight'])) return 'goodbye';
+    if (containsAny(q, [' who are you', ' what are you', ' what is laban', ' your name', ' about you'])) return 'about_bot';
+    if (containsAny(q, [' my role', ' who am i', ' what am i', ' my account'])) return 'my_role';
+    if (containsAny(q, [' help ', ' menu', ' what can you do', ' commands', ' options'])) return 'help';
+
+    // --- Fees ---
+    if (containsAny(q, [' pay fee', ' pay school fee', ' pay the fee', ' pay fees', ' mpesa', ' m-pesa', ' send money', ' stk push', ' make payment', ' lipa '])) {
         return 'pay_fee';
     }
+    if (containsAny(q, [' fee balance', ' check balance', ' balance for ', ' outstanding', ' arrears', ' owed', ' owing', ' how much does', ' how much is '])) {
+        // If it also asks about paying, prefer pay_fee (already handled above).
+        return 'check_balance';
+    }
 
-    // School info
-    if (containsAny(q, ['school name', 'name of the school', 'what is the school called', 'whats the school called', 'name of school'])) {
+    // --- School info (specific first, generic last) ---
+    if (containsAny(q, [' school name', ' name of the school', ' what is the school called', " what's the school called", ' name of school', ' jina la shule'])) {
         return 'school_name';
     }
-    if (containsAny(q, ['what classes', 'which classes', 'list classes', 'classes do we have', 'classes offered', 'available classes', 'class list'])) {
+    if (containsAny(q, [' motto', ' slogan'])) return 'school_motto';
+    if (containsAny(q, [' paybill', ' till number', ' shortcode'])) return 'school_paybill';
+    if (containsAny(q, [' what classes', ' which classes', ' list classes', ' classes do we have', ' classes offered', ' available classes', ' class list', ' do we have grade'])) {
         return 'school_classes';
     }
-    if (containsAny(q, ['what subjects', 'which subjects', 'list subjects', 'subjects offered', 'subjects do we teach', 'curriculum subjects', 'subject list'])) {
+    if (containsAny(q, [' what subjects', ' which subjects', ' list subjects', ' subjects offered', ' subjects do we teach', ' curriculum subjects', ' subject list'])) {
         return 'school_subjects';
     }
-    if (containsAny(q, ['how many teachers', 'number of teachers', 'teachers do we have', 'count teachers', 'staff strength'])) {
+    if (containsAny(q, [' how many teachers', ' number of teachers', ' teachers do we have', ' count teachers', ' staff strength', ' how many staff'])) {
         return 'school_teachers';
     }
-    if (containsAny(q, ['school motto', 'the motto', 'our motto'])) {
-        return 'school_motto';
-    }
-    if (containsAny(q, ['school phone', 'phone number', 'contact us', 'school contact', 'school email', 'school address', 'where is the school', 'school code', 'school website'])) {
+    if (containsAny(q, [' school phone', ' phone number', ' contact us', ' school contact', ' school email', ' school address', ' where is the school', ' school code', ' school website', ' location of the school'])) {
         return 'school_contact';
     }
-    if (containsAny(q, ['what level', 'which levels', 'levels does', 'levels offered', 'grade levels'])) {
+    if (containsAny(q, [' what level', ' which levels', ' levels does', ' levels offered', ' grade levels'])) {
         return 'school_levels';
     }
-    if (containsAny(q, ['tell me about the school', 'about the school', 'overview of the school', 'describe the school', 'school overview'])) {
+    if (containsAny(q, [' tell me about the school', ' about the school', ' overview of the school', ' describe the school', ' school overview', ' give me an overview'])) {
         return 'school_overview';
     }
 
-    // Performance
-    if (containsAny(q, ['best student', 'top student', 'highest performer', 'top performer', 'who is the best'])) {
+    // --- Performance ---
+    // Class-specific query must come before the generic "performance" check.
+    if (extractClassFromQuery(raw) && containsAny(q, [' performance', ' result', ' how is ', ' how did ', ' how are ', ' mean score', ' average', ' best in', ' top in'])) {
+        return 'performance_class';
+    }
+    if (containsAny(q, [' best student', ' top student', ' highest performer', ' top performer', ' who is the best', ' best in ', ' top in '])) {
         return 'performance_top';
     }
-    if (containsAny(q, ['performance', 'how did we perform', 'how is the class performing', 'results', 'mean score', 'average score', 'class average', 'how are the students doing'])) {
+    if (containsAny(q, [' performance', ' how did we perform', ' how is the class performing', ' results', ' mean score', ' average score', ' class average', ' how are the students doing'])) {
         return 'performance_overview';
     }
 
-    // Reports (admin only)
-    if (containsAny(q, ['fee report', 'fee reports', 'daily collection', 'collections today', 'collected today', 'how much did we collect', 'revenue report', 'report today'])) {
+    // --- Reports (admin) ---
+    if (containsAny(q, [' fee report', ' fee reports', ' daily collection', ' collections today', ' collected today', ' how much did we collect', ' revenue report', ' revenue today', ' report today'])) {
         return 'daily_report';
     }
 
-    // Help / greeting
-    if (containsAny(q, ['help', 'menu', 'what can you do', 'options'])) return 'help';
-    if (/^\s*(hi|hello|hey|good (morning|afternoon|evening)|habari|jambo)\b/.test(q.trim())) return 'greeting';
-
-    // Pricing / support
-    if (containsAny(q, ['pricing', 'subscription', 'system cost', 'system fee', 'how much is edupriva', 'cost of the system'])) {
+    // --- Business / meta ---
+    if (containsAny(q, [' pricing', ' subscription', ' system cost', ' system fee', ' how much is edupriva', ' cost of the system', ' price'])) {
         return 'pricing';
     }
-    if (containsAny(q, ['support', 'contact support', 'talk to a human', 'help me with the system', 'engineer', 'whatsapp support'])) {
+    if (containsAny(q, [' support', ' contact support', ' talk to a human', ' help me with the system', ' engineer', ' whatsapp support', ' talk to someone', ' human being'])) {
         return 'support';
     }
 
@@ -134,7 +173,7 @@ export default function EduprivaChatbot({ onClose }) {
 
     const greeting = useMemo(() => ({
         sender: 'bot',
-        text: `Hello ${myFirst}! I'm LABAN, your school assistant. Ask me anything — school info, fees, performance, or type "help" to see what I can do.`,
+        text: `Hello ${myFirst}! I'm LABAN, your school assistant. Ask me about school info, fees, performance, or type "help" to see what I can do.`,
         time: nowTime(),
     }), [myFirst]);
 
@@ -174,7 +213,7 @@ export default function EduprivaChatbot({ onClose }) {
         try {
             await processInput(text);
         } catch (error) {
-            pushBot(error.message || 'Sorry, something went wrong. Please try again.');
+            pushBot(error.message || `Sorry ${myFirst}, something went wrong. Please try again.`);
         } finally {
             setIsProcessing(false);
         }
@@ -185,7 +224,6 @@ export default function EduprivaChatbot({ onClose }) {
        ======================================================== */
 
     const processInput = async (text) => {
-        // If a state is active, handle it first.
         if (botState.step !== 'IDLE') {
             await handleStateInput(text);
             return;
@@ -247,15 +285,15 @@ export default function EduprivaChatbot({ onClose }) {
 
         if (step === 'AWAITING_PAYMENT_CONFIRMATION') {
             const confirmation = text.trim().toLowerCase();
-            if (['yes', 'y', 'confirm', 'ok'].includes(confirmation)) {
+            if (['yes', 'y', 'confirm', 'ok', 'sawa'].includes(confirmation)) {
                 const { phone, amount, student } = botState.context;
                 pushBot(`Sending the STK push now, ${myFirst}. Please check your phone...`);
                 const res = await triggerSTKPush(phone, amount, student, schoolId);
-                pushBot(res.message || (res.success ? 'STK push sent.' : 'Failed to send.'));
+                pushBot(res.message || (res.success ? 'STK push sent.' : `I couldn't send the STK push, ${myFirst}.`));
                 setBotState({ step: 'IDLE', context: {} });
                 return;
             }
-            if (['no', 'n', 'cancel'].includes(confirmation)) {
+            if (['no', 'n', 'cancel', 'hapana'].includes(confirmation)) {
                 pushBot(`Payment cancelled, ${myFirst}. Type "pay fee" anytime to start again.`);
                 setBotState({ step: 'IDLE', context: {} });
                 return;
@@ -274,12 +312,11 @@ export default function EduprivaChatbot({ onClose }) {
             const res = await fetchFeeBalance(admissionNumber, schoolId);
             pushBot(res.success
                 ? `The fee balance for admission ${admissionNumber} is ${res.balance}.`
-                : (res.balance || 'I could not find that student.'));
+                : (res.balance || `I could not find a student with admission number ${admissionNumber}, ${myFirst}.`));
             setBotState({ step: 'IDLE', context: {} });
             return;
         }
 
-        // Fallback: reset state if we somehow got here.
         setBotState({ step: 'IDLE', context: {} });
     };
 
@@ -293,8 +330,28 @@ export default function EduprivaChatbot({ onClose }) {
         switch (intent) {
             case 'greeting':
                 return pushBot(
-                    `Hi ${myFirst}!  I can help with school information, fees, and more. ` +
-                    `Try asking "What classes do we have?", "Pay fee", or "Best student".`
+                    `Hi ${myFirst}! Good to see you. ` +
+                    `Ask me about school info ("What classes do we have?"), fees ("Pay fee", "Check balance"), ` +
+                    `or performance ("Best student", "How is Grade 7 doing?").`
+                );
+
+            case 'gratitude':
+                return pushBot(`You're welcome, ${myFirst}. Anything else I can help with?`);
+
+            case 'goodbye':
+                return pushBot(`Goodbye, ${myFirst}. Come back anytime you need me.`);
+
+            case 'about_bot':
+                return pushBot(
+                    `I'm LABAN — EduPriva's AI assistant for ${userData?.schoolName || 'your school'}. ` +
+                    `I can look up school facts, check fee balances, initiate M-Pesa payments, and summarise performance. ` +
+                    `Type "help" for the full menu.`
+                );
+
+            case 'my_role':
+                return pushBot(
+                    `You're signed in as **${role}**${isAdmin ? ' — full admin access' : isTeacher ? ' — teacher access' : ''}. ` +
+                    `Ask me what you'd like to do and I'll tailor the answer to your role.`
                 );
 
             case 'help':
@@ -304,15 +361,41 @@ export default function EduprivaChatbot({ onClose }) {
                 setBotState({ step: 'AWAITING_PHONE', context: {} });
                 return pushBot(`Sure ${myFirst}, let's pay some school fees. Please enter the M-Pesa phone number (e.g. 0712345678):`);
 
-            case 'check_balance':
+            case 'check_balance': {
+                const adm = extractAdmissionNumber(text);
+                if (adm) {
+                    pushBot(`Looking up admission ${adm} for you, ${myFirst}...`);
+                    const res = await fetchFeeBalance(adm, schoolId);
+                    return pushBot(res.success
+                        ? `Admission ${adm} has an outstanding balance of ${res.balance}.`
+                        : (res.balance || `I couldn't find a student with admission number ${adm}, ${myFirst}.`));
+                }
                 setBotState({ step: 'AWAITING_ADM_BALANCE', context: {} });
                 return pushBot(`Happy to check that, ${myFirst}. Please enter the student's admission number:`);
+            }
 
             case 'school_name': {
-                const { summary } = await fetchSchoolInfo('overview');
-                const info = await fetchSchoolInfo('overview');
-                const name = info?.data?.school?.name || info?.data?.school?.schoolName;
-                return pushBot(name ? `The school is **${name}**.` : (summary || 'I could not fetch the school name right now.'));
+                const res = await fetchSchoolInfo('overview');
+                const name = res?.data?.school?.name || res?.data?.school?.schoolName;
+                return pushBot(name
+                    ? `The school is **${name}**${userData?.schoolMotto ? ` — motto: "${userData.schoolMotto}"` : ''}.`
+                    : `I couldn't fetch the school name right now, ${myFirst}. Please try again in a moment.`);
+            }
+
+            case 'school_motto': {
+                const res = await fetchSchoolInfo('overview');
+                const motto = res?.data?.school?.motto;
+                return pushBot(motto
+                    ? `The school motto is "${motto}".`
+                    : `There is no motto set for this school yet, ${myFirst}. You can add one under School Profile.`);
+            }
+
+            case 'school_paybill': {
+                const res = await fetchSchoolInfo('contact');
+                const paybill = res?.data?.school?.paybillNumber;
+                return pushBot(paybill
+                    ? `The school's M-Pesa paybill is **${paybill}**. Parents can pay fees directly to it.`
+                    : `No paybill is configured yet, ${myFirst}.`);
             }
 
             case 'school_classes': {
@@ -330,22 +413,14 @@ export default function EduprivaChatbot({ onClose }) {
                 return pushBot(res.summary || `I couldn't fetch the teacher count right now.`);
             }
 
-            case 'school_motto': {
-                const res = await fetchSchoolInfo('overview');
-                const motto = res?.data?.school?.motto;
-                return pushBot(motto
-                    ? `The school motto is "${motto}".`
-                    : `There is no motto set for this school yet.`);
-            }
-
             case 'school_contact': {
                 const res = await fetchSchoolInfo('contact');
-                return pushBot(res.summary || 'No contact details on file.');
+                return pushBot(res.summary || `No contact details on file, ${myFirst}.`);
             }
 
             case 'school_levels': {
                 const res = await fetchSchoolInfo('levels');
-                return pushBot(res.summary || 'I could not fetch the levels.');
+                return pushBot(res.summary || `I could not fetch the levels right now.`);
             }
 
             case 'school_overview': {
@@ -354,13 +429,27 @@ export default function EduprivaChatbot({ onClose }) {
             }
 
             case 'performance_top': {
-                const res = await fetchPerformance({ scope: 'top' });
-                return pushBot(res.summary || `I couldn't fetch the top students right now.`);
+                // Optionally scoped to a class if the user mentioned one.
+                const cls = extractClassFromQuery(text);
+                const res = await fetchPerformance({ scope: 'top', class: cls || undefined });
+                return pushBot(res.summary || `I couldn't fetch the top students right now, ${myFirst}.`);
+            }
+
+            case 'performance_class': {
+                const cls = extractClassFromQuery(text);
+                if (!cls) {
+                    // Shouldn't happen — detectIntent requires a class — but
+                    // fall back gracefully.
+                    const res = await fetchPerformance({ scope: 'school' });
+                    return pushBot(res.summary || `I couldn't fetch performance data right now.`);
+                }
+                const res = await fetchPerformance({ scope: 'class', class: cls });
+                return pushBot(res.summary || `I couldn't fetch performance for ${cls} right now, ${myFirst}.`);
             }
 
             case 'performance_overview': {
                 const res = await fetchPerformance({ scope: 'school' });
-                return pushBot(res.summary || `I couldn't fetch performance data right now.`);
+                return pushBot(res.summary || `I couldn't fetch performance data right now, ${myFirst}.`);
             }
 
             case 'daily_report': {
@@ -368,15 +457,16 @@ export default function EduprivaChatbot({ onClose }) {
                     return pushBot(`Sorry ${myFirst}, daily collection reports are only available to administrators.`);
                 }
                 const res = await fetchDailyCollections(schoolId);
-                if (!res.success) return pushBot('I could not fetch the report right now.');
+                if (!res.success) return pushBot(`I could not fetch the report right now, ${myFirst}.`);
                 return pushBot(`Here's today's fee report, ${myFirst}:\n• Today: ${res.today}\n• This week: ${res.week}`);
             }
 
             case 'pricing':
                 return pushBot(
-                    'EduPriva subscription:\n' +
-                    '• KES 65,000 — customised enterprise deployment\n' +
-                    '• KES 12,500 per term — standard schools'
+                    `EduPriva subscription plans, ${myFirst}:\n` +
+                    `• KES 65,000 — customised enterprise deployment\n` +
+                    `• KES 12,500 per term — standard schools\n\n` +
+                    `Say "contact support" if you'd like a tailored quote.`
                 );
 
             case 'support':
@@ -386,14 +476,7 @@ export default function EduprivaChatbot({ onClose }) {
                 );
 
             default:
-                return pushBot(
-                    `Sorry ${myFirst}, I didn't quite catch that. Try asking things like:\n` +
-                    `• "What classes do we have?"\n` +
-                    `• "How many teachers?"\n` +
-                    `• "Pay fee"\n` +
-                    `• "Best student"\n` +
-                    `Or type "help" for the full menu.`
-                );
+                return pushBot(fallbackMessage({ myFirst, text }));
         }
     };
 
@@ -574,39 +657,81 @@ function nowTime() {
 function helpMenu({ myFirst, isAdmin, isTeacher }) {
     const lines = [`Here's what I can help with, ${myFirst}:`, ''];
 
-    lines.push(' Fees');
+    lines.push('Fees');
     lines.push('• "Pay fee" — M-Pesa STK push to a parent');
     lines.push('• "Check fee balance" — balance for a student');
+    lines.push('• "Balance for ADM-0042" — skips the admission prompt');
 
     lines.push('');
-    lines.push(' School');
+    lines.push('School');
+    lines.push('• "What is the school name?"');
     lines.push('• "What classes do we have?"');
     lines.push('• "What subjects are offered?"');
     lines.push('• "How many teachers?"');
     lines.push('• "School contact"');
     lines.push('• "School motto"');
+    lines.push('• "Paybill number"');
+    lines.push('• "What levels does the school run?"');
 
     lines.push('');
-    lines.push(' Performance');
+    lines.push('Performance');
     lines.push('• "Best student"');
+    lines.push('• "Top students in Grade 7"');
+    lines.push('• "How is Grade 7 doing?"');
     lines.push('• "Performance this term"');
 
     if (isAdmin) {
         lines.push('');
-        lines.push(' Admin');
+        lines.push('Admin');
         lines.push('• "Daily collection report"');
         lines.push('• "Fee report"');
     }
 
     lines.push('');
-    lines.push('ℹ️ Other');
+    lines.push('Other');
+    lines.push('• "Who are you?"');
+    lines.push('• "What is my role?"');
     lines.push('• "Pricing"');
     lines.push('• "Contact support"');
 
     if (isTeacher) {
         lines.push('');
-        lines.push(' Kindly note that as  teacher you can view school info, pay fees, and check performance. Contact the admin for more.');
+        lines.push('As a teacher you can view school info, pay fees, check balances, and see performance. Contact the admin for anything else.');
     }
 
     return lines.join('\n');
+}
+
+// Rich fallback that makes a guess at what the user wanted and offers
+// a couple of concrete next steps — instead of a generic apology.
+function fallbackMessage({ myFirst, text }) {
+    const cls = extractClassFromQuery(text);
+    const adm = extractAdmissionNumber(text);
+
+    const guesses = [];
+    if (cls) {
+        guesses.push(`• "How is ${cls} doing?" — performance for that class`);
+        guesses.push(`• "Top students in ${cls}"`);
+    }
+    if (adm) {
+        guesses.push(`• "Balance for ${adm}" — fee balance lookup`);
+    }
+
+    const base =
+        `Sorry ${myFirst}, I didn't quite catch that. Try one of these:\n` +
+        `• "What classes do we have?"\n` +
+        `• "How many teachers?"\n` +
+        `• "Pay fee"\n` +
+        `• "Best student"\n` +
+        `• "Check fee balance"\n` +
+        `Or type "help" for the full menu.`;
+
+    if (guesses.length === 0) return base;
+
+    return (
+        `Sorry ${myFirst}, I didn't quite catch that. ` +
+        `I noticed something in your message though — did you mean one of these?\n` +
+        guesses.join('\n') +
+        `\n\nOr type "help" for the full menu.`
+    );
 }
