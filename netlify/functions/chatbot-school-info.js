@@ -18,6 +18,8 @@ const LEVEL_LABELS = {
     'senior-school': 'Senior School',
 };
 
+const LEVEL_ORDER = Object.keys(LEVEL_LABELS);
+
 const DEFAULT_SUBJECTS = {
     'pre-primary': ['Language', 'Number Work', 'Environmental', 'Psychomotor', 'Creative'],
     'lower-primary': ['English', 'Kiswahili', 'Mathematics', 'Environmental', 'Religious Education', 'Creative Arts'],
@@ -25,6 +27,41 @@ const DEFAULT_SUBJECTS = {
     'junior-school': ['English', 'Kiswahili', 'Mathematics', 'Integrated Science', 'Social Studies', 'Religious Education', 'Pre-Technical Studies', 'Agriculture and Nutrition', 'Creative Arts and Sports'],
     'senior-school': ['English', 'Kiswahili', 'Mathematics', 'Biology', 'Chemistry', 'Physics', 'History', 'Geography', 'Business Studies', 'Computer Studies'],
 };
+
+// ------------------------------------------------------------
+// SchoolProfile.jsx stores custom subjects as:
+//     customSubjects: [{ id, level, name }, ...]
+// The chatbot, however, needs a grouped map:
+//     subjectsByLevel = { 'lower-primary': ['English', ...] }
+// This helper adapts the page's shape into the chatbot's shape.
+// ------------------------------------------------------------
+function buildSubjectsByLevel(school) {
+    const customSubjects = Array.isArray(school.customSubjects) ? school.customSubjects : [];
+    if (school.useCustomSubjects && customSubjects.length > 0) {
+        return customSubjects.reduce((acc, s) => {
+            if (!s || !s.level || !s.name) return acc;
+            (acc[s.level] = acc[s.level] || []).push(s.name);
+            return acc;
+        }, {});
+    }
+    // No custom subjects → use the built-in defaults per level.
+    return { ...DEFAULT_SUBJECTS };
+}
+
+// ------------------------------------------------------------
+// Determine the ordered list of levels the school runs,
+// based on `highestLevel`. Falls back gracefully if the value
+// is a legacy one (e.g. "lower-secondary") that isn't in
+// LEVEL_ORDER.
+// ------------------------------------------------------------
+function resolveLevels(highestLevel) {
+    let highestIdx = LEVEL_ORDER.indexOf(highestLevel);
+    if (highestIdx === -1) {
+        // Legacy or unknown value → assume the school runs every level.
+        highestIdx = LEVEL_ORDER.length - 1;
+    }
+    return LEVEL_ORDER.slice(0, highestIdx + 1);
+}
 
 exports.handler = async (event) => {
     try {
@@ -60,27 +97,21 @@ exports.handler = async (event) => {
         const studentCount = studentsCountSnap ? studentsCountSnap.data().count : null;
 
         // Classes: prefer custom classes saved on the school doc.
+        // SchoolProfile writes `customClasses: [{ id, level, baseClass, label, className }]`.
         const customClasses = Array.isArray(school.customClasses)
-            ? school.customClasses.map((c) => ({ level: c.level, className: c.className }))
+            ? school.customClasses
+                .map((c) => ({ level: c.level, className: c.className }))
+                .filter((c) => c.level && c.className)
             : [];
         const useCustomClasses = !!school.useCustomClasses && customClasses.length > 0;
 
-        // Subjects: prefer custom subjects saved on the school doc.
-        const subjectsByLevel = school.subjectsByLevel
-            ? { ...school.subjectsByLevel }
-            : {};
+        // Subjects: derive the grouped map from `customSubjects` if present.
         const useCustomSubjects = !!school.useCustomSubjects;
-        if (!useCustomSubjects) {
-            for (const [lvl, list] of Object.entries(DEFAULT_SUBJECTS)) {
-                if (!subjectsByLevel[lvl]) subjectsByLevel[lvl] = list;
-            }
-        }
+        const subjectsByLevel = buildSubjectsByLevel(school);
 
+        // Levels the school runs.
         const highestLevel = school.highestLevel || 'senior-school';
-        const levels = Object.keys(LEVEL_LABELS).filter((lvl, idx, arr) => {
-            const highestIdx = arr.indexOf(highestLevel);
-            return idx <= highestIdx;
-        });
+        const levels = resolveLevels(highestLevel);
 
         const summary = {
             overview: buildOverviewSummary(school, teacherCount, studentCount, levels, useCustomClasses, customClasses),
