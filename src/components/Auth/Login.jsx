@@ -448,7 +448,7 @@ export default function Login() {
                 const roleDisplay =
                     collection === 'users' ? 'Admin' :
                     collection === 'teachers' ? 'Teacher' : 'Student';
-                showMessage(`Welcome ${roleDisplay}! Redirecting to dashboard...`, 'success');
+                showMessage(`Welcome ! Redirecting to dashboard...`, 'success');
                 setTimeout(() => navigateToDashboard(collection), 2000);
             } else {
                 if (isOnline) {
