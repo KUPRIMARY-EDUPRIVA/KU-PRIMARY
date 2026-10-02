@@ -24,6 +24,25 @@ const PAGE_SIZE = 15;
 const QUERY_LIMIT = 500; // cap per load — avoids runaway reads
 const MAX_STUDENTS_TO_FETCH = 100;
 
+// ------------------------------------------------------------
+// Does this userData describe a teacher with any assignment?
+// Checks every shape the Teachers page might have written:
+//   - assignments: [{ subject, classes: [...] }]   (new)
+//   - classes: [...]                                (legacy)
+//   - subjects: [...]                               (legacy)
+//   - levels: [...]                                 (legacy)
+//   - level: 'junior-school'                        (legacy)
+// ------------------------------------------------------------
+function userDataDescribesTeacher(ud) {
+    if (!ud) return false;
+    if (Array.isArray(ud.assignments) && ud.assignments.length > 0) return true;
+    if (Array.isArray(ud.classes) && ud.classes.length > 0) return true;
+    if (Array.isArray(ud.subjects) && ud.subjects.length > 0) return true;
+    if (Array.isArray(ud.levels) && ud.levels.length > 0) return true;
+    if (ud.level) return true;
+    return false;
+}
+
 export default function TeacherReports() {
     const navigate = useNavigate();
     const { currentUser, userData, userRole } = useAuth();
@@ -106,6 +125,74 @@ export default function TeacherReports() {
         setTimeout(() => el.remove(), 4000);
     }, []);
 
+    // ------------------------------------------------------------
+    // Resolve the teacher record.
+    //
+    // Priority:
+    //   1. `userData` (Firestore `users/{uid}` via AuthContext) —
+    //      the source the Teachers page now writes to.
+    //   2. `teachers` collection lookup by email (legacy).
+    //   3. Minimal object built from `currentUser` + `userData` — so
+    //      the page never crashes and PDFs still render a header.
+    // ------------------------------------------------------------
+    const resolveTeacherData = useCallback(async (schoolId) => {
+        // 1) Prefer userData when it describes a teacher
+        if (userDataDescribesTeacher(userData)) {
+            const fullName = userData.fullName
+                || `${userData.firstName || ''} ${userData.lastName || ''}`.trim()
+                || currentUser?.displayName
+                || 'Teacher';
+            const parts = fullName.split(/\s+/);
+            return {
+                id: currentUser.uid,
+                firstName: userData.firstName || parts[0] || 'Teacher',
+                lastName: userData.lastName || parts.slice(1).join(' ') || '',
+                fullName,
+                email: userData.email || currentUser.email,
+                schoolId,
+                profileImageUrl: userData.profileImageUrl || userData.schoolLogo || '',
+                // Carry assignments through in case PDFs want them
+                assignments: Array.isArray(userData.assignments) ? userData.assignments : [],
+                classes: Array.isArray(userData.classes) ? userData.classes : [],
+                subjects: Array.isArray(userData.subjects) ? userData.subjects : [],
+                level: userData.level || ''
+            };
+        }
+
+        // 2) Fall back to the teachers collection by email
+        try {
+            const teacherQ = query(
+                collection(db, 'teachers'),
+                where('email', '==', currentUser.email),
+                limit(1)
+            );
+            const tSnap = await getDocs(teacherQ);
+            if (!tSnap.empty) {
+                return { id: tSnap.docs[0].id, ...tSnap.docs[0].data() };
+            }
+        } catch (err) {
+            console.warn('teachers collection lookup failed:', err);
+        }
+
+        // 3) Last resort: minimal object from currentUser + userData
+        if (currentUser) {
+            const fullName = userData?.fullName
+                || currentUser.displayName
+                || (userData?.email || currentUser.email || '').split('@')[0];
+            const parts = fullName.split(/\s+/);
+            return {
+                id: currentUser.uid,
+                firstName: userData?.firstName || parts[0] || 'Teacher',
+                lastName: userData?.lastName || parts.slice(1).join(' ') || '',
+                fullName,
+                email: userData?.email || currentUser.email,
+                schoolId
+            };
+        }
+
+        return null;
+    }, [currentUser, userData]);
+
     // ---- Load teacher + scores ----
     const loadTeacherData = useCallback(async () => {
         setLoading(true);
@@ -117,28 +204,8 @@ export default function TeacherReports() {
                 return;
             }
 
-            // 1. Resolve teacher (prefer custom claims fields already on userData)
-            let teacher = null;
-            if (userData?.level || userData?.classes?.length) {
-                teacher = {
-                    id: currentUser.uid,
-                    firstName: userData.fullName?.split(' ')[0] || 'Teacher',
-                    lastName: userData.fullName?.split(' ').slice(1).join(' ') || '',
-                    email: currentUser.email,
-                    schoolId,
-                    profileImageUrl: userData.profileImageUrl || ''
-                };
-            } else {
-                const teacherQ = query(
-                    collection(db, 'teachers'),
-                    where('email', '==', currentUser.email),
-                    limit(1)
-                );
-                const tSnap = await getDocs(teacherQ);
-                if (!tSnap.empty) {
-                    teacher = { id: tSnap.docs[0].id, ...tSnap.docs[0].data() };
-                }
-            }
+            // 1. Resolve teacher (userData first, then teachers, then minimal)
+            const teacher = await resolveTeacherData(schoolId);
             setTeacherData(teacher);
 
             // 2. Load scores — bounded, one query
@@ -203,7 +270,7 @@ export default function TeacherReports() {
         } finally {
             setLoading(false);
         }
-    }, [currentUser, userData, showNotification]);
+    }, [currentUser, userData, showNotification, resolveTeacherData]);
 
     useEffect(() => {
         if (currentUser && userData) loadTeacherData();
