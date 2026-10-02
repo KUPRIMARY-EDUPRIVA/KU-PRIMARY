@@ -53,6 +53,8 @@ const Transfer = lazyWithRetry(() => import('./pages/Transfer'));
 const Exit = lazyWithRetry(() => import('./pages/SchoolExit'));
 const AuditLogs = lazyWithRetry(() => import('./pages/AuditLogs'));
 const Transcripts = lazyWithRetry(() => import('./pages/Transcripts'));
+const Attendance = lazyWithRetry(() => import('./pages/Attendance'));
+
 
 // Teacher pages
 const TeacherDashboard = lazyWithRetry(() => import('./pages/Teacher/Dashboard'));
@@ -164,6 +166,9 @@ function AppRoutes() {
                 } />
                 <Route path="/myreports" element={
                     <AuthWrapper allowedRoles={['teacher']}><MyReports /></AuthWrapper>
+                } />
+               <Route path="/attendance" element={
+                    <AuthWrapper allowedRoles={['teacher']}><Attendance /></AuthWrapper>
                 } />
 
                 {/* Student routes */}
