@@ -703,4 +703,50 @@ export default function Settings() {
                                     />
                                     <button className="btn btn-danger" onClick={handleDeleteAccount} disabled={!isOnline || saving}>
                                         <i className="fas fa-trash"></i> Delete Account
-                                    </button
+                                    </button>
+                                </div>
+                                {!isOnline && (
+                                    <div style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '10px' }}>
+                                        <i className="fas fa-info-circle"></i> You need to be online to delete your account.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Change Password Modal */}
+            <div className={`modal-overlay ${showPasswordModal ? 'active' : ''}`}>
+                <div className="modal">
+                    <div className="modal-header">
+                        <h2>Change Password</h2>
+                        <button className="modal-close" onClick={() => setShowPasswordModal(false)}>
+                            <i className="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <form onSubmit={handleChangePassword}>
+                        <div className="form-group">
+                            <label>Current Password <span className="required">*</span></label>
+                            <input type="password" id="currentPassword" value={passwordForm.currentPassword} onChange={handlePasswordChange} required />
+                        </div>
+                        <div className="form-group">
+                            <label>New Password <span className="required">*</span></label>
+                            <input type="password" id="newPassword" value={passwordForm.newPassword} onChange={handlePasswordChange} required placeholder="Minimum 6 characters" />
+                        </div>
+                        <div className="form-group">
+                            <label>Confirm New Password <span className="required">*</span></label>
+                            <input type="password" id="confirmPassword" value={passwordForm.confirmPassword} onChange={handlePasswordChange} required />
+                        </div>
+                        <div className="modal-footer">
+                            <button type="button" className="btn btn-outline" onClick={() => setShowPasswordModal(false)}>Cancel</button>
+                            <button type="submit" className="btn btn-primary" disabled={saving}>
+                                {saving ? 'Updating...' : 'Update Password'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </Layout>
+    );
+}
