@@ -1,22 +1,15 @@
 // netlify/functions/_lib/firebaseAdmin.js
 //
 // Firebase Admin initializer for Netlify functions.
-// Uses the MODULAR API required by firebase-admin v13+.
+// Uses the LEGACY namespace API compatible with firebase-admin v11.x.
 //
 // Credential priority:
 //   1. FIREBASE_SERVICE_ACCOUNT      — single-line JSON service account blob
 //   2. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY
 
-const { initializeApp, cert, getApps, getApp } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
-const { getAuth } = require('firebase-admin/auth');
+let admin = null;
+let initialized = false;
 
-let cachedApp = null;
-
-/**
- * Normalize a private key from an env var.
- * Strips wrapping quotes, trims, converts literal \n to real newlines.
- */
 function normalizePrivateKey(key) {
     if (typeof key !== 'string') return '';
     let k = key.trim();
@@ -25,7 +18,6 @@ function normalizePrivateKey(key) {
 }
 
 function buildServiceAccountFromEnv() {
-    // Preferred: one JSON blob
     const blob = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (blob && blob.trim()) {
         let parsed;
@@ -48,7 +40,6 @@ function buildServiceAccountFromEnv() {
         };
     }
 
-    // Fallback: three individual vars
     const projectId = process.env.FIREBASE_PROJECT_ID;
     const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
     const rawKey = process.env.FIREBASE_PRIVATE_KEY;
@@ -68,39 +59,33 @@ function buildServiceAccountFromEnv() {
 }
 
 /**
- * Return the initialized Admin App. Idempotent across warm invocations.
- * Exposes { app, db, auth } so callers can use them directly.
+ * Return the initialized Firebase Admin namespace.
+ * Idempotent across warm invocations.
  */
 function initAdmin() {
-    if (cachedApp) {
-        return {
-            app: cachedApp,
-            db: getFirestore(cachedApp),
-            auth: getAuth(cachedApp),
-        };
+    if (initialized && admin) return admin;
+
+    if (!admin) {
+        try {
+            admin = require('firebase-admin');
+        } catch (e) {
+            throw new Error('firebase-admin is not installed: ' + e.message);
+        }
     }
 
-    // Reuse an app if the container is already warm and one exists.
-    if (getApps().length > 0) {
-        cachedApp = getApp();
-        return {
-            app: cachedApp,
-            db: getFirestore(cachedApp),
-            auth: getAuth(cachedApp),
-        };
+    if (admin.apps && admin.apps.length > 0) {
+        initialized = true;
+        return admin;
     }
 
     const serviceAccount = buildServiceAccountFromEnv();
 
-    cachedApp = initializeApp({
-        credential: cert(serviceAccount),
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
     });
 
-    return {
-        app: cachedApp,
-        db: getFirestore(cachedApp),
-        auth: getAuth(cachedApp),
-    };
+    initialized = true;
+    return admin;
 }
 
 module.exports = { initAdmin };
