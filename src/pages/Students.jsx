@@ -81,12 +81,6 @@ const MAX_IMPORT_ROWS = 1000;
 const normalizeText = (t) =>
     !t ? '' : String(t).trim().toLowerCase().replace(/\s+/g, ' ');
 
-/**
- * Resolve the class list for a level, preferring the school's custom
- * list from SchoolContext, falling back to the built-in constant.
- * ALL call sites must pass `getLevelClassesFn` when available.
- */
-// ← PATCHED: single source of truth for "which classes does this level have"
 const resolveClassList = (level, getLevelClassesFn) => {
     if (!level) return [];
     const custom = getLevelClassesFn ? getLevelClassesFn(level) : null;
@@ -103,7 +97,6 @@ const getValidLevel = (input) => {
     return null;
 };
 
-// ← PATCHED: uses resolveClassList so custom classes are honoured
 const getValidClass = (input, level, getLevelClassesFn) => {
     if (!input || !level) return null;
     const n = normalizeText(input);
@@ -117,11 +110,9 @@ const getLevelDisplayName = (level) =>
 
 const getLevelBadgeClass = (level) => LEVEL_BADGE_CLASSES[level] || '';
 
-// ← PATCHED: getClassOptions now REQUIRES getLevelClassesFn (no silent fallback)
 const getClassOptions = (level, getLevelClassesFn) =>
     resolveClassList(level, getLevelClassesFn);
 
-// ← PATCHED: uses resolveClassList so custom classes are honoured
 const getNextClass = (level, currentClass, getLevelClassesFn) => {
     const list = resolveClassList(level, getLevelClassesFn);
     const i = list.indexOf(currentClass);
@@ -135,7 +126,6 @@ const getNextLevel = (currentLevel) => {
     return LEVEL_ORDER[i + 1];
 };
 
-// ← PATCHED: uses resolveClassList so custom terminal classes are detected
 const isInTerminalClass = (level, studentClass, schoolHighestLevel, getLevelClassesFn) => {
     if (!schoolHighestLevel || level !== schoolHighestLevel) return false;
     const list = resolveClassList(level, getLevelClassesFn);
@@ -178,12 +168,15 @@ export default function Students() {
     const [schoolHighestLevel, setSchoolHighestLevel] = useState('senior-school');
     const [schoolReady, setSchoolReady] = useState(false);
 
-    // ---- Students (paginated) ----
+    // ---- Students ----
     const [students, setStudents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [usingCachedData, setUsingCachedData] = useState(false);
 
     // ---- Teacher access ----
+    // `isTeacher` gates the UI. `teacherClasses` / `teacherLevels` drive
+    // the filter. Both are computed from `userData.assignments` when
+    // available, falling back to the legacy `classes` / `levels` fields.
     const [isTeacher, setIsTeacher] = useState(false);
     const [teacherLevels, setTeacherLevels] = useState([]);
     const [teacherClasses, setTeacherClasses] = useState([]);
@@ -198,7 +191,6 @@ export default function Students() {
     const [statusFilter, setStatusFilter] = useState('');
     const [yearFilter, setYearFilter] = useState('');
 
-    // ← PATCHED: filter bar class dropdown reads from SchoolContext
     const classOptions = useMemo(() => {
         if (!levelFilter) return [];
         return getClassOptions(levelFilter, getLevelClasses);
@@ -264,7 +256,7 @@ export default function Students() {
     }, []);
 
     // ============================================================
-    // Bootstrap: load school + first page of students
+    // Bootstrap
     // ============================================================
     useEffect(() => {
         if (!currentUser || !userData?.schoolId) return;
@@ -276,19 +268,61 @@ export default function Students() {
                 const sid = userData.schoolId;
                 setSchoolId(sid);
 
+                // ---- Teacher scope ----
                 const role = userData.role || 'user';
                 const teacher = role === 'teacher';
                 setIsTeacher(teacher);
 
                 if (teacher) {
-                    setTeacherLevels(
-                        Array.isArray(userData.levels) ? userData.levels
-                            : userData.level ? [userData.level] : []
-                    );
-                    setTeacherClasses(
-                        Array.isArray(userData.classes) ? userData.classes
-                            : userData.class ? [userData.class] : []
-                    );
+                    // Prefer the new `assignments` field. Each assignment
+                    // is `{ subject, classes: [...] }`. Flatten to get the
+                    // teacher's full class list.
+                    const assignments = Array.isArray(userData.assignments)
+                        ? userData.assignments
+                        : [];
+
+                    let classesFromAssignments = [];
+                    if (assignments.length > 0) {
+                        const set = new Set();
+                        assignments.forEach((a) => {
+                            (a.classes || []).forEach((c) => set.add(c));
+                        });
+                        classesFromAssignments = [...set];
+                    }
+
+                    // Fallback to the legacy `classes` field if assignments
+                    // are absent (older teacher docs before the pairing UI).
+                    const legacyClasses = Array.isArray(userData.classes)
+                        ? userData.classes
+                        : userData.class
+                            ? [userData.class]
+                            : [];
+
+                    const effectiveClasses = classesFromAssignments.length > 0
+                        ? classesFromAssignments
+                        : legacyClasses;
+
+                    // Levels: prefer explicit `levels`, else derive from
+                    // the effective class list against the school's
+                    // LEVEL_CLASSES table.
+                    let effectiveLevels = Array.isArray(userData.levels)
+                        ? userData.levels
+                        : userData.level
+                            ? [userData.level]
+                            : [];
+
+                    if (effectiveLevels.length === 0 && effectiveClasses.length > 0) {
+                        const set = new Set();
+                        effectiveClasses.forEach((cls) => {
+                            Object.entries(LEVEL_CLASSES).forEach(([lvl, list]) => {
+                                if (list.includes(cls)) set.add(lvl);
+                            });
+                        });
+                        effectiveLevels = [...set];
+                    }
+
+                    setTeacherClasses(effectiveClasses);
+                    setTeacherLevels(effectiveLevels);
                 }
 
                 let school = await getFromIndexedDB(`school_data_${sid}`);
@@ -323,7 +357,7 @@ export default function Students() {
     }, [currentUser?.uid, userData?.schoolId, isOnline]);
 
     // ============================================================
-    // Pagination loaders
+    // Loaders
     // ============================================================
     const loadFirstPage = useCallback(async (sid) => {
         const cached = await getFromIndexedDB(`students_${sid}`);
@@ -334,7 +368,11 @@ export default function Students() {
 
         if (!isOnline) return;
 
-        const page = await loadAllStudents(sid, isTeacher ? teacherClasses : []);
+        // loadAllStudents accepts a `classes` filter. When it's the
+        // teacher's effective class list, the server returns only
+        // students in those classes.
+        const teacherScope = isTeacher ? teacherClasses : [];
+        const page = await loadAllStudents(sid, teacherScope);
 
         const sorted = sortStudentsByAdmission(page);
         setStudents(sorted);
@@ -348,17 +386,44 @@ export default function Students() {
         showNotification('Refreshed', 'success');
     }, [schoolId, loadFirstPage, showNotification]);
 
+    // Re-fetch when teacher scope finishes resolving (it's set inside
+    // the bootstrap effect, so the very first loadFirstPage may run
+    // before teacherClasses is populated).
+    useEffect(() => {
+        if (!isTeacher) return;
+        if (!schoolId) return;
+        if (teacherClasses.length === 0) return;
+        loadFirstPage(schoolId);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isTeacher, teacherClasses.length, schoolId]);
+
     // ============================================================
     // Derived lists (memoized)
     // ============================================================
+
+    // Students the current user is allowed to see. For teachers this
+    // is scoped to their assigned classes; for admins it's everything.
     const accessibleStudents = useMemo(() => {
         const base = showDeleted
             ? students
             : students.filter((s) => !s.isDeleted);
+
         if (!isTeacher) return base;
-        if (teacherClasses.length) return base.filter((s) => teacherClasses.includes(s.class));
-        if (teacherLevels.length) return base.filter((s) => teacherLevels.includes(s.level));
-        return base;
+
+        // Match by class first (teacher's authoritative list).
+        if (teacherClasses.length > 0) {
+            const classSet = new Set(teacherClasses);
+            return base.filter((s) => classSet.has(s.class));
+        }
+
+        // Fall back to level matching if we somehow don't have classes.
+        if (teacherLevels.length > 0) {
+            const levelSet = new Set(teacherLevels);
+            return base.filter((s) => levelSet.has(s.level));
+        }
+
+        // Teacher with no assignments: show nothing rather than everything.
+        return [];
     }, [students, showDeleted, isTeacher, teacherClasses, teacherLevels]);
 
     const filteredStudents = useMemo(() => {
@@ -376,6 +441,8 @@ export default function Students() {
         });
     }, [accessibleStudents, searchTerm, levelFilter, classFilter, statusFilter, yearFilter]);
 
+    // Stats are computed from the accessible set, so a teacher sees
+    // totals for only their classes.
     const stats = useMemo(() => ({
         total: accessibleStudents.length,
         active: accessibleStudents.filter((s) => s.status === 'active').length,
@@ -384,26 +451,43 @@ export default function Students() {
         deleted: students.filter((s) => s.isDeleted).length,
     }), [accessibleStudents, students]);
 
+    // Filter dropdowns reflect only what the user can see. For teachers
+    // this means: their classes' levels, their classes, their years.
+    const uniqueLevels = useMemo(() => {
+        const set = new Set();
+        accessibleStudents.forEach((s) => { if (s.level) set.add(s.level); });
+        // Preserve consistent ordering
+        return [...set].sort(
+            (a, b) => LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b)
+        );
+    }, [accessibleStudents]);
+
     const uniqueClasses = useMemo(() => {
         const set = new Set();
         accessibleStudents.forEach((s) => { if (s.class) set.add(s.class); });
         return [...set].sort();
     }, [accessibleStudents]);
 
-    const uniqueLevels = useMemo(() => {
-        const set = new Set();
-        accessibleStudents.forEach((s) => { if (s.level) set.add(s.level); });
-        return [...set];
-    }, [accessibleStudents]);
-
     const uniqueYears = useMemo(() => {
         const set = new Set();
-        students.forEach((s) => {
+        accessibleStudents.forEach((s) => {
             if (s.admissionYear) set.add(s.admissionYear);
             if (s.promotionYear) set.add(s.promotionYear);
         });
         return [...set].sort().reverse();
-    }, [students]);
+    }, [accessibleStudents]);
+
+    // For teachers, the class filter dropdown should offer only their
+    // assigned classes (even if some have zero current students).
+    const teacherClassDropdownOptions = useMemo(() => {
+        if (!isTeacher) return null;
+        // Prefer the full teacher assignment list; fall back to
+        // classes actually present in the visible students.
+        if (teacherClasses.length > 0) {
+            return [...teacherClasses].sort();
+        }
+        return uniqueClasses;
+    }, [isTeacher, teacherClasses, uniqueClasses]);
 
     const totalUiPages = Math.max(1, Math.ceil(filteredStudents.length / PAGE_SIZE_UI));
 
@@ -486,9 +570,6 @@ export default function Students() {
             admissionYear: formData.admissionYear || new Date().getFullYear().toString(),
         };
 
-        // ---------------------------------------------
-        // Edit path
-        // ---------------------------------------------
         if (editingStudent) {
             try {
                 if (isOnline) {
@@ -521,9 +602,6 @@ export default function Students() {
             return;
         }
 
-        // ---------------------------------------------
-        // Create path — requires online for atomic ID reservation
-        // ---------------------------------------------
         if (!isOnline) {
             showNotification(
                 'Adding new students requires an internet connection so admission numbers stay unique. ' +
@@ -561,10 +639,7 @@ export default function Students() {
                 schoolId,
                 { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
                 AUDIT_ACTIONS.STUDENT_CREATED,
-                {
-                    entityId: created.id,
-                    message: `Created student record ${studentId}.`
-                }
+                { entityId: created.id, message: `Created student record ${studentId}.` }
             );
 
             setStudents((prev) => sortStudentsByAdmission([created, ...prev]));
@@ -660,7 +735,6 @@ export default function Students() {
     // ============================================================
     // Promotion
     // ============================================================
-    // ← PATCHED: getLevelClasses threaded through every helper + dependency array
     const getPromotionTargets = useCallback((student) => {
         if (!student) return [];
         const targets = [];
@@ -688,7 +762,6 @@ export default function Students() {
         }
         const nextLevel = getNextLevel(student.level);
         if (nextLevel && (!schoolHighestLevel || LEVEL_ORDER.indexOf(nextLevel) <= LEVEL_ORDER.indexOf(schoolHighestLevel))) {
-            // ← PATCHED: use getClassOptions(...) instead of LEVEL_CLASSES[...] directly
             const first = getClassOptions(nextLevel, getLevelClasses)[0];
             if (first) {
                 targets.push({
@@ -748,7 +821,6 @@ export default function Students() {
         );
         if (!ok) return;
 
-        // ← PATCHED: pass getLevelClasses
         const terminal = isInTerminalClass(chosen.level, chosen.class, schoolHighestLevel, getLevelClasses);
 
         const historyEntry = {
@@ -827,7 +899,6 @@ export default function Students() {
             showNotification('No students eligible for this promotion.', 'warning');
             return;
         }
-        // ← PATCHED: pass getLevelClasses
         const terminal = isInTerminalClass(bulkPromoteLevel, bulkPromoteClass, schoolHighestLevel, getLevelClasses);
         const year = new Date().getFullYear().toString();
 
@@ -1001,7 +1072,6 @@ export default function Students() {
                 return;
             }
 
-            // Pass 1: Normalize + validate every row
             const parsedRows = [];
             const idsInFile = new Map();
 
@@ -1036,7 +1106,6 @@ export default function Students() {
                 }
                 student.level = validLevel;
 
-                // ← PATCHED: pass getLevelClasses so custom classes validate
                 const validClass = getValidClass(student.class, validLevel, getLevelClasses);
                 if (!validClass) {
                     errors.push(`Row ${rowNum}: invalid class "${student.class}" for ${validLevel}`);
@@ -1062,7 +1131,6 @@ export default function Students() {
                 parsedRows.push({ rowNum, student, reservedId });
             }
 
-            // Pass 2: Pre-flight collision check
             const suppliedIds = parsedRows
                 .filter((r) => r.reservedId)
                 .map((r) => r.reservedId);
@@ -1091,7 +1159,6 @@ export default function Students() {
                 return;
             }
 
-            // Pass 3: Reserve IDs for rows WITHOUT supplied IDs
             const needReservation = parsedRows.filter((r) => !r.reservedId);
             let reservedPool = [];
             if (needReservation.length > 0) {
@@ -1099,7 +1166,6 @@ export default function Students() {
             }
             let poolIdx = 0;
 
-            // Pass 4: Write each student
             const created = [];
             for (const r of parsedRows) {
                 const studentId = r.reservedId || reservedPool[poolIdx++];
@@ -1119,7 +1185,6 @@ export default function Students() {
                 }
             }
 
-            // Pass 5: Advance counter
             const highestSupplied = maxNumericId(parsedRows.map((r) => r.reservedId).filter(Boolean));
             if (highestSupplied > 0) {
                 await ensureSchoolCounterAtLeast(schoolId, highestSupplied + 1);
@@ -1221,15 +1286,17 @@ export default function Students() {
                             <h3>No Students Found</h3>
                             <p>
                                 {isTeacher
-                                    ? 'No students in your assigned levels/classes.'
+                                    ? (teacherClasses.length > 0
+                                        ? `No students in your assigned classes (${teacherClasses.join(', ')}).`
+                                        : 'You have no class assignments yet. Contact your administrator.')
                                     : 'Add a student or import from CSV.'}
                             </p>
                             {!isTeacher && (
                                 <>
                                 <button className="btn btn-outline" onClick={() => navigate('/student-analytics')} title="Analytics">
-                            <i className="fas fa-chart-line"></i> Analytics
-                        </button>
-                        <button className="btn btn-primary" onClick={handleAddStudent}>
+                                    <i className="fas fa-chart-line"></i> Analytics
+                                </button>
+                                <button className="btn btn-primary" onClick={handleAddStudent}>
                                     <i className="fas fa-plus"></i> Add Student
                                 </button>
                                 </>
@@ -1330,6 +1397,7 @@ export default function Students() {
                 .modal { max-width:700px; }
                 .action-btn.restore { background:#16a085; color:white; }
                 .action-btn.restore:hover { opacity:0.9; }
+                .teacher-access-badge { background:#eef2ff; color:#3730a3; padding:10px 16px; border-radius:8px; margin-bottom:20px; font-size:13px; font-weight:500; display:inline-flex; align-items:center; gap:8px; border:1px solid #c7d2fe; }
                 @media (max-width:768px) { .history-item { flex-direction:column; gap:5px; } }
             `}</style>
 
@@ -1346,17 +1414,23 @@ export default function Students() {
 
             {isTeacher && (
                 <div className="teacher-access-badge">
-                    <i className="fas fa-user-graduate"></i> Teacher view — showing your assigned levels/classes
+                    <i className="fas fa-user-graduate"></i>
+                    {teacherClasses.length > 0
+                        ? <>Teacher view — showing your classes: <strong>{teacherClasses.join(', ')}</strong></>
+                        : <>Teacher view — no class assignments on file</>}
                 </div>
             )}
 
             {/* Stats */}
             <div className="stats-grid">
-                <div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{stats.total}</div></div>
+                <div className="stat-card">
+                    <div className="stat-label">{isTeacher ? 'My Students' : 'Total'}</div>
+                    <div className="stat-value">{stats.total}</div>
+                </div>
                 <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{stats.active}</div></div>
                 <div className="stat-card"><div className="stat-label">Promoted</div><div className="stat-value">{stats.promoted}</div></div>
                 <div className="stat-card"><div className="stat-label">Archived/Grad</div><div className="stat-value">{stats.archived}</div></div>
-                {stats.deleted > 0 && (
+                {!isTeacher && stats.deleted > 0 && (
                     <div className="stat-card">
                         <div className="stat-label">Deleted</div>
                         <div className="stat-value">{stats.deleted}</div>
@@ -1380,7 +1454,9 @@ export default function Students() {
                 <select className="filter-select" value={classFilter}
                         onChange={(e) => setClassFilter(e.target.value)}>
                     <option value="">All Classes</option>
-                    {classOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {(teacherClassDropdownOptions || classOptions).map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                    ))}
                 </select>
                 <select className="filter-select" value={statusFilter}
                         onChange={(e) => setStatusFilter(e.target.value)}>
@@ -1393,14 +1469,16 @@ export default function Students() {
                     {uniqueYears.map((y) => <option key={y} value={y}>{y}</option>)}
                 </select>
 
-                <label style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    fontSize: 13, color: 'var(--gray)', cursor: 'pointer'
-                }}>
-                    <input type="checkbox" checked={showDeleted}
-                           onChange={(e) => setShowDeleted(e.target.checked)} />
-                    Show deleted
-                </label>
+                {!isTeacher && (
+                    <label style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        fontSize: 13, color: 'var(--gray)', cursor: 'pointer'
+                    }}>
+                        <input type="checkbox" checked={showDeleted}
+                               onChange={(e) => setShowDeleted(e.target.checked)} />
+                        Show deleted
+                    </label>
+                )}
 
                 <button className="btn btn-outline" onClick={() => {
                     setSearchTerm(''); setLevelFilter(''); setClassFilter('');
@@ -1465,7 +1543,7 @@ export default function Students() {
                     <div className="info">
                         Showing {filteredStudents.length === 0 ? 0 : (currentPage - 1) * PAGE_SIZE_UI + 1}–
                         {Math.min(currentPage * PAGE_SIZE_UI, filteredStudents.length)} of {filteredStudents.length}
-                        {students.length < stats.total + stats.deleted && (
+                        {!isTeacher && students.length < stats.total + stats.deleted && (
                             <span style={{ marginLeft: 10, color: 'var(--gray)' }}>
                                 (only first {students.length} loaded)
                             </span>
@@ -1522,7 +1600,6 @@ export default function Students() {
                                     <select required value={formData.class}
                                             onChange={(e) => setFormData({ ...formData, class: e.target.value })}>
                                         <option value="">Select Class</option>
-                                        {/* ← PATCHED: pass getLevelClasses */}
                                         {getClassOptions(formData.level, getLevelClasses).map((c) => (
                                             <option key={c} value={c}>{c}</option>
                                         ))}
@@ -1687,7 +1764,6 @@ export default function Students() {
             {!isTeacher && showPromoteModal && promotingStudent && (() => {
                 const targets = getPromotionTargets(promotingStudent);
                 const chosen = targets.find((t) => t.key === promoteData.targetKey);
-                // ← PATCHED: pass getLevelClasses
                 const terminal = chosen
                     ? isInTerminalClass(chosen.level, chosen.class, schoolHighestLevel, getLevelClasses)
                     : false;
@@ -1772,7 +1848,6 @@ export default function Students() {
                             <select value={bulkPromoteLevel}
                                     onChange={(e) => {
                                         setBulkPromoteLevel(e.target.value);
-                                        // ← PATCHED: pass getLevelClasses
                                         setBulkPromoteClass(getClassOptions(e.target.value, getLevelClasses)?.[0] || '');
                                     }}>
                                 <option value="">Select Level</option>
@@ -1784,7 +1859,6 @@ export default function Students() {
                             <select value={bulkPromoteClass}
                                     onChange={(e) => setBulkPromoteClass(e.target.value)}>
                                 <option value="">Select Class</option>
-                                {/* ← PATCHED: pass getLevelClasses */}
                                 {getClassOptions(bulkPromoteLevel, getLevelClasses).map((c) => (
                                     <option key={c} value={c}>{c}</option>
                                 ))}
@@ -1797,7 +1871,6 @@ export default function Students() {
                             </div>
                         )}
 
-                        {/* ← PATCHED: pass getLevelClasses */}
                         {isInTerminalClass(bulkPromoteLevel, bulkPromoteClass, schoolHighestLevel, getLevelClasses) && (
                             <div style={{
                                 padding:12, background:'#e8f5e9', border:'1px solid #81c784',
