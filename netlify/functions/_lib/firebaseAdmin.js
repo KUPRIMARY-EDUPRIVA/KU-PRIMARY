@@ -1,104 +1,54 @@
 // netlify/functions/_lib/firebaseAdmin.js
 //
 // Firebase Admin initializer for Netlify functions.
+// Uses the MODULAR API required by firebase-admin v13+.
 //
 // Credential priority:
 //   1. FIREBASE_SERVICE_ACCOUNT      — single-line JSON service account blob
-//   2. FIREBASE_PROJECT_ID
-//      FIREBASE_CLIENT_EMAIL
-//      FIREBASE_PRIVATE_KEY          — three separate variables
-//
-// The module caches the initialized app so repeated calls across warm
-// invocations are cheap and idempotent.
+//   2. FIREBASE_PROJECT_ID + FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY
 
-let admin = null;
-let initialized = false;
+const { initializeApp, cert, getApps, getApp } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+const { getAuth } = require('firebase-admin/auth');
+
+let cachedApp = null;
 
 /**
- * Turn the escaped "\n" sequences that come out of environment variables
- * back into real newline characters, and strip a leading/trailing pair of
- * double quotes if someone pasted the value with them.
+ * Normalize a private key from an env var.
+ * Strips wrapping quotes, trims, converts literal \n to real newlines.
  */
 function normalizePrivateKey(key) {
     if (typeof key !== 'string') return '';
     let k = key.trim();
-
-    // Some CLIs and copy/paste flows keep the JSON wrapper's quotes.
-    if (k.startsWith('"') && k.endsWith('"')) {
-        k = k.slice(1, -1);
-    }
-
-    // Env vars store real newlines as the two characters \ and n.
-    // Convert them back so the PEM parser is happy.
-    k = k.replace(/\\n/g, '\n');
-
-    return k;
+    if (k.startsWith('"') && k.endsWith('"')) k = k.slice(1, -1);
+    return k.replace(/\\n/g, '\n');
 }
 
-/**
- * Validate the shape of a parsed service account object.
- * Throws with a descriptive message if anything is missing.
- */
-function validateServiceAccount(sa) {
-    if (!sa || typeof sa !== 'object') {
-        throw new Error('Service account is not an object');
-    }
-    const required = ['project_id', 'client_email', 'private_key'];
-    const missing = required.filter((f) => !sa[f]);
-    if (missing.length) {
-        throw new Error(
-            'Service account is missing required field(s): ' + missing.join(', ')
-        );
-    }
-    return {
-        projectId: sa.project_id,
-        clientEmail: sa.client_email,
-        privateKey: normalizePrivateKey(sa.private_key),
-    };
-}
-
-function initAdmin() {
-    // 1. Require the SDK (cached on the module after the first call).
-    if (!admin) {
-        try {
-            admin = require('firebase-admin');
-        } catch (e) {
-            throw new Error('firebase-admin is not installed in this environment');
-        }
-    }
-
-    // 2. If an app is already initialized on this warm container, reuse it.
-    if (initialized && admin.apps && admin.apps.length) {
-        return admin;
-    }
-
-    // 3. Preferred: single JSON blob.
+function buildServiceAccountFromEnv() {
+    // Preferred: one JSON blob
     const blob = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (blob && blob.trim()) {
         let parsed;
         try {
             parsed = JSON.parse(blob);
         } catch (err) {
+            throw new Error('FIREBASE_SERVICE_ACCOUNT is not valid JSON: ' + err.message);
+        }
+        const missing = ['project_id', 'client_email', 'private_key']
+            .filter((f) => !parsed[f]);
+        if (missing.length) {
             throw new Error(
-                'FIREBASE_SERVICE_ACCOUNT is not valid JSON: ' + err.message
+                'FIREBASE_SERVICE_ACCOUNT is missing field(s): ' + missing.join(', ')
             );
         }
-
-        const { projectId, clientEmail, privateKey } = validateServiceAccount(parsed);
-
-        admin.initializeApp({
-            credential: admin.credential.cert({
-                projectId,
-                clientEmail,
-                privateKey,
-            }),
-        });
-
-        initialized = true;
-        return admin;
+        return {
+            projectId: parsed.project_id,
+            clientEmail: parsed.client_email,
+            privateKey: normalizePrivateKey(parsed.private_key),
+        };
     }
 
-    // 4. Fallback: three separate variables.
+    // Fallback: three individual vars
     const projectId = process.env.FIREBASE_PROJECT_ID;
     const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
     const rawKey = process.env.FIREBASE_PRIVATE_KEY;
@@ -106,21 +56,51 @@ function initAdmin() {
     if (!projectId || !clientEmail || !rawKey) {
         throw new Error(
             'Firebase Admin credentials missing. Set FIREBASE_SERVICE_ACCOUNT, ' +
-            'or all three of FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, ' +
-            'FIREBASE_PRIVATE_KEY.'
+            'or all three of FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY.'
         );
     }
 
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId,
-            clientEmail,
-            privateKey: normalizePrivateKey(rawKey),
-        }),
+    return {
+        projectId,
+        clientEmail,
+        privateKey: normalizePrivateKey(rawKey),
+    };
+}
+
+/**
+ * Return the initialized Admin App. Idempotent across warm invocations.
+ * Exposes { app, db, auth } so callers can use them directly.
+ */
+function initAdmin() {
+    if (cachedApp) {
+        return {
+            app: cachedApp,
+            db: getFirestore(cachedApp),
+            auth: getAuth(cachedApp),
+        };
+    }
+
+    // Reuse an app if the container is already warm and one exists.
+    if (getApps().length > 0) {
+        cachedApp = getApp();
+        return {
+            app: cachedApp,
+            db: getFirestore(cachedApp),
+            auth: getAuth(cachedApp),
+        };
+    }
+
+    const serviceAccount = buildServiceAccountFromEnv();
+
+    cachedApp = initializeApp({
+        credential: cert(serviceAccount),
     });
 
-    initialized = true;
-    return admin;
+    return {
+        app: cachedApp,
+        db: getFirestore(cachedApp),
+        auth: getAuth(cachedApp),
+    };
 }
 
 module.exports = { initAdmin };
