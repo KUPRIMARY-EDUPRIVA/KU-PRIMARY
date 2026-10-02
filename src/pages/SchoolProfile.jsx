@@ -4,12 +4,11 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/constants';
-import { db, storage } from '../firebase';
+import { db } from '../firebase';
 import {
     doc, getDoc, updateDoc, collection, query, where, getDocs,
     setDoc, serverTimestamp
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
@@ -72,6 +71,45 @@ const DARAJA_FIELDS = [
     }
 ];
 
+// ---------------------------------------------------------------------------
+// Cloudinary unsigned upload
+// ---------------------------------------------------------------------------
+const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
+const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET;
+
+/**
+ * Upload a File to Cloudinary using an unsigned upload preset.
+ * @param {File} file
+ * @param {string} folder   e.g. `schools/${schoolId}/branding`
+ * @returns {Promise<string>} secure_url
+ */
+async function uploadToCloudinary(file, folder) {
+    if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+        throw new Error(
+            'Cloudinary is not configured. Set REACT_APP_CLOUDINARY_CLOUD_NAME and ' +
+            'REACT_APP_CLOUDINARY_UPLOAD_PRESET.'
+        );
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    if (folder) formData.append('folder', folder);
+
+    const res = await fetch(
+        `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`,
+        { method: 'POST', body: formData }
+    );
+    if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(`Cloudinary upload failed (${res.status}): ${text || res.statusText}`);
+    }
+    const json = await res.json();
+    if (!json.secure_url) {
+        throw new Error('Cloudinary response missing secure_url');
+    }
+    return json.secure_url;
+}
+
 export default function SchoolProfile() {
     const navigate = useNavigate();
     const { currentUser, userData } = useAuth();
@@ -89,8 +127,6 @@ export default function SchoolProfile() {
     const [admins, setAdmins] = useState([]);
     const [activeTab, setActiveTab] = useState('general');
     const [usingCachedData, setUsingCachedData] = useState(false);
-    const [logoFile, setLogoFile] = useState(null);
-    const [logoPreview, setLogoPreview] = useState(null);
 
     // Daraja configuration status (fetched from parent doc, NOT from the private subcollection)
     const [darajaConfigured, setDarajaConfigured] = useState(false);
@@ -133,6 +169,7 @@ export default function SchoolProfile() {
         gradingSystem: 'competency',
         coreSubjects: '',
         optionalSubjects: '',
+        termStart: '',       // <-- ADDED
         nextTermStart: '',
         currentTermEnd: '',
         language: 'en',
@@ -156,6 +193,8 @@ export default function SchoolProfile() {
     const [newSubjectName, setNewSubjectName] = useState('');
 
     const fileInputRef = useRef(null);
+    const stampInputRef = useRef(null);
+    const principalSignatureInputRef = useRef(null);
 
     const availableLevels = [
         { value: 'pre-primary', label: 'Pre-Primary' },
@@ -164,6 +203,34 @@ export default function SchoolProfile() {
         { value: 'junior-school', label: 'Junior School' },
         { value: 'senior-school', label: 'Senior School' }
     ];
+
+    // -----------------------------------------------------------------------
+    // Resolve the list of classes the school actually uses.
+    // Custom classes win; LEVEL_CLASSES is the fallback.
+    // -----------------------------------------------------------------------
+    const resolveClassesForDisplay = () => {
+        if (useCustomClasses && customClasses.length > 0) {
+            return customClasses.map((c) => ({
+                className: c.className,
+                level: c.level,
+                levelDisplay: LEVEL_DISPLAY_NAMES[c.level] || c.level,
+                isCustom: true
+            }));
+        }
+        // Fallback to built-in classes across every level
+        const rows = [];
+        Object.keys(LEVEL_CLASSES).forEach((level) => {
+            (LEVEL_CLASSES[level] || []).forEach((className) => {
+                rows.push({
+                    className,
+                    level,
+                    levelDisplay: LEVEL_DISPLAY_NAMES[level] || level,
+                    isCustom: false
+                });
+            });
+        });
+        return rows;
+    };
 
     // ---- Load school data ----
     useEffect(() => {
@@ -239,6 +306,7 @@ export default function SchoolProfile() {
             gradingSystem: data.gradingSystem || 'competency',
             coreSubjects: data.coreSubjects ? data.coreSubjects.join(', ') : '',
             optionalSubjects: data.optionalSubjects ? data.optionalSubjects.join(', ') : '',
+            termStart: data.termStart || '',              // <-- ADDED
             nextTermStart: data.nextTermStart || '',
             currentTermEnd: data.currentTermEnd || '',
             language: data.language || 'en',
@@ -324,6 +392,7 @@ export default function SchoolProfile() {
                 gradingSystem: formData.gradingSystem,
                 coreSubjects: formData.coreSubjects.split(',').map((s) => s.trim()).filter(Boolean),
                 optionalSubjects: formData.optionalSubjects.split(',').map((s) => s.trim()).filter(Boolean),
+                termStart: formData.termStart,                // <-- ADDED
                 nextTermStart: formData.nextTermStart,
                 currentTermEnd: formData.currentTermEnd,
                 language: formData.language,
@@ -362,7 +431,6 @@ export default function SchoolProfile() {
     const handleSaveDaraja = async () => {
         if (savingDaraja) return;
 
-        // Validate
         const required = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
         for (const key of required) {
             if (!darajaForm[key]?.trim()) {
@@ -381,8 +449,6 @@ export default function SchoolProfile() {
             const schoolId = userData?.schoolId;
             if (!schoolId) throw new Error('No school found');
 
-            // 1. Write secrets to the private subcollection.
-            //    Firestore rules prevent ANY client read after this point.
             await setDoc(
                 doc(db, 'schools', schoolId, 'private', 'daraja'),
                 {
@@ -400,8 +466,6 @@ export default function SchoolProfile() {
                 { merge: true }
             );
 
-            // 2. Mirror only NON-SECRET fields to the parent doc so other pages
-            //    (Fees, receipts, etc.) can display them without a private read.
             await updateDoc(doc(db, 'schools', schoolId), {
                 darajaConfigured: true,
                 darajaEnvironment: darajaForm.environment || 'sandbox',
@@ -410,7 +474,6 @@ export default function SchoolProfile() {
                 updatedAt: new Date().toISOString()
             });
 
-            // 3. Update local state — clear the secret fields from memory immediately
             setDarajaConfigured(true);
             setDarajaShortcode(darajaForm.shortcode.trim());
             setDarajaEnvironment(darajaForm.environment || 'sandbox');
@@ -418,7 +481,7 @@ export default function SchoolProfile() {
             setDarajaForm({
                 consumerKey: '',
                 consumerSecret: '',
-                shortcode: darajaForm.shortcode.trim(), // keep for display
+                shortcode: darajaForm.shortcode.trim(),
                 passkey: '',
                 initiatorName: '',
                 initiatorPassword: '',
@@ -435,9 +498,6 @@ export default function SchoolProfile() {
         }
     };
 
-    // ---- Reset credentials (client-only) ----
-    // Because the private doc is unreadable, we can only offer a fresh blank form.
-    // Saving will overwrite the previous credentials server-side.
     const handleResetDarajaForm = () => {
         setShowResetConfirm(false);
         setDarajaForm({
@@ -456,7 +516,9 @@ export default function SchoolProfile() {
         );
     };
 
-    // ---- Logo upload ----
+    // ============================================================
+    // Logo upload (Cloudinary)
+    // ============================================================
     const handleLogoUpload = () => {
         if (!isOnline) {
             showNotification('You are offline. Please connect to the internet to upload a logo.', 'warning');
@@ -470,26 +532,104 @@ export default function SchoolProfile() {
         if (!file) return;
         if (file.size > 5 * 1024 * 1024) {
             showNotification('Image must be less than 5MB', 'error');
+            e.target.value = '';
             return;
         }
         const schoolId = userData?.schoolId;
         if (!schoolId) return;
         setSaving(true);
         try {
-            const storageRef = ref(storage, `schools/${schoolId}/logo`);
-            await uploadBytes(storageRef, file);
-            const downloadUrl = await getDownloadURL(storageRef);
+            const secureUrl = await uploadToCloudinary(file, `schools/${schoolId}/branding`);
             await updateDoc(doc(db, 'schools', schoolId), {
-                logoUrl: downloadUrl,
+                logoUrl: secureUrl,
                 updatedAt: new Date().toISOString()
             });
-            setSchoolData((prev) => ({ ...prev, logoUrl: downloadUrl }));
+            setSchoolData((prev) => ({ ...prev, logoUrl: secureUrl }));
             showNotification('Logo uploaded successfully!', 'success');
         } catch (error) {
             console.error('Error uploading logo:', error);
             showNotification('Failed to upload logo: ' + error.message, 'error');
         } finally {
             setSaving(false);
+            e.target.value = '';
+        }
+    };
+
+    // ============================================================
+    // Stamp upload (Cloudinary)
+    // ============================================================
+    const handleStampUpload = () => {
+        if (!isOnline) {
+            showNotification('You must be online to upload a stamp.', 'warning');
+            return;
+        }
+        stampInputRef.current.click();
+    };
+
+    const handleStampFileChange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 2 * 1024 * 1024) {
+            showNotification('Stamp image must be less than 2MB', 'error');
+            e.target.value = '';
+            return;
+        }
+        const schoolId = userData?.schoolId;
+        if (!schoolId) return;
+        setSaving(true);
+        try {
+            const secureUrl = await uploadToCloudinary(file, `schools/${schoolId}/branding`);
+            await updateDoc(doc(db, 'schools', schoolId), {
+                stampUrl: secureUrl,
+                updatedAt: new Date().toISOString()
+            });
+            setSchoolData((prev) => ({ ...prev, stampUrl: secureUrl }));
+            showNotification('Stamp uploaded successfully!', 'success');
+        } catch (error) {
+            console.error('Error uploading stamp:', error);
+            showNotification('Failed to upload stamp: ' + error.message, 'error');
+        } finally {
+            setSaving(false);
+            e.target.value = '';
+        }
+    };
+
+    // ============================================================
+    // Principal signature upload (Cloudinary)
+    // ============================================================
+    const handlePrincipalSignatureUpload = () => {
+        if (!isOnline) {
+            showNotification('You must be online to upload a signature.', 'warning');
+            return;
+        }
+        principalSignatureInputRef.current.click();
+    };
+
+    const handlePrincipalSignatureFileChange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        if (file.size > 2 * 1024 * 1024) {
+            showNotification('Signature image must be less than 2MB', 'error');
+            e.target.value = '';
+            return;
+        }
+        const schoolId = userData?.schoolId;
+        if (!schoolId) return;
+        setSaving(true);
+        try {
+            const secureUrl = await uploadToCloudinary(file, `schools/${schoolId}/branding`);
+            await updateDoc(doc(db, 'schools', schoolId), {
+                principalSignatureUrl: secureUrl,
+                updatedAt: new Date().toISOString()
+            });
+            setSchoolData((prev) => ({ ...prev, principalSignatureUrl: secureUrl }));
+            showNotification('Principal signature uploaded successfully!', 'success');
+        } catch (error) {
+            console.error('Error uploading signature:', error);
+            showNotification('Failed to upload signature: ' + error.message, 'error');
+        } finally {
+            setSaving(false);
+            e.target.value = '';
         }
     };
 
@@ -663,7 +803,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* Form fields */}
                 {DARAJA_FIELDS.map((field) => {
                     const value = darajaForm[field.key] ?? '';
                     const disabled = isReadOnly;
@@ -709,7 +848,6 @@ export default function SchoolProfile() {
                     );
                 })}
 
-                {/* Actions */}
                 <div style={{
                     display: 'flex', gap: 12, marginTop: 25,
                     paddingTop: 20, borderTop: '1px solid var(--border)',
@@ -765,7 +903,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* Reset confirmation */}
                 {showResetConfirm && (
                     <div className="modal-overlay active" onClick={(e) => e.target === e.currentTarget && setShowResetConfirm(false)}>
                         <div className="modal" style={{ maxWidth: 460 }}>
@@ -804,12 +941,27 @@ export default function SchoolProfile() {
                 </div>
             )}
 
+            {/* Hidden file inputs — all three */}
             <input
                 type="file"
                 ref={fileInputRef}
                 accept="image/*"
                 style={{ display: 'none' }}
                 onChange={handleFileChange}
+            />
+            <input
+                type="file"
+                ref={stampInputRef}
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handleStampFileChange}
+            />
+            <input
+                type="file"
+                ref={principalSignatureInputRef}
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handlePrincipalSignatureFileChange}
             />
 
             <div className="profile-card">
@@ -903,6 +1055,81 @@ export default function SchoolProfile() {
                             <label>About School</label>
                             <textarea id="about" rows="3" value={formData.about} onChange={handleInputChange} placeholder="Describe your school…" />
                         </div>
+
+                        {/* Stamp + Signature uploads */}
+                        <div className="form-row">
+                            <div className="form-group">
+                                <label>Official School Stamp</label>
+                                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                                    <div style={{
+                                        width: 90, height: 90, border: '2px dashed var(--border)',
+                                        borderRadius: 12, display: 'flex', alignItems: 'center',
+                                        justifyContent: 'center', overflow: 'hidden', background: '#fafbfc',
+                                        flexShrink: 0,
+                                    }}>
+                                        {schoolData?.stampUrl ? (
+                                            <img
+                                                src={schoolData.stampUrl}
+                                                alt="Stamp"
+                                                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                            />
+                                        ) : (
+                                            <i className="fas fa-stamp" style={{ fontSize: 32, color: '#ccc' }} />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            onClick={handleStampUpload}
+                                            disabled={saving || !isOnline}
+                                            style={{ padding: '8px 16px', fontSize: 13 }}
+                                        >
+                                            <i className="fas fa-upload"></i> Upload Stamp
+                                        </button>
+                                        <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
+                                            PNG with transparent background recommended. Rotated 45° on the report form.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="form-group">
+                                <label>Principal's Signature</label>
+                                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                                    <div style={{
+                                        width: 140, height: 90, border: '2px dashed var(--border)',
+                                        borderRadius: 12, display: 'flex', alignItems: 'center',
+                                        justifyContent: 'center', overflow: 'hidden', background: '#fafbfc',
+                                        flexShrink: 0,
+                                    }}>
+                                        {schoolData?.principalSignatureUrl ? (
+                                            <img
+                                                src={schoolData.principalSignatureUrl}
+                                                alt="Signature"
+                                                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                            />
+                                        ) : (
+                                            <i className="fas fa-signature" style={{ fontSize: 32, color: '#ccc' }} />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <button
+                                            type="button"
+                                            className="btn btn-primary"
+                                            onClick={handlePrincipalSignatureUpload}
+                                            disabled={saving || !isOnline}
+                                            style={{ padding: '8px 16px', fontSize: 13 }}
+                                        >
+                                            <i className="fas fa-upload"></i> Upload Signature
+                                        </button>
+                                        <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
+                                            PNG with transparent background. Placed above the principal's name.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 )}
 
@@ -938,27 +1165,51 @@ export default function SchoolProfile() {
                 {activeTab === 'class-teachers' && (
                     <div className="form-section active">
                         <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 20 }}>Assign Class Teachers</h3>
+                        <p style={{ fontSize: 13, color: 'var(--gray)', marginBottom: 20 }}>
+                            {useCustomClasses && customClasses.length > 0
+                                ? 'Showing your customised classes. Assign a teacher to each.'
+                                : 'Using default system classes. Enable customised classes in the Academic tab to override these.'}
+                        </p>
                         <div className="table-container">
                             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                                 <thead>
                                     <tr>
                                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid var(--border)' }}>Class</th>
+                                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid var(--border)' }}>Level</th>
                                         <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid var(--border)' }}>Assigned Teacher</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {Object.keys(LEVEL_CLASSES).flatMap(level => LEVEL_CLASSES[level]).map(cls => {
-                                        const assignment = schoolData?.classTeachers?.[cls];
-                                        const teacher = admins.find(t => t.id === assignment);
+                                    {resolveClassesForDisplay().map(({ className, levelDisplay, isCustom }) => {
+                                        const assignment = schoolData?.classTeachers?.[className];
                                         return (
-                                            <tr key={cls} style={{ borderBottom: '1px solid var(--border)' }}>
-                                                <td style={{ padding: '12px' }}>{cls}</td>
+                                            <tr key={className} style={{ borderBottom: '1px solid var(--border)' }}>
+                                                <td style={{ padding: '12px' }}>
+                                                    {className}
+                                                    {isCustom && (
+                                                        <span style={{
+                                                            marginLeft: 8, fontSize: 10, fontWeight: 600,
+                                                            padding: '2px 8px', borderRadius: 8,
+                                                            background: '#eef2ff', color: 'var(--primary)'
+                                                        }}>
+                                                            Custom
+                                                        </span>
+                                                    )}
+                                                </td>
+                                                <td style={{ padding: '12px', fontSize: 13, color: 'var(--gray)' }}>
+                                                    {levelDisplay}
+                                                </td>
                                                 <td style={{ padding: '12px' }}>
                                                     <select
                                                         onChange={async (e) => {
                                                             const newTeacherId = e.target.value;
-                                                            const newClassTeachers = { ...(schoolData.classTeachers || {}), [cls]: newTeacherId };
-                                                            await updateDoc(doc(db, 'schools', schoolData.id), { classTeachers: newClassTeachers });
+                                                            const newClassTeachers = {
+                                                                ...(schoolData.classTeachers || {}),
+                                                                [className]: newTeacherId
+                                                            };
+                                                            await updateDoc(doc(db, 'schools', schoolData.id), {
+                                                                classTeachers: newClassTeachers
+                                                            });
                                                             setSchoolData(prev => ({ ...prev, classTeachers: newClassTeachers }));
                                                             showNotification('Class teacher updated', 'success');
                                                         }}
@@ -1009,11 +1260,13 @@ export default function SchoolProfile() {
                                     <option value="gpa">GPA</option>
                                 </select></div>
                         </div>
-                        <div className="form-row">
-                            <div className="form-group"><label>Next Term Start</label>
-                                <input type="date" id="nextTermStart" value={formData.nextTermStart} onChange={handleInputChange} /></div>
+                        <div className="form-row-3">
+                            <div className="form-group"><label>Term Start</label>
+                                <input type="date" id="termStart" value={formData.termStart} onChange={handleInputChange} /></div>
                             <div className="form-group"><label>Current Term End</label>
                                 <input type="date" id="currentTermEnd" value={formData.currentTermEnd} onChange={handleInputChange} /></div>
+                            <div className="form-group"><label>Next Term Start</label>
+                                <input type="date" id="nextTermStart" value={formData.nextTermStart} onChange={handleInputChange} /></div>
                         </div>
                         <div className="form-group"><label>Core Subjects</label>
                             <input type="text" id="coreSubjects" value={formData.coreSubjects} onChange={handleInputChange} placeholder="Separate with commas" /></div>
@@ -1146,7 +1399,6 @@ export default function SchoolProfile() {
                             )}
                         </div>
 
-                        {/* Custom Subjects Section */}
                         <div style={{ marginTop: '25px', padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border)' }}>
                             <h4 style={{ marginBottom: '10px', color: 'var(--secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <i className="fas fa-book-open"></i> Subject Structure & Customised Subjects
@@ -1255,7 +1507,7 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ----- Tab: Finance (NEW) ----- */}
+                {/* ----- Tab: Finance ----- */}
                 {activeTab === 'finance' && renderFinanceTab()}
 
                 {/* ----- Tab: Admins ----- */}
@@ -1331,7 +1583,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* Save button (hidden on finance tab since it has its own save) */}
                 {activeTab !== 'finance' && (
                     <div style={{ marginTop: 30, paddingTop: 20, borderTop: '1px solid var(--border)', display: 'flex', gap: 10 }}>
                         <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
@@ -1426,7 +1677,7 @@ const cachedBannerStyle = {
     alignItems: 'center', gap: 10, fontSize: 13, border: '1px solid #bee5eb'
 };
 
-// ---- Styles (unchanged from your original, kept inline for brevity) ----
+// ---- Styles (unchanged) ----
 const styles = `
     .profile-card { background:white; border-radius:16px; padding:30px; box-shadow:var(--shadow); margin-bottom:30px; max-width:1000px; margin:0 auto; }
     .profile-header { display:flex; align-items:center; gap:30px; margin-bottom:30px; padding:20px; background:var(--light); border-radius:12px; }
