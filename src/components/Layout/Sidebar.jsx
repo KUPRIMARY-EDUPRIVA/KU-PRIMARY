@@ -374,6 +374,12 @@ export default function Sidebar({ isOpen, onClose }) {
                 show: isAdmin
             },
             {
+                path: '/attendance',
+                icon: 'fa-clipboard-check',
+                label: 'Attendance',
+                show: isAdmin
+            },
+            {
                 path: '/fees',
                 icon: 'fa-coins',
                 label: 'Fee Management',
@@ -440,6 +446,12 @@ export default function Sidebar({ isOpen, onClose }) {
                 path: '/results',
                 icon: 'fa-chart-line',
                 label: 'Results',
+                show: isTeacher
+            },
+            {
+                path: '/attendance',
+                icon: 'fa-clipboard-check',
+                label: 'Attendance',
                 show: isTeacher
             },
             {
