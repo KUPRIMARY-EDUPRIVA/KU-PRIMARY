@@ -663,6 +663,87 @@ export default function Results() {
         }
     };
 
+    // ------------------------------------------------------------
+    // Teacher scope helpers
+    //
+    // When `isAdmin === false`, all ranking and score-sheet exports
+    // are confined to the single `selectedSubject` in the current
+    // `selectedClass`. Admin keeps the whole-class, all-subjects view.
+    // ------------------------------------------------------------
+
+    // Compute per-student subject score from the loaded `studentScores`.
+    const getSubjectScoreForStudent = useCallback((studentId, subject) => {
+        const scores = studentScores[studentId] || [];
+        const hit = scores.find(s => s.subject === subject);
+        return hit ? hit.score : null;
+    }, [studentScores]);
+
+    // Class mean in the current subject (teachers) or overall
+    // (admin) across all subjects we've loaded.
+    const classSubjectMean = useMemo(() => {
+        if (!selectedSubject) return 0;
+        const values = students
+            .map(s => getSubjectScoreForStudent(s.id, selectedSubject))
+            .filter(v => typeof v === 'number');
+        if (values.length === 0) return 0;
+        return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+    }, [students, selectedSubject, getSubjectScoreForStudent]);
+
+    // Ranking rows the modal/PDF will render.
+    // Teacher: one row per student with the subject score + rank in that subject.
+    // Admin: one row per student, full multi-subject aggregation as before.
+    const buildRankingRows = useCallback(() => {
+        const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
+
+        if (!isAdmin) {
+            // --- Teacher scope: single subject ranking ---
+            const rows = students.map((s) => {
+                const score = getSubjectScoreForStudent(s.id, selectedSubject);
+                const grade = getCBCGrade(score ?? 0);
+                return {
+                    ...s,
+                    subjectScores: { [selectedSubject]: score },
+                    subjectScore: score,
+                    totalMarks: score ?? 0,
+                    average: score ?? 0,
+                    cbcGrade: grade
+                };
+            });
+
+            // Rank by subject score desc, nulls last
+            const sorted = [...rows].sort((a, b) => {
+                const av = a.subjectScore;
+                const bv = b.subjectScore;
+                if (av === null && bv === null) return 0;
+                if (av === null) return 1;
+                if (bv === null) return -1;
+                return bv - av;
+            });
+            return sorted;
+        }
+
+        // --- Admin scope: multi-subject ranking ---
+        const rows = students.map((s) => {
+            const scores = studentScores[s.id] || [];
+            const subjectScores = {};
+            let total = 0, count = 0;
+            allSubjects.forEach(sub => {
+                const sc = scores.find(x => x.subject === sub);
+                subjectScores[sub] = sc ? sc.score : null;
+                if (sc) { total += sc.score; count++; }
+            });
+            const average = count ? Math.round(total / count) : 0;
+            return {
+                ...s,
+                subjectScores,
+                totalMarks: total,
+                average,
+                cbcGrade: getCBCGrade(average)
+            };
+        });
+        return [...rows].sort((a, b) => (b.average || 0) - (a.average || 0));
+    }, [isAdmin, students, studentScores, selectedLevel, selectedSubject, getSubjectScoreForStudent]);
+
     // ---- Fix #3: PDF exports ----
     const handleDownloadReportPDF = async (student) => {
         if (!student) return;
@@ -692,26 +773,11 @@ export default function Results() {
     const handleDownloadRankingPDF = async () => {
         try {
             const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
-            const sorted = [...students].sort((a, b) => (b.average || 0) - (a.average || 0));
+            const data = buildRankingRows();
 
-            const data = sorted.map((s) => {
-                const scores = studentScores[s.id] || [];
-                const subjectScores = {};
-                let total = 0, count = 0;
-                allSubjects.forEach(sub => {
-                    const sc = scores.find(x => x.subject === sub);
-                    subjectScores[sub] = sc ? sc.score : null;
-                    if (sc) { total += sc.score; count++; }
-                });
-                const average = count ? Math.round(total / count) : 0;
-                return {
-                    ...s,
-                    subjectScores,
-                    totalMarks: total,
-                    average,
-                    cbcGrade: getCBCGrade(average)
-                };
-            });
+            // For teachers, pass just the single subject so the PDF's
+            // header and mean column reflect the subject scope.
+            const pdfSubjects = isAdmin ? allSubjects : [selectedSubject];
 
             const result = await downloadRankingPDF(data, {
                 schoolName,
@@ -721,9 +787,17 @@ export default function Results() {
                 term: selectedTerm,
                 year: new Date().getFullYear(),
                 assessmentType,
-                subjects: allSubjects
+                subjects: pdfSubjects,
+                // A marker so the PDF service can optionally show "Class Mean"
+                // for the teacher's single subject.
+                classSubjectMean: isAdmin ? undefined : classSubjectMean,
+                scope: isAdmin ? 'all-subjects' : 'single-subject',
+                scopeSubject: isAdmin ? undefined : selectedSubject
             });
-            showNotification(`Ranking saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+            showNotification(
+                `Ranking saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`,
+                'success'
+            );
         } catch (e) {
             console.error(e);
             showNotification('Ranking PDF failed', 'error');
@@ -741,11 +815,63 @@ export default function Results() {
         URL.revokeObjectURL(url);
     };
 
+    // ------------------------------------------------------------
+    // Score sheet export
+    //
+    // Teacher: rows are scoped to their subject — Score, Mean,
+    //          Rank within subject, CBC Grade from that score.
+    // Admin:   rows keep the multi-subject Average view.
+    // ------------------------------------------------------------
     const exportResultsCSV = () => {
         if (students.length === 0) {
             showNotification('No data to export', 'warning');
             return;
         }
+
+        if (!isAdmin) {
+            // --- Teacher score sheet (single subject) ---
+            const rows = students.map((s) => {
+                const score = getSubjectScoreForStudent(s.id, selectedSubject);
+                const grade = getCBCGrade(score ?? 0);
+                return {
+                    Name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+                    AdmissionNo: s.admissionNumber || s.studentId || '',
+                    Subject: selectedSubject,
+                    Term: selectedTerm,
+                    Assessment: assessmentType,
+                    Score: score ?? '',
+                    Mean: classSubjectMean,
+                    Grade: score != null ? grade.code : '',
+                    Points: score != null ? grade.points : ''
+                };
+            });
+
+            // Rank by score desc, ties keep insertion order
+            const ranked = [...rows]
+                .map((r, i) => ({ ...r, _orig: i }))
+                .sort((a, b) => {
+                    if (a.Score === '' && b.Score === '') return 0;
+                    if (a.Score === '') return 1;
+                    if (b.Score === '') return -1;
+                    return b.Score - a.Score;
+                });
+            ranked.forEach((r, i) => { r.Rank = i + 1; });
+            ranked.sort((a, b) => a._orig - b._orig);
+
+            const finalRows = ranked.map(({ _orig, ...r }) => r);
+            const headers = Object.keys(finalRows[0] || {});
+            const csv = [headers.join(','), ...finalRows.map(row =>
+                headers.map(h => `"${row[h] ?? ''}"`).join(',')
+            )].join('\n');
+            downloadCSV(
+                csv,
+                `results_${selectedSubject}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`
+            );
+            showNotification(`Exported ${finalRows.length} ${selectedSubject} score(s)`, 'success');
+            return;
+        }
+
+        // --- Admin score sheet (existing multi-subject view) ---
         const rows = students.map(s => {
             const grade = getCBCGrade(s.average || 0);
             return {
@@ -766,7 +892,9 @@ export default function Results() {
         showNotification('Results exported', 'success');
     };
 
+    // Admin-only — teachers don't get the full ranking CSV.
     const exportRankingCSV = () => {
+        if (!isAdmin) return;
         if (students.length === 0) {
             showNotification('No data to export', 'warning');
             return;
@@ -894,6 +1022,10 @@ export default function Results() {
     const generateClassRanking = () => {
         if (students.length === 0) {
             showNotification('No students loaded. Please load students first.', 'warning');
+            return;
+        }
+        if (!isAdmin && !selectedSubject) {
+            showNotification('Please select a subject first.', 'warning');
             return;
         }
         setShowRankingModal(true);
@@ -1229,6 +1361,7 @@ export default function Results() {
                     <i className="fas fa-save"></i> {saving ? 'Saving...' : `Save All (${Object.keys(pendingInputs).length})`}
                 </button>
 
+                {/* Ranking Report — teachers get a subject-scoped ranking; admin gets full-class */}
                 <button
                     className="btn btn-warning"
                     style={{
@@ -1238,11 +1371,16 @@ export default function Results() {
                         fontSize: '14px', background: 'var(--warning)', color: 'white'
                     }}
                     onClick={generateClassRanking}
-                    disabled={students.length === 0}
+                    disabled={students.length === 0 || (!isAdmin && !selectedSubject)}
+                    title={isAdmin
+                        ? 'Ranking across all subjects'
+                        : `Ranking for ${selectedSubject || 'your subject'} only`}
                 >
-                    <i className="fas fa-trophy"></i> Ranking Report
+                    <i className="fas fa-trophy"></i>{' '}
+                    {isAdmin ? 'Ranking Report' : `Ranking Report (${selectedSubject || 'Subject'})`}
                 </button>
 
+                {/* Ranking PDF — same scoping as the modal */}
                 <button
                     className="btn btn-info"
                     style={{
@@ -1252,9 +1390,13 @@ export default function Results() {
                         fontSize: '14px', background: 'var(--info)', color: 'white'
                     }}
                     onClick={handleDownloadRankingPDF}
-                    disabled={students.length === 0}
+                    disabled={students.length === 0 || (!isAdmin && !selectedSubject)}
+                    title={isAdmin
+                        ? 'Download full ranking PDF'
+                        : `Download ${selectedSubject || 'subject'} ranking PDF`}
                 >
-                    <i className="fas fa-file-pdf"></i> Ranking PDF
+                    <i className="fas fa-file-pdf"></i>{' '}
+                    {isAdmin ? 'Ranking PDF' : `Ranking PDF (${selectedSubject || 'Subject'})`}
                 </button>
 
                 {isAdmin && (
@@ -1283,8 +1425,12 @@ export default function Results() {
                     }}
                     onClick={exportResultsCSV}
                     disabled={students.length === 0}
+                    title={isAdmin
+                        ? 'Export whole-class score sheet'
+                        : `Export ${selectedSubject || 'subject'} score sheet`}
                 >
-                    <i className="fas fa-file-csv"></i> Export Score Sheet
+                    <i className="fas fa-file-csv"></i>{' '}
+                    {isAdmin ? 'Export Score Sheet' : `Export Score Sheet (${selectedSubject || 'Subject'})`}
                 </button>
 
                 {isAdmin && (
@@ -1359,10 +1505,10 @@ export default function Results() {
                 />
             )}
 
-            {/* Ranking Modal — Fix #3, no innerHTML */}
+            {/* Ranking Modal — scoped for teachers, full-class for admins */}
             {showRankingModal && (
                 <RankingModal
-                    students={students}
+                    students={buildRankingRows()}
                     studentScores={studentScores}
                     meta={{
                         schoolName,
@@ -1371,7 +1517,15 @@ export default function Results() {
                         cls: selectedClass,
                         term: selectedTerm,
                         assessmentType,
-                        subjects: LEVEL_SUBJECTS[selectedLevel] || []
+                        // Teachers: only their selected subject so the table
+                        // shows a single column and ranks by it.
+                        subjects: isAdmin
+                            ? (LEVEL_SUBJECTS[selectedLevel] || [])
+                            : [selectedSubject],
+                        // Extra context the modal can display
+                        scope: isAdmin ? 'all-subjects' : 'single-subject',
+                        scopeSubject: isAdmin ? null : selectedSubject,
+                        classSubjectMean: isAdmin ? null : classSubjectMean
                     }}
                     onClose={() => setShowRankingModal(false)}
                     onDownloadPDF={handleDownloadRankingPDF}
