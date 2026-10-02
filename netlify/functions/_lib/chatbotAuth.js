@@ -1,38 +1,57 @@
 // netlify/functions/_lib/chatbotAuth.js
-//
-// Shared auth helper for chatbot Netlify functions.
-//
-// Verifies a Firebase ID token and returns:
-//   { uid, email, role, schoolId, fullName }
-//
-// Also verifies the caller has an active school membership.
-
 const { initAdmin } = require('./firebaseAdmin');
 
 const ADMIN_ROLES = new Set(['admin', 'school_admin', 'super-admin', 'platform_admin', 'user']);
 
-/**
- * Extract and verify the caller's identity.
- * Throws on failure. The caller should catch and return a 401/403.
- */
 async function requireAuth(event) {
     const authHeader = event.headers.authorization || event.headers.Authorization || '';
     if (!authHeader.startsWith('Bearer ')) {
-        throw Object.assign(new Error('Missing bearer token'), { statusCode: 401 });
+        throw Object.assign(new Error('Missing Authorization header'), { statusCode: 401 });
     }
     const token = authHeader.slice(7).trim();
+    if (!token) {
+        throw Object.assign(new Error('Empty bearer token'), { statusCode: 401 });
+    }
 
-    const admin = initAdmin();
+    let admin;
+    try {
+        admin = initAdmin();
+    } catch (initErr) {
+        console.error('[chatbotAuth] initAdmin failed:', initErr.message);
+        throw Object.assign(
+            new Error('Auth backend unavailable: ' + initErr.message),
+            { statusCode: 503 }
+        );
+    }
+
     let decoded;
     try {
         decoded = await admin.auth().verifyIdToken(token);
-    } catch (err) {
-        throw Object.assign(new Error('Invalid or expired token'), { statusCode: 401 });
+    } catch (verifyErr) {
+        console.error('[chatbotAuth] verifyIdToken failed', {
+            code: verifyErr.code,
+            message: verifyErr.message,
+            tokenPrefix: token.slice(0, 20),
+            tokenLength: token.length,
+        });
+        throw Object.assign(
+            new Error(`Auth failed: ${verifyErr.code || verifyErr.message}`),
+            { statusCode: 401 }
+        );
     }
 
-    const db = admin.firestore();
-    const userSnap = await db.collection('users').doc(decoded.uid).get();
-    const userDoc = userSnap.exists ? userSnap.data() : {};
+    let userDoc = {};
+    try {
+        const db = admin.firestore();
+        const userSnap = await db.collection('users').doc(decoded.uid).get();
+        userDoc = userSnap.exists ? userSnap.data() : {};
+    } catch (dbErr) {
+        console.error('[chatbotAuth] Firestore read failed', {
+            uid: decoded.uid,
+            code: dbErr.code,
+            message: dbErr.message,
+        });
+    }
 
     const schoolId = userDoc.schoolId || decoded.schoolId || null;
     const role = userDoc.role || decoded.role || 'user';
@@ -59,10 +78,7 @@ async function requireAuth(event) {
 function json(statusCode, body) {
     return {
         statusCode,
-        headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-store',
-        },
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
         body: JSON.stringify(body),
     };
 }
