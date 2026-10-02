@@ -40,9 +40,22 @@
 # Only bundle the modules each function requires. This dramatically
 # shrinks the deploy and cold-start time, especially for functions that
 # only need a couple of npm packages.
+#
+# `external_node_modules` tells esbuild NOT to bundle these packages
+# into each function. Instead, they are installed once by Netlify at
+# deploy time and required at runtime from node_modules.
+#
+# Why `firebase-admin` is external:
+#   The SDK uses dynamic requires, optional native dependencies (gRPC),
+#   and Google Cloud submodules that esbuild cannot tree-shake reliably.
+#   Bundling it causes the runtime to receive a partial module where
+#   `admin.credential`, `admin.firestore`, or `FieldValue` are undefined —
+#   producing the "Cannot read properties of undefined (reading 'cert')"
+#   error. Marking it external lets Node resolve the full package
+#   at runtime.
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = []
+  external_node_modules = ["firebase-admin"]
 
 # ============================================================
 # Redirects
