@@ -20,6 +20,9 @@ import {
   saveDutyRoster,
   loadTimetableSettings, saveTimetableSettings,
   loadEvents, saveEvent, deleteEvent,
+  // ── new ──
+  getTeacherClassScope,
+  summarizeTeacherLoadForTeacher,
 } from '../services/timetableService';
 import {
   downloadClassTimetablePDF,
@@ -39,14 +42,26 @@ const TABS = [
 
 const EVENT_COLORS = ['#d4a017', '#1e3a8a', '#059669', '#dc2626', '#7c3aed', '#0891b2'];
 
+const ADMIN_ROLES = ['admin', 'school_admin', 'super-admin', 'user'];
+
 export default function Timetable() {
   const { currentUser, userData, userRole } = useAuth();
   const { getLevelClasses } = useSchool();
 
   const schoolId = userData?.schoolId;
-  const isAdmin = ['admin', 'user', 'school_admin', 'super-admin'].includes(userRole);
+  const role = userRole || userData?.role || 'user';
+  const isAdmin = ADMIN_ROLES.includes(role);
+  const isTeacher = role === 'teacher';
 
-  const [activeTab, setActiveTab] = useState('class');
+  // ── Teacher scope ──
+  // List of classes the current teacher is allowed to see. Empty for
+  // admins (they see everything).
+  const teacherClassScope = useMemo(
+    () => (isTeacher ? getTeacherClassScope(userData) : []),
+    [isTeacher, userData]
+  );
+
+  const [activeTab, setActiveTab] = useState(isTeacher ? 'class' : 'class');
   const [selectedLevel, setSelectedLevel] = useState('lower-primary');
   const [selectedClass, setSelectedClass] = useState('');
   const [selectedTerm, setSelectedTerm] = useState('Term 1');
@@ -95,10 +110,25 @@ export default function Timetable() {
     [selectedLevel, customConfig]
   );
 
-  const availableClasses = useMemo(() => {
+  // All classes available at the selected level.
+  const levelClasses = useMemo(() => {
     if (!selectedLevel || !getLevelClasses) return [];
     try { return getLevelClasses(selectedLevel) || []; } catch { return []; }
   }, [selectedLevel, getLevelClasses]);
+
+  // What the current user is allowed to see at the selected level.
+  // Admin: every class. Teacher: intersection of levelClasses and
+  // teacherClassScope.
+  const availableClasses = useMemo(() => {
+    if (!isTeacher) return levelClasses;
+    if (teacherClassScope.length === 0) return [];
+    const allow = new Set(teacherClassScope);
+    const filtered = levelClasses.filter((c) => allow.has(c));
+    // If the school's class list doesn't include the teacher's class
+    // (e.g. custom class not yet registered), still surface it.
+    const extras = teacherClassScope.filter((c) => !levelClasses.includes(c));
+    return [...filtered, ...extras];
+  }, [isTeacher, levelClasses, teacherClassScope]);
 
   const availableSubjects = useMemo(
     () => customConfig?.subjectsByLevel?.[selectedLevel]
@@ -110,6 +140,9 @@ export default function Timetable() {
   useEffect(() => {
     if (availableClasses.length && !availableClasses.includes(selectedClass)) {
       setSelectedClass(availableClasses[0]);
+    }
+    if (availableClasses.length === 0) {
+      setSelectedClass('');
     }
   }, [availableClasses, selectedClass]);
 
@@ -147,7 +180,17 @@ export default function Timetable() {
   /* ---------------- Class timetable ---------------- */
 
   const reloadClass = useCallback(async () => {
-    if (!schoolId || !selectedLevel || !selectedClass) return;
+    if (!schoolId || !selectedLevel || !selectedClass) {
+      setClassSchedule({});
+      return;
+    }
+
+    // Teacher guard: don't load a class they don't own.
+    if (isTeacher && !teacherClassScope.includes(selectedClass)) {
+      setClassSchedule({});
+      return;
+    }
+
     setClassLoading(true);
     try {
       const schedule = await loadClassTimetable(
@@ -161,7 +204,10 @@ export default function Timetable() {
     } finally {
       setClassLoading(false);
     }
-  }, [schoolId, selectedLevel, selectedClass, selectedTerm, selectedYear, notify]);
+  }, [
+    schoolId, selectedLevel, selectedClass, selectedTerm, selectedYear,
+    isTeacher, teacherClassScope, notify,
+  ]);
 
   useEffect(() => { reloadClass(); }, [reloadClass]);
 
@@ -173,13 +219,27 @@ export default function Timetable() {
       const result = await loadAllSchedulesForLevel(
         schoolId, selectedLevel, selectedTerm, selectedYear
       );
-      setAllSchedules(result);
+
+      // If the user is a teacher, restrict to their classes.
+      let scoped = result;
+      if (isTeacher) {
+        const allow = new Set(teacherClassScope);
+        scoped = {};
+        for (const [cls, sched] of Object.entries(result)) {
+          if (allow.has(cls)) scoped[cls] = sched;
+        }
+      }
+
+      setAllSchedules(scoped);
       setAllLoaded(true);
     } catch (err) {
       console.error('[Timetable] load all:', err);
       notify('Failed to load class schedules: ' + err.message, 'error');
     }
-  }, [schoolId, selectedLevel, selectedTerm, selectedYear, notify]);
+  }, [
+    schoolId, selectedLevel, selectedTerm, selectedYear,
+    isTeacher, teacherClassScope, notify,
+  ]);
 
   useEffect(() => {
     if (activeTab === 'teachers' || activeTab === 'master' || activeTab === 'class') {
@@ -230,9 +290,24 @@ export default function Timetable() {
     [dutyRoster, customConfig]
   );
 
-  /* ---------------- Generation ---------------- */
+  /* ---------------- Teacher's own load ---------------- */
+
+  // When the current user is a teacher, compute their weekly load from
+  // the schedules they can see.
+  const myTeacherLoad = useMemo(() => {
+    if (!isTeacher || !currentUser?.uid) return null;
+    return summarizeTeacherLoadForTeacher(
+      allSchedules,
+      currentUser.uid,
+      selectedLevel,
+      customConfig
+    );
+  }, [isTeacher, currentUser?.uid, allSchedules, selectedLevel, customConfig]);
+
+  /* ---------------- Generation (admin only) ---------------- */
 
   const generateForCurrentClass = () => {
+    if (!isAdmin) return;
     if (!teachers.length) {
       notify('Add teachers before generating.', 'warning');
       return;
@@ -267,6 +342,7 @@ export default function Timetable() {
   };
 
   const generateForAllClasses = async () => {
+    if (!isAdmin) return;
     if (!teachers.length) {
       notify('Add teachers first.', 'warning');
       return;
@@ -316,6 +392,7 @@ export default function Timetable() {
   };
 
   const generateDuty = () => {
+    if (!isAdmin) return;
     if (!teachers.length) {
       notify('Add teachers first.', 'warning');
       return;
@@ -326,7 +403,7 @@ export default function Timetable() {
     notify('Duty roster generated. Review, then Save.', 'success');
   };
 
-  /* ---------------- Slot editor ---------------- */
+  /* ---------------- Slot editor (admin only) ---------------- */
 
   const openSlotEditor = (day, periodId) => {
     if (!isAdmin) return;
@@ -340,6 +417,7 @@ export default function Timetable() {
 
   const saveSlot = (e) => {
     e.preventDefault();
+    if (!isAdmin) return;
     if (!editingSlot) return;
     const { day, periodId, subject, teacherId, room } = editingSlot;
     if (!subject) { notify('Choose a subject.', 'warning'); return; }
@@ -407,9 +485,10 @@ export default function Timetable() {
     setDutyDirty(true);
   };
 
-  /* ---------------- Save ---------------- */
+  /* ---------------- Save (admin only) ---------------- */
 
   const saveCurrentClass = async () => {
+    if (!isAdmin) return;
     if (!schoolId || !selectedClass) return;
     setSaving(true);
     try {
@@ -435,6 +514,7 @@ export default function Timetable() {
   };
 
   const saveDuty = async () => {
+    if (!isAdmin) return;
     if (!schoolId) return;
     setSaving(true);
     try {
@@ -456,6 +536,7 @@ export default function Timetable() {
   };
 
   const saveSettings = async (newConfig) => {
+    if (!isAdmin) return;
     if (!schoolId) return;
     setSaving(true);
     try {
@@ -471,19 +552,22 @@ export default function Timetable() {
   };
 
   const updateDutyAreas = (transform) => {
+    if (!isAdmin) return;
     setCustomConfig((current) => ({
       ...(current || {}),
-      dutyAreas: transform([...(current?.dutyAreas || DUTY_AREAS)])
+      dutyAreas: transform([...(current?.dutyAreas || DUTY_AREAS)]),
     }));
   };
 
   const updateDutyArea = (areaId, updates) => {
+    if (!isAdmin) return;
     updateDutyAreas((areas) => areas.map((area) => (
       area.id === areaId ? { ...area, ...updates } : area
     )));
   };
 
   const removeDutyArea = (areaId) => {
+    if (!isAdmin) return;
     updateDutyAreas((areas) => areas.filter((area) => area.id !== areaId));
     setDutyRoster((current) => Object.fromEntries(
       Object.entries(current).map(([day, assignments]) => {
@@ -496,6 +580,7 @@ export default function Timetable() {
   };
 
   const addDutyArea = () => {
+    if (!isAdmin) return;
     const label = newDutyArea.label.trim();
     const start = newDutyArea.start;
     const end = newDutyArea.end;
@@ -506,12 +591,13 @@ export default function Timetable() {
     const id = `duty_${safeSlug(label)}_${Date.now()}`;
     updateDutyAreas((areas) => [
       ...areas,
-      { id, label, start: hourValueFromTime(start), end: hourValueFromTime(end) }
+      { id, label, start: hourValueFromTime(start), end: hourValueFromTime(end) },
     ]);
     setNewDutyArea({ label: '', start: '08:00', end: '09:00' });
   };
 
   const updateCurriculumSubjects = (transform) => {
+    if (!isAdmin) return;
     setCustomConfig((current) => {
       const subjectsByLevel = { ...(current?.subjectsByLevel || {}) };
       const subjects = [
@@ -523,6 +609,7 @@ export default function Timetable() {
   };
 
   const saveCurriculumAndDutySettings = async () => {
+    if (!isAdmin) return;
     const dutyAreas = customConfig?.dutyAreas || DUTY_AREAS;
     if (dutyAreas.some((area) => (
       typeof area.label !== 'string'
@@ -551,13 +638,14 @@ export default function Timetable() {
     await saveSettings({
       ...(customConfig || {}),
       subjectsByLevel,
-      dutyAreas
+      dutyAreas,
     });
   };
 
   /* ---------------- Events ---------------- */
 
   const openEventModal = (ev = null) => {
+    if (!isAdmin) return;
     if (ev) {
       setEditingEvent({ ...ev });
     } else {
@@ -579,6 +667,7 @@ export default function Timetable() {
 
   const saveEventForm = async (e) => {
     e.preventDefault();
+    if (!isAdmin) return;
     if (!editingEvent?.title) {
       notify('Event title is required.', 'warning');
       return;
@@ -609,6 +698,7 @@ export default function Timetable() {
   };
 
   const removeEvent = async (ev) => {
+    if (!isAdmin) return;
     if (!window.confirm(`Delete event "${ev.title}"?`)) return;
     try {
       await deleteEvent(ev.id);
@@ -623,6 +713,7 @@ export default function Timetable() {
   /* ---------------- Period Editor ---------------- */
 
   const openPeriodEditor = () => {
+    if (!isAdmin) return;
     setEditingPeriod({
       level: selectedLevel,
       periods: JSON.parse(JSON.stringify(periodsForLevel(selectedLevel, customConfig))),
@@ -631,6 +722,7 @@ export default function Timetable() {
   };
 
   const savePeriodConfig = async () => {
+    if (!isAdmin) return;
     if (!editingPeriod) return;
     setSaving(true);
     try {
@@ -647,6 +739,7 @@ export default function Timetable() {
   };
 
   const addPeriod = () => {
+    if (!isAdmin) return;
     if (!editingPeriod) return;
     const classCount = editingPeriod.periods.filter((p) => p.type === 'class').length;
     const newId = `p${classCount + 1}_${Date.now()}`;
@@ -662,6 +755,7 @@ export default function Timetable() {
   };
 
   const addBreak = () => {
+    if (!isAdmin) return;
     if (!editingPeriod) return;
     const newId = `break_${Date.now()}`;
     setEditingPeriod({
@@ -697,81 +791,104 @@ export default function Timetable() {
 
   /* ---------------- Export ---------------- */
 
- const exportCurrentPDF = async () => {
-  try {
-    const school = {
-      name: schoolInfo?.name || 'School',
-      address: schoolInfo?.address || '',
-      phone: schoolInfo?.phone || '',
-      email: schoolInfo?.email || '',
-      website: schoolInfo?.website || '',
-      motto: schoolInfo?.motto || '',
-    };
-    const logoUrl = schoolInfo?.logoUrl || schoolInfo?.schoolLogo || '';
+  const exportCurrentPDF = async () => {
+    try {
+      const school = {
+        name: schoolInfo?.name || 'School',
+        address: schoolInfo?.address || '',
+        phone: schoolInfo?.phone || '',
+        email: schoolInfo?.email || '',
+        website: schoolInfo?.website || '',
+        motto: schoolInfo?.motto || '',
+      };
+      const logoUrl = schoolInfo?.logoUrl || schoolInfo?.schoolLogo || '';
+      const livePeriods = periods;
+      const liveDutyAreas = customConfig?.dutyAreas || DUTY_AREAS;
+      const levelDisplay = {
+        'pre-primary': 'Pre-Primary',
+        'lower-primary': 'Lower Primary',
+        'upper-primary': 'Upper Primary',
+        'junior-school': 'Junior School',
+        'senior-school': 'Senior School',
+      };
 
-    // The periods/duty/level config the admin has saved for this school.
-    const livePeriods = periods;           // from useMemo above
-    const liveDutyAreas = customConfig?.dutyAreas || DUTY_AREAS;
-    const levelDisplay = {
-      'pre-primary': 'Pre-Primary',
-      'lower-primary': 'Lower Primary',
-      'upper-primary': 'Upper Primary',
-      'junior-school': 'Junior School',
-      'senior-school': 'Senior School',
-    };
-
-    if (activeTab === 'class') {
-      await downloadClassTimetablePDF({
-        school, logoUrl,
-        className: selectedClass,
-        schedule: classSchedule,
-        term: normalizeTerm(selectedTerm),
-        year: normalizeYear(selectedYear),
-        periods: livePeriods,
-        levelDisplay,
-      });
-    } else if (activeTab === 'duty') {
-      await downloadDutyRosterPDF({
-        school, logoUrl,
-        roster: dutyRoster,
-        term: normalizeTerm(selectedTerm),
-        year: normalizeYear(selectedYear),
-        dutyAreas: liveDutyAreas,
-        levelDisplay,
-      });
-    } else if (activeTab === 'master') {
-      const lvlLabel =
-        SCHOOL_LEVELS.find((l) => l.value === selectedLevel)?.label || selectedLevel;
-      await downloadMasterTimetablePDF({
-        school, logoUrl,
-        level: selectedLevel,
-        levelLabel: lvlLabel,
-        classes: availableClasses,
-        schedules: allSchedules,
-        term: normalizeTerm(selectedTerm),
-        year: normalizeYear(selectedYear),
-        periods: classPeriods,       // master view only shows class periods
-        levelDisplay,
-      });
-    } else if (activeTab === 'teachers') {
-      await Promise.all(
-        teacherStats.map((t) => downloadTeacherTimetablePDF({
+      if (activeTab === 'class') {
+        if (!selectedClass) {
+          notify('No class selected.', 'warning');
+          return;
+        }
+        await downloadClassTimetablePDF({
           school, logoUrl,
-          teacher: { id: t.teacherId, initials: t.initials, fullName: t.fullName },
-          assignments: t.assignments,
+          className: selectedClass,
+          schedule: classSchedule,
+          term: normalizeTerm(selectedTerm),
+          year: normalizeYear(selectedYear),
+          periods: livePeriods,
+          levelDisplay,
+        });
+      } else if (activeTab === 'duty') {
+        await downloadDutyRosterPDF({
+          school, logoUrl,
+          roster: dutyRoster,
+          term: normalizeTerm(selectedTerm),
+          year: normalizeYear(selectedYear),
+          dutyAreas: liveDutyAreas,
+          levelDisplay,
+        });
+      } else if (activeTab === 'master') {
+        const lvlLabel =
+          SCHOOL_LEVELS.find((l) => l.value === selectedLevel)?.label || selectedLevel;
+        await downloadMasterTimetablePDF({
+          school, logoUrl,
+          level: selectedLevel,
+          levelLabel: lvlLabel,
+          classes: availableClasses,
+          schedules: allSchedules,
           term: normalizeTerm(selectedTerm),
           year: normalizeYear(selectedYear),
           periods: classPeriods,
           levelDisplay,
-        }))
-      );
+        });
+      } else if (activeTab === 'teachers') {
+        // Admin: export all teachers. Teacher: only their own.
+        if (isTeacher) {
+          if (!myTeacherLoad) {
+            notify('Nothing to export yet.', 'warning');
+            return;
+          }
+          await downloadTeacherTimetablePDF({
+            school, logoUrl,
+            teacher: {
+              id: currentUser?.uid,
+              initials: teacherInitials(userData),
+              fullName: teacherFullName(userData),
+            },
+            assignments: myTeacherLoad.assignments,
+            term: normalizeTerm(selectedTerm),
+            year: normalizeYear(selectedYear),
+            periods: classPeriods,
+            levelDisplay,
+          });
+        } else {
+          await Promise.all(
+            teacherStats.map((t) => downloadTeacherTimetablePDF({
+              school, logoUrl,
+              teacher: { id: t.teacherId, initials: t.initials, fullName: t.fullName },
+              assignments: t.assignments,
+              term: normalizeTerm(selectedTerm),
+              year: normalizeYear(selectedYear),
+              periods: classPeriods,
+              levelDisplay,
+            }))
+          );
+        }
+      }
+      notify('PDF exported.', 'success');
+    } catch (err) {
+      console.error('[Timetable] export:', err);
+      notify('Export failed: ' + err.message, 'error');
     }
-    notify('PDF exported.', 'success');
-  } catch (err) {
-    console.error('[Timetable] export:', err);
-    notify('Export failed: ' + err.message, 'error');
-  }
-};
+  };
 
   /* ---------------- Derived ---------------- */
 
@@ -788,8 +905,10 @@ export default function Timetable() {
   /* ---------------- Tab guard ---------------- */
 
   const handleTabChange = (tab) => {
-    if (classDirty && !window.confirm('Unsaved changes to the class timetable. Continue?')) return;
-    if (dutyDirty && !window.confirm('Unsaved changes to the duty roster. Continue?')) return;
+    if (isAdmin) {
+      if (classDirty && !window.confirm('Unsaved changes to the class timetable. Continue?')) return;
+      if (dutyDirty && !window.confirm('Unsaved changes to the duty roster. Continue?')) return;
+    }
     setActiveTab(tab);
   };
 
@@ -835,165 +954,183 @@ export default function Timetable() {
     </div>
   );
 
-  const renderClassTimetable = () => (
-    <div ref={printRef} className="tt-print-root">
-      <BrandedHeader
-        title="Class Master Timetable"
-        subtitle={`${selectedClass} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
-      />
+  const renderClassTimetable = () => {
+    // Teacher with no scope
+    if (isTeacher && teacherClassScope.length === 0) {
+      return (
+        <div className="tt-empty-card">
+          <i className="fas fa-user-lock" aria-hidden="true"></i>
+          <h3>No classes assigned</h3>
+          <p>Contact your school administrator to be assigned to classes.</p>
+        </div>
+      );
+    }
 
-      {classLoading ? (
-        <div className="tt-loading"><LoadingSpinner /></div>
-      ) : (
-        <>
-          {classClashes.length > 0 && (
-            <div className="tt-clash-warn" role="alert">
-              <i className="fas fa-exclamation-triangle" aria-hidden="true"></i>
-              <strong>
-                {classClashes.length} clash{classClashes.length === 1 ? '' : 'es'}
-              </strong>{' '}
-              with other classes.
-            </div>
-          )}
+    return (
+      <div ref={printRef} className="tt-print-root">
+        <BrandedHeader
+          title="Class Master Timetable"
+          subtitle={`${selectedClass} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
+        />
 
-          {coverage.missing.length > 0 && (
-            <div className="tt-coverage-warn" role="alert">
-              <i className="fas fa-info-circle" aria-hidden="true"></i>
-              Missing subjects:{' '}
-              <strong>{coverage.missing.join(', ')}</strong>
-            </div>
-          )}
+        {classLoading ? (
+          <div className="tt-loading"><LoadingSpinner /></div>
+        ) : (
+          <>
+            {classClashes.length > 0 && (
+              <div className="tt-clash-warn" role="alert">
+                <i className="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                <strong>
+                  {classClashes.length} clash{classClashes.length === 1 ? '' : 'es'}
+                </strong>{' '}
+                with other classes.
+              </div>
+            )}
 
-          <div className="tt-table-wrap">
-            <table className="tt-grid">
-              <thead>
-                <tr>
-                  <th className="tt-period-th">Time / Day</th>
-                  {DAYS.map((d) => <th key={d}>{d}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {periods.map((period) => {
-                  if (period.type === 'break') {
+            {coverage.missing.length > 0 && (
+              <div className="tt-coverage-warn" role="alert">
+                <i className="fas fa-info-circle" aria-hidden="true"></i>
+                Missing subjects:{' '}
+                <strong>{coverage.missing.join(', ')}</strong>
+              </div>
+            )}
+
+            <div className="tt-table-wrap">
+              <table className="tt-grid">
+                <thead>
+                  <tr>
+                    <th className="tt-period-th">Time / Day</th>
+                    {DAYS.map((d) => <th key={d}>{d}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {periods.map((period) => {
+                    if (period.type === 'break') {
+                      return (
+                        <tr key={period.id} className="tt-break-row">
+                          <td>{formatPeriodTime(period)}</td>
+                          <td colSpan={DAYS.length}>
+                            {period.label || period.name}
+                          </td>
+                        </tr>
+                      );
+                    }
                     return (
-                      <tr key={period.id} className="tt-break-row">
-                        <td>{formatPeriodTime(period)}</td>
-                        <td colSpan={DAYS.length}>
-                          {period.label || period.name}
+                      <tr key={period.id}>
+                        <td className="tt-period-cell">
+                          <div className="tt-period-name">{period.name}</div>
+                          <div className="tt-period-time">{formatPeriodTime(period)}</div>
                         </td>
+                        {DAYS.map((day) => {
+                          const slot = classSchedule[day]?.[period.id];
+                          const isEvent = slot?.isEvent;
+                          const colorCls = slot && !isEvent
+                            ? (SUBJECT_CLASS[slot.subject] || 'tt-sub-default')
+                            : '';
+                          return (
+                            <td
+                              key={day}
+                              onClick={() => !isEvent && isAdmin && openSlotEditor(day, period.id)}
+                              className={`tt-cell ${slot ? colorCls : 'tt-cell-empty'} ${isEvent ? 'tt-cell-event' : ''} ${!isAdmin ? 'tt-cell-readonly' : ''}`}
+                              style={isEvent ? { borderLeft: `3px solid ${slot.eventColor || '#d4a017'}` } : {}}
+                            >
+                              {slot ? (
+                                <div className="tt-cell-inner">
+                                  <div className="tt-cell-subject">
+                                    <span className="tt-cell-subject-name">
+                                      {isEvent && <i className="fas fa-star tt-event-icon" aria-hidden="true"></i>}
+                                      {slot.subject}
+                                    </span>
+                                    {isAdmin && !isEvent && (
+                                      <button
+                                        type="button"
+                                        className="tt-clear-btn"
+                                        onClick={(e) => { e.stopPropagation(); clearSlot(day, period.id); }}
+                                        title="Clear slot"
+                                        aria-label="Clear slot"
+                                      >
+                                        <i className="fas fa-times" aria-hidden="true"></i>
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div className="tt-cell-teacher">
+                                    <span className="tt-teacher-chip" title={slot.teacherFullName || ''}>
+                                      {slot.teacherInitials || 'TBA'}
+                                    </span>
+                                  </div>
+                                  {slot.room && <div className="tt-cell-room">{slot.room}</div>}
+                                </div>
+                              ) : (
+                                <div className="tt-cell-placeholder">
+                                  {isAdmin ? '+ Assign' : '—'}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
                       </tr>
                     );
-                  }
-                  return (
-                    <tr key={period.id}>
-                      <td className="tt-period-cell">
-                        <div className="tt-period-name">{period.name}</div>
-                        <div className="tt-period-time">{formatPeriodTime(period)}</div>
-                      </td>
-                      {DAYS.map((day) => {
-                        const slot = classSchedule[day]?.[period.id];
-                        const isEvent = slot?.isEvent;
-                        const colorCls = slot && !isEvent
-                          ? (SUBJECT_CLASS[slot.subject] || 'tt-sub-default')
-                          : '';
-                        return (
-                          <td
-                            key={day}
-                            onClick={() => !isEvent && openSlotEditor(day, period.id)}
-                            className={`tt-cell ${slot ? colorCls : 'tt-cell-empty'} ${isEvent ? 'tt-cell-event' : ''}`}
-                            style={isEvent ? { borderLeft: `3px solid ${slot.eventColor || '#d4a017'}` } : {}}
-                          >
-                            {slot ? (
-                              <div className="tt-cell-inner">
-                                <div className="tt-cell-subject">
-                                  <span className="tt-cell-subject-name">
-                                    {isEvent && <i className="fas fa-star tt-event-icon" aria-hidden="true"></i>}
-                                    {slot.subject}
-                                  </span>
-                                  {isAdmin && !isEvent && (
-                                    <button
-                                      type="button"
-                                      className="tt-clear-btn"
-                                      onClick={(e) => { e.stopPropagation(); clearSlot(day, period.id); }}
-                                      title="Clear slot"
-                                      aria-label="Clear slot"
-                                    >
-                                      <i className="fas fa-times" aria-hidden="true"></i>
-                                    </button>
-                                  )}
-                                </div>
-                                <div className="tt-cell-teacher">
-                                  <span className="tt-teacher-chip" title={slot.teacherFullName || ''}>
-                                    {slot.teacherInitials || 'TBA'}
-                                  </span>
-                                </div>
-                                {slot.room && <div className="tt-cell-room">{slot.room}</div>}
-                              </div>
-                            ) : (
-                              <div className="tt-cell-placeholder">
-                                {isAdmin ? '+ Assign' : '—'}
-                              </div>
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        <BrandedFooter />
+      </div>
+    );
+  };
+
+  const renderTeacherTimetables = () => {
+    // Teacher: show only their own.
+    if (isTeacher) {
+      if (!myTeacherLoad || myTeacherLoad.assignments.length === 0) {
+        return (
+          <div ref={printRef} className="tt-print-root">
+            <BrandedHeader
+              title="My Timetable"
+              subtitle={`${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
+            />
+            <div className="tt-empty">
+              <i className="fas fa-calendar-xmark" aria-hidden="true"></i>
+              <p>No periods assigned to you for this level and term.</p>
+            </div>
+            <BrandedFooter />
           </div>
-        </>
-      )}
+        );
+      }
 
-      <BrandedFooter />
-    </div>
-  );
-
-  const renderTeacherTimetables = () => (
-    <div ref={printRef} className="tt-print-root">
-      <BrandedHeader
-        title="Teacher Timetables & Workload"
-        subtitle={`${selectedLevel} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
-      />
-      {!teacherStats.length ? (
-        <div className="tt-empty">
-          <i className="fas fa-chalkboard-user" aria-hidden="true"></i>
-          <p>No teachers assigned yet. Generate or edit a class timetable first.</p>
-        </div>
-      ) : (
-        <div className="tt-teachers-stack">
-          <div className="tt-workload-table">
-            <div className="tt-section-label">Workload Summary</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Initials</th>
-                  <th>Teacher</th>
-                  <th className="tt-center">Periods / Week</th>
-                  <th className="tt-center">Classes Taught</th>
-                </tr>
-              </thead>
-              <tbody>
-                {teacherStats.map((t) => (
-                  <tr key={t.teacherId}>
-                    <td className="tt-initials-cell">{t.initials}</td>
-                    <td>{t.fullName}</td>
-                    <td className="tt-center tt-bold">{t.assignments.length}</td>
-                    <td className="tt-center">{t.classes.length}</td>
+      const t = myTeacherLoad;
+      return (
+        <div ref={printRef} className="tt-print-root">
+          <BrandedHeader
+            title="My Teaching Timetable"
+            subtitle={`${teacherFullName(userData)} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
+          />
+          <div className="tt-teachers-stack">
+            <div className="tt-workload-table">
+              <div className="tt-section-label">Workload Summary</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Periods / Week</th>
+                    <th>Classes Taught</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="tt-center tt-bold">{t.totalPeriods}</td>
+                    <td className="tt-center">{t.classes.join(', ') || '—'}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
 
-          {teacherStats.map((t) => (
-            <div key={t.teacherId} className="tt-teacher-card">
+            <div className="tt-teacher-card">
               <div className="tt-teacher-card-header">
-                <span>
-                  {t.fullName} <span className="tt-muted">({t.initials})</span>
-                </span>
-                <span className="tt-teacher-count">{t.assignments.length} periods/week</span>
+                <span>{teacherFullName(userData)}</span>
+                <span className="tt-teacher-count">{t.totalPeriods} periods/week</span>
               </div>
               <table className="tt-teacher-grid">
                 <thead>
@@ -1029,50 +1166,82 @@ export default function Timetable() {
                 </tbody>
               </table>
             </div>
-          ))}
+          </div>
+          <BrandedFooter />
         </div>
-      )}
-      <BrandedFooter />
-    </div>
-  );
+      );
+    }
 
-  const renderMasterOverview = () => (
-    <div ref={printRef} className="tt-print-root">
-      <BrandedHeader
-        title="Master Timetable Overview"
-        subtitle={`All Classes · ${selectedLevel} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
-      />
-      {!availableClasses.length ? (
-        <div className="tt-empty">
-          <i className="fas fa-school" aria-hidden="true"></i>
-          <p>No classes found for this level.</p>
-        </div>
-      ) : (
-        <div className="tt-master-stack">
-          {availableClasses.map((cls) => {
-            const sched = allSchedules[cls] || {};
-            return (
-              <div key={cls} className="tt-master-card">
-                <div className="tt-master-title">{cls}</div>
-                <table className="tt-master-grid">
+    // Admin: show all teachers (existing view).
+    return (
+      <div ref={printRef} className="tt-print-root">
+        <BrandedHeader
+          title="Teacher Timetables & Workload"
+          subtitle={`${selectedLevel} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
+        />
+        {!teacherStats.length ? (
+          <div className="tt-empty">
+            <i className="fas fa-chalkboard-user" aria-hidden="true"></i>
+            <p>No teachers assigned yet. Generate or edit a class timetable first.</p>
+          </div>
+        ) : (
+          <div className="tt-teachers-stack">
+            <div className="tt-workload-table">
+              <div className="tt-section-label">Workload Summary</div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Initials</th>
+                    <th>Teacher</th>
+                    <th className="tt-center">Periods / Week</th>
+                    <th className="tt-center">Classes Taught</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teacherStats.map((t) => (
+                    <tr key={t.teacherId}>
+                      <td className="tt-initials-cell">{t.initials}</td>
+                      <td>{t.fullName}</td>
+                      <td className="tt-center tt-bold">{t.assignments.length}</td>
+                      <td className="tt-center">{t.classes.length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {teacherStats.map((t) => (
+              <div key={t.teacherId} className="tt-teacher-card">
+                <div className="tt-teacher-card-header">
+                  <span>
+                    {t.fullName} <span className="tt-muted">({t.initials})</span>
+                  </span>
+                  <span className="tt-teacher-count">{t.assignments.length} periods/week</span>
+                </div>
+                <table className="tt-teacher-grid">
                   <thead>
                     <tr>
                       <th>Time</th>
-                      {DAYS.map((d) => <th key={d}>{d.slice(0, 3)}</th>)}
+                      {DAYS.map((d) => <th key={d}>{d}</th>)}
                     </tr>
                   </thead>
                   <tbody>
                     {classPeriods.map((p) => (
                       <tr key={p.id}>
-                        <td className="tt-master-period">{p.name.replace('Period ', 'P')}</td>
+                        <td className="tt-teacher-period">
+                          <div className="tt-period-name">{p.name}</div>
+                          <div className="tt-period-time">{formatPeriodTime(p)}</div>
+                        </td>
                         {DAYS.map((day) => {
-                          const slot = sched?.[day]?.[p.id];
+                          const slot = t.assignments.find(
+                            (a) => a.day === day && a.period.id === p.id
+                          );
                           return (
-                            <td key={day} className={`tt-master-cell ${slot?.isEvent ? 'tt-master-event' : ''}`}>
+                            <td key={day} className="tt-teacher-cell">
                               {slot ? (
                                 <>
-                                  <div className="tt-master-subject">{slot.subject}</div>
-                                  <div className="tt-master-teacher">{slot.teacherInitials}</div>
+                                  <div className="tt-teacher-subject">{slot.subject}</div>
+                                  <div className="tt-teacher-class">{slot.className}</div>
                                 </>
                               ) : <span className="tt-muted">·</span>}
                             </td>
@@ -1083,13 +1252,71 @@ export default function Timetable() {
                   </tbody>
                 </table>
               </div>
-            );
-          })}
-        </div>
-      )}
-      <BrandedFooter />
-    </div>
-  );
+            ))}
+          </div>
+        )}
+        <BrandedFooter />
+      </div>
+    );
+  };
+
+  const renderMasterOverview = () => {
+    const visibleClasses = availableClasses;
+    return (
+      <div ref={printRef} className="tt-print-root">
+        <BrandedHeader
+          title="Master Timetable Overview"
+          subtitle={`${isTeacher ? 'My Classes' : 'All Classes'} · ${selectedLevel} · ${normalizeTerm(selectedTerm)} ${normalizeYear(selectedYear)}`}
+        />
+        {!visibleClasses.length ? (
+          <div className="tt-empty">
+            <i className="fas fa-school" aria-hidden="true"></i>
+            <p>{isTeacher ? 'No classes assigned to you.' : 'No classes found for this level.'}</p>
+          </div>
+        ) : (
+          <div className="tt-master-stack">
+            {visibleClasses.map((cls) => {
+              const sched = allSchedules[cls] || {};
+              return (
+                <div key={cls} className="tt-master-card">
+                  <div className="tt-master-title">{cls}</div>
+                  <table className="tt-master-grid">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        {DAYS.map((d) => <th key={d}>{d.slice(0, 3)}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {classPeriods.map((p) => (
+                        <tr key={p.id}>
+                          <td className="tt-master-period">{p.name.replace('Period ', 'P')}</td>
+                          {DAYS.map((day) => {
+                            const slot = sched?.[day]?.[p.id];
+                            return (
+                              <td key={day} className={`tt-master-cell ${slot?.isEvent ? 'tt-master-event' : ''}`}>
+                                {slot ? (
+                                  <>
+                                    <div className="tt-master-subject">{slot.subject}</div>
+                                    <div className="tt-master-teacher">{slot.teacherInitials}</div>
+                                  </>
+                                ) : <span className="tt-muted">·</span>}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <BrandedFooter />
+      </div>
+    );
+  };
 
   const renderDutyRoster = () => {
     const areas = customConfig?.dutyAreas || DUTY_AREAS;
@@ -1257,280 +1484,292 @@ export default function Timetable() {
     </div>
   );
 
-  const renderSettings = () => (
-    <div className="tt-settings">
-      <section className="card">
-        <div className="tt-settings-head">
-          <div>
-            <h3 className="tt-settings-title">
-              <i className="fas fa-clock" aria-hidden="true"></i> Period & Break Schedule
-            </h3>
-            <p className="tt-settings-desc">
-              Configure lesson times, durations, and breaks for <strong>{selectedLevel}</strong>.
-            </p>
-          </div>
-          {isAdmin && (
-            <button className="btn btn-primary" onClick={openPeriodEditor}>
-              <i className="fas fa-pen-to-square" aria-hidden="true"></i> Edit Schedule
-            </button>
-          )}
+  const renderSettings = () => {
+    if (!isAdmin) {
+      return (
+        <div className="tt-empty-card">
+          <i className="fas fa-lock" aria-hidden="true"></i>
+          <h3>Settings are admin-only</h3>
+          <p>Contact your school administrator to change the timetable configuration.</p>
         </div>
-        <div className="tt-period-list">
-          {periods.map((p) => (
-            <div key={p.id} className={`tt-period-chip ${p.type === 'break' ? 'break' : ''}`}>
-              <div className="tt-period-chip-name">{p.name}</div>
-              <div className="tt-period-chip-time">{formatPeriodTime(p)}</div>
-              <div className="tt-period-chip-duration">
-                {calcDuration(p.start, p.end) || ''} min
-              </div>
+      );
+    }
+
+    return (
+      <div className="tt-settings">
+        <section className="card">
+          <div className="tt-settings-head">
+            <div>
+              <h3 className="tt-settings-title">
+                <i className="fas fa-clock" aria-hidden="true"></i> Period & Break Schedule
+              </h3>
+              <p className="tt-settings-desc">
+                Configure lesson times, durations, and breaks for <strong>{selectedLevel}</strong>.
+              </p>
             </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="card">
-        <h3 className="tt-settings-title">
-          <i className="fas fa-chalkboard-user" aria-hidden="true"></i> Teacher Subject Mapping
-        </h3>
-        <p className="tt-settings-desc">
-          Teachers without a <code>subjects</code> array are treated as generalists and can
-          be assigned any subject.
-        </p>
-        {teachers.length ? (
-          <div className="tt-table-wrap">
-            <table className="tt-settings-table">
-              <thead>
-                <tr>
-                  <th>Initials</th>
-                  <th>Teacher</th>
-                  <th>Subjects Assigned</th>
-                  <th className="tt-center">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {teachers.map((t) => {
-                  const hasSubs = Array.isArray(t.subjects) && t.subjects.length > 0;
-                  return (
-                    <tr key={t.id}>
-                      <td className="tt-initials-cell">{teacherInitials(t)}</td>
-                      <td>{teacherFullName(t)}</td>
-                      <td>
-                        {hasSubs
-                          ? t.subjects.join(', ')
-                          : <span className="tt-muted">Not restricted</span>}
-                      </td>
-                      <td className="tt-center">
-                        <span className={`tt-chip ${hasSubs ? 'tt-chip-ok' : 'tt-chip-neutral'}`}>
-                          {hasSubs ? 'Configured' : 'General'}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {isAdmin && (
+              <button className="btn btn-primary" onClick={openPeriodEditor}>
+                <i className="fas fa-pen-to-square" aria-hidden="true"></i> Edit Schedule
+              </button>
+            )}
           </div>
-        ) : (
-          <div className="tt-empty">
-            <i className="fas fa-user-slash" aria-hidden="true"></i>
-            <p>No teachers loaded.</p>
-          </div>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="tt-settings-head">
-          <div>
-            <h3 className="tt-settings-title">
-              <i className="fas fa-list-check" aria-hidden="true"></i> Curriculum Subjects ({availableSubjects.length})
-            </h3>
-            <p className="tt-settings-desc">Manage curriculum subjects for each school level.</p>
-          </div>
-          {isAdmin && (
-            <button
-              className="btn btn-success"
-              onClick={saveCurriculumAndDutySettings}
-              disabled={saving}
-            >
-              <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} aria-hidden="true"></i>
-              {saving ? 'Saving…' : 'Save Settings'}
-            </button>
-          )}
-        </div>
-        <div className="tt-filter-group" style={{ maxWidth: 300, marginBottom: 16 }}>
-          <label htmlFor="tt-subject-level">School Level</label>
-          <select
-            id="tt-subject-level"
-            value={selectedLevel}
-            onChange={(event) => setSelectedLevel(event.target.value)}
-          >
-            {SCHOOL_LEVELS.map((level) => (
-              <option key={level.value} value={level.value}>{level.label}</option>
-            ))}
-          </select>
-        </div>
-        <div className="tt-subject-chips">
-          {availableSubjects.map((subject, index) => (
-            <span key={`${subject}-${index}`} className="tt-chip tt-chip-primary">
-              {isAdmin ? (
-                <>
-                  <input
-                    aria-label={`Edit subject ${subject}`}
-                    value={subject}
-                    onChange={(event) => updateCurriculumSubjects((subjects) => subjects.map(
-                      (value, subjectIndex) => subjectIndex === index ? event.target.value : value
-                    ))}
-                    style={{ width: `${Math.max(subject.length, 8)}ch`, border: 0, background: 'transparent', color: 'inherit' }}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    aria-label={`Delete ${subject}`}
-                    onClick={() => updateCurriculumSubjects((subjects) => subjects.filter((_, i) => i !== index))}
-                  >
-                    <i className="fas fa-trash" aria-hidden="true"></i>
-                  </button>
-                </>
-              ) : subject}
-            </span>
-          ))}
-        </div>
-        {isAdmin && (
-          <form
-            className="tt-inline-form"
-            style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}
-            onSubmit={(event) => {
-              event.preventDefault();
-              const subject = newSubject.trim();
-              if (!subject) return;
-              if (availableSubjects.some((value) => value.toLowerCase() === subject.toLowerCase())) {
-                notify('That subject is already listed for this level.', 'warning');
-                return;
-              }
-              updateCurriculumSubjects((subjects) => [...subjects, subject]);
-              setNewSubject('');
-            }}
-          >
-            <input
-              value={newSubject}
-              onChange={(event) => setNewSubject(event.target.value)}
-              placeholder="Add a subject"
-              aria-label="New curriculum subject"
-              maxLength={80}
-            />
-            <button className="btn btn-primary" type="submit">
-              <i className="fas fa-plus" aria-hidden="true"></i> Add Subject
-            </button>
-          </form>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="tt-settings-head">
-          <div>
-            <h3 className="tt-settings-title">
-              <i className="fas fa-shield-halved" aria-hidden="true"></i> Duty Areas
-            </h3>
-            <p className="tt-settings-desc">
-              Add, edit, or remove duty areas used for the weekly duty roster.
-            </p>
-          </div>
-          {isAdmin && (
-            <button
-              className="btn btn-success"
-              onClick={saveCurriculumAndDutySettings}
-              disabled={saving}
-            >
-              <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} aria-hidden="true"></i>
-              {saving ? 'Saving…' : 'Save Settings'}
-            </button>
-          )}
-        </div>
-        <div className="tt-duty-areas-list">
-          {(customConfig?.dutyAreas || DUTY_AREAS).map((a) => (
-            <div key={a.id} className="tt-duty-area-chip">
-              {isAdmin ? (
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) auto auto auto', gap: 8, alignItems: 'center' }}>
-                  <input
-                    value={a.label}
-                    aria-label="Duty area name"
-                    maxLength={80}
-                    onChange={(event) => updateDutyArea(a.id, { label: event.target.value })}
-                  />
-                  <input
-                    type="time"
-                    value={fmtHour(a.start)}
-                    aria-label={`Start time for ${a.label}`}
-                    onChange={(event) => event.target.value && updateDutyArea(a.id, { start: hourValueFromTime(event.target.value) })}
-                  />
-                  <input
-                    type="time"
-                    value={fmtHour(a.end)}
-                    aria-label={`End time for ${a.label}`}
-                    onChange={(event) => event.target.value && updateDutyArea(a.id, { end: hourValueFromTime(event.target.value) })}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-outline btn-sm"
-                    aria-label={`Delete duty area ${a.label}`}
-                    onClick={() => removeDutyArea(a.id)}
-                  >
-                    <i className="fas fa-trash" aria-hidden="true"></i>
-                  </button>
+          <div className="tt-period-list">
+            {periods.map((p) => (
+              <div key={p.id} className={`tt-period-chip ${p.type === 'break' ? 'break' : ''}`}>
+                <div className="tt-period-chip-name">{p.name}</div>
+                <div className="tt-period-chip-time">{formatPeriodTime(p)}</div>
+                <div className="tt-period-chip-duration">
+                  {calcDuration(p.start, p.end) || ''} min
                 </div>
-              ) : (
-                <>
-                  <div className="tt-duty-area-label">{a.label}</div>
-                  <div className="tt-duty-area-time">{fmtHour(a.start)} – {fmtHour(a.end)}</div>
-                </>
-              )}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="card">
+          <h3 className="tt-settings-title">
+            <i className="fas fa-chalkboard-user" aria-hidden="true"></i> Teacher Subject Mapping
+          </h3>
+          <p className="tt-settings-desc">
+            Teachers without a <code>subjects</code> array are treated as generalists and can
+            be assigned any subject.
+          </p>
+          {teachers.length ? (
+            <div className="tt-table-wrap">
+              <table className="tt-settings-table">
+                <thead>
+                  <tr>
+                    <th>Initials</th>
+                    <th>Teacher</th>
+                    <th>Subjects Assigned</th>
+                    <th className="tt-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teachers.map((t) => {
+                    const hasSubs = Array.isArray(t.subjects) && t.subjects.length > 0;
+                    return (
+                      <tr key={t.id}>
+                        <td className="tt-initials-cell">{teacherInitials(t)}</td>
+                        <td>{teacherFullName(t)}</td>
+                        <td>
+                          {hasSubs
+                            ? t.subjects.join(', ')
+                            : <span className="tt-muted">Not restricted</span>}
+                        </td>
+                        <td className="tt-center">
+                          <span className={`tt-chip ${hasSubs ? 'tt-chip-ok' : 'tt-chip-neutral'}`}>
+                            {hasSubs ? 'Configured' : 'General'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          ))}
-        </div>
-        {isAdmin && (
-          <form
-            style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap', alignItems: 'end' }}
-            onSubmit={(event) => {
-              event.preventDefault();
-              addDutyArea();
-            }}
-          >
-            <label>
-              Duty area
+          ) : (
+            <div className="tt-empty">
+              <i className="fas fa-user-slash" aria-hidden="true"></i>
+              <p>No teachers loaded.</p>
+            </div>
+          )}
+        </section>
+
+        <section className="card">
+          <div className="tt-settings-head">
+            <div>
+              <h3 className="tt-settings-title">
+                <i className="fas fa-list-check" aria-hidden="true"></i> Curriculum Subjects ({availableSubjects.length})
+              </h3>
+              <p className="tt-settings-desc">Manage curriculum subjects for each school level.</p>
+            </div>
+            {isAdmin && (
+              <button
+                className="btn btn-success"
+                onClick={saveCurriculumAndDutySettings}
+                disabled={saving}
+              >
+                <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} aria-hidden="true"></i>
+                {saving ? 'Saving…' : 'Save Settings'}
+              </button>
+            )}
+          </div>
+          <div className="tt-filter-group" style={{ maxWidth: 300, marginBottom: 16 }}>
+            <label htmlFor="tt-subject-level">School Level</label>
+            <select
+              id="tt-subject-level"
+              value={selectedLevel}
+              onChange={(event) => setSelectedLevel(event.target.value)}
+            >
+              {SCHOOL_LEVELS.map((level) => (
+                <option key={level.value} value={level.value}>{level.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="tt-subject-chips">
+            {availableSubjects.map((subject, index) => (
+              <span key={`${subject}-${index}`} className="tt-chip tt-chip-primary">
+                {isAdmin ? (
+                  <>
+                    <input
+                      aria-label={`Edit subject ${subject}`}
+                      value={subject}
+                      onChange={(event) => updateCurriculumSubjects((subjects) => subjects.map(
+                        (value, subjectIndex) => subjectIndex === index ? event.target.value : value
+                      ))}
+                      style={{ width: `${Math.max(subject.length, 8)}ch`, border: 0, background: 'transparent', color: 'inherit' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      aria-label={`Delete ${subject}`}
+                      onClick={() => updateCurriculumSubjects((subjects) => subjects.filter((_, i) => i !== index))}
+                    >
+                      <i className="fas fa-trash" aria-hidden="true"></i>
+                    </button>
+                  </>
+                ) : subject}
+              </span>
+            ))}
+          </div>
+          {isAdmin && (
+            <form
+              className="tt-inline-form"
+              style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}
+              onSubmit={(event) => {
+                event.preventDefault();
+                const subject = newSubject.trim();
+                if (!subject) return;
+                if (availableSubjects.some((value) => value.toLowerCase() === subject.toLowerCase())) {
+                  notify('That subject is already listed for this level.', 'warning');
+                  return;
+                }
+                updateCurriculumSubjects((subjects) => [...subjects, subject]);
+                setNewSubject('');
+              }}
+            >
               <input
-                value={newDutyArea.label}
-                onChange={(event) => setNewDutyArea((current) => ({ ...current, label: event.target.value }))}
-                placeholder="e.g. Library supervision"
+                value={newSubject}
+                onChange={(event) => setNewSubject(event.target.value)}
+                placeholder="Add a subject"
+                aria-label="New curriculum subject"
                 maxLength={80}
-                required
               />
-            </label>
-            <label>
-              Start
-              <input
-                type="time"
-                value={newDutyArea.start}
-                onChange={(event) => setNewDutyArea((current) => ({ ...current, start: event.target.value }))}
-                required
-              />
-            </label>
-            <label>
-              End
-              <input
-                type="time"
-                value={newDutyArea.end}
-                onChange={(event) => setNewDutyArea((current) => ({ ...current, end: event.target.value }))}
-                required
-              />
-            </label>
-            <button className="btn btn-primary" type="submit">
-              <i className="fas fa-plus" aria-hidden="true"></i> Add Duty Area
-            </button>
-          </form>
-        )}
-      </section>
-    </div>
-  );
+              <button className="btn btn-primary" type="submit">
+                <i className="fas fa-plus" aria-hidden="true"></i> Add Subject
+              </button>
+            </form>
+          )}
+        </section>
+
+        <section className="card">
+          <div className="tt-settings-head">
+            <div>
+              <h3 className="tt-settings-title">
+                <i className="fas fa-shield-halved" aria-hidden="true"></i> Duty Areas
+              </h3>
+              <p className="tt-settings-desc">
+                Add, edit, or remove duty areas used for the weekly duty roster.
+              </p>
+            </div>
+            {isAdmin && (
+              <button
+                className="btn btn-success"
+                onClick={saveCurriculumAndDutySettings}
+                disabled={saving}
+              >
+                <i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-save'}`} aria-hidden="true"></i>
+                {saving ? 'Saving…' : 'Save Settings'}
+              </button>
+            )}
+          </div>
+          <div className="tt-duty-areas-list">
+            {(customConfig?.dutyAreas || DUTY_AREAS).map((a) => (
+              <div key={a.id} className="tt-duty-area-chip">
+                {isAdmin ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) auto auto auto', gap: 8, alignItems: 'center' }}>
+                    <input
+                      value={a.label}
+                      aria-label="Duty area name"
+                      maxLength={80}
+                      onChange={(event) => updateDutyArea(a.id, { label: event.target.value })}
+                    />
+                    <input
+                      type="time"
+                      value={fmtHour(a.start)}
+                      aria-label={`Start time for ${a.label}`}
+                      onChange={(event) => event.target.value && updateDutyArea(a.id, { start: hourValueFromTime(event.target.value) })}
+                    />
+                    <input
+                      type="time"
+                      value={fmtHour(a.end)}
+                      aria-label={`End time for ${a.label}`}
+                      onChange={(event) => event.target.value && updateDutyArea(a.id, { end: hourValueFromTime(event.target.value) })}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      aria-label={`Delete duty area ${a.label}`}
+                      onClick={() => removeDutyArea(a.id)}
+                    >
+                      <i className="fas fa-trash" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="tt-duty-area-label">{a.label}</div>
+                    <div className="tt-duty-area-time">{fmtHour(a.start)} – {fmtHour(a.end)}</div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+          {isAdmin && (
+            <form
+              style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap', alignItems: 'end' }}
+              onSubmit={(event) => {
+                event.preventDefault();
+                addDutyArea();
+              }}
+            >
+              <label>
+                Duty area
+                <input
+                  value={newDutyArea.label}
+                  onChange={(event) => setNewDutyArea((current) => ({ ...current, label: event.target.value }))}
+                  placeholder="e.g. Library supervision"
+                  maxLength={80}
+                  required
+                />
+              </label>
+              <label>
+                Start
+                <input
+                  type="time"
+                  value={newDutyArea.start}
+                  onChange={(event) => setNewDutyArea((current) => ({ ...current, start: event.target.value }))}
+                  required
+                />
+              </label>
+              <label>
+                End
+                <input
+                  type="time"
+                  value={newDutyArea.end}
+                  onChange={(event) => setNewDutyArea((current) => ({ ...current, end: event.target.value }))}
+                  required
+                />
+              </label>
+              <button className="btn btn-primary" type="submit">
+                <i className="fas fa-plus" aria-hidden="true"></i> Add Duty Area
+              </button>
+            </form>
+          )}
+        </section>
+      </div>
+    );
+  };
 
   /* ============================================================
      Layout
@@ -1543,11 +1782,17 @@ export default function Timetable() {
           <div>
             <div className="tt-header-badges">
               <span className="tt-badge-primary">KICD Compliant</span>
-              <span className="tt-header-sub">CBC Master Scheduler</span>
+              <span className="tt-header-sub">
+                {isTeacher ? 'My Timetable' : 'CBC Master Scheduler'}
+              </span>
             </div>
-            <h1 className="tt-page-title">Timetable Master</h1>
+            <h1 className="tt-page-title">
+              {isTeacher ? 'My Timetable' : 'Timetable Master'}
+            </h1>
             <p className="tt-page-sub">
-              Generate class timetables, teacher schedules, duty rosters, and events — clash-aware.
+              {isTeacher
+                ? 'View your teaching schedule and the class timetables for your assigned classes.'
+                : 'Generate class timetables, teacher schedules, duty rosters, and events — clash-aware.'}
             </p>
           </div>
 
@@ -1601,7 +1846,11 @@ export default function Timetable() {
         )}
 
         <nav className="tt-tabs" aria-label="Timetable sections">
-          {TABS.map((t) => (
+          {TABS.filter((t) => {
+            // Teachers don't need the Settings tab.
+            if (t.id === 'settings' && isTeacher) return false;
+            return true;
+          }).map((t) => (
             <button
               key={t.id}
               type="button"
@@ -1632,11 +1881,15 @@ export default function Timetable() {
                   <select
                     value={selectedClass}
                     onChange={(e) => setSelectedClass(e.target.value)}
-                    disabled={activeTab === 'teachers' || activeTab === 'master'}
+                    disabled={activeTab === 'teachers' || activeTab === 'master' || availableClasses.length === 0}
                   >
-                    {availableClasses.map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
+                    {availableClasses.length === 0 && isTeacher ? (
+                      <option value="">— No classes assigned —</option>
+                    ) : (
+                      availableClasses.map((c) => (
+                        <option key={c} value={c}>{c}</option>
+                      ))
+                    )}
                   </select>
                 </div>
               </>
@@ -1667,7 +1920,7 @@ export default function Timetable() {
         {activeTab === 'settings' && renderSettings()}
 
         {/* ---------- Slot editor ---------- */}
-        {showSlotModal && editingSlot && (
+        {showSlotModal && editingSlot && isAdmin && (
           <div
             className="modal-overlay active"
             onClick={(e) => e.target === e.currentTarget && setShowSlotModal(false)}
@@ -1735,7 +1988,7 @@ export default function Timetable() {
         )}
 
         {/* ---------- Bulk generate ---------- */}
-        {showBulkModal && (
+        {isAdmin && showBulkModal && (
           <div
             className="modal-overlay active"
             onClick={(e) =>
@@ -1789,7 +2042,7 @@ export default function Timetable() {
         )}
 
         {/* ---------- Event editor ---------- */}
-        {showEventModal && editingEvent && (
+        {isAdmin && showEventModal && editingEvent && (
           <div
             className="modal-overlay active"
             onClick={(e) => e.target === e.currentTarget && setShowEventModal(false)}
@@ -1947,7 +2200,7 @@ export default function Timetable() {
         )}
 
         {/* ---------- Period editor ---------- */}
-        {showPeriodEditor && editingPeriod && (
+        {isAdmin && showPeriodEditor && editingPeriod && (
           <div
             className="modal-overlay active"
             onClick={(e) => e.target === e.currentTarget && setShowPeriodEditor(false)}
