@@ -9,7 +9,7 @@ import { updatePassword, updateEmail, updateProfile, reauthenticateWithCredentia
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
-// Roles that can only be assigned by existing admins.
+// Roles that can be assigned through the Settings page.
 const ASSIGNABLE_ROLES = [
     { value: 'user',         label: 'User' },
     { value: 'staff',        label: 'Staff' },
@@ -43,9 +43,8 @@ export default function Settings() {
     const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME || 'your-cloud-name';
     const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET || 'school_profile';
 
-    // The role of the *currently signed-in* user determines whether they
-    // may edit the role field. Read from either the auth context or the
-    // loaded profile, whichever is available.
+    // The role of the currently signed-in user determines whether they
+    // may edit the role field.
     const currentRole = userRole || userData?.role || userProfile?.role || 'user';
     const canEditRole = ADMIN_ROLES.has(currentRole);
 
@@ -72,12 +71,12 @@ export default function Settings() {
         if (currentUser && userData) {
             loadUserProfile();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentUser, userData, isOnline]);
 
     const loadUserProfile = async () => {
         setLoading(true);
         try {
-            // Try to load from cache first
             const cachedProfile = await getFromIndexedDB('user_profile', currentUser.uid);
             if (cachedProfile) {
                 setUserProfile(cachedProfile);
@@ -86,9 +85,7 @@ export default function Settings() {
                 setLoading(false);
             }
 
-            // If online, fetch fresh data
             if (isOnline) {
-                // Try to get from users collection
                 const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
                 if (userDoc.exists()) {
                     const data = userDoc.data();
@@ -97,7 +94,6 @@ export default function Settings() {
                     setUsingCachedData(false);
                     await saveToIndexedDB('user_profile', { ...data, uid: currentUser.uid });
                 } else {
-                    // Try teachers collection
                     const teacherDoc = await getDoc(doc(db, 'teachers', currentUser.uid));
                     if (teacherDoc.exists()) {
                         const data = teacherDoc.data();
@@ -146,7 +142,6 @@ export default function Settings() {
         fileInputRef.current.click();
     };
 
-    // Upload to Cloudinary
     const uploadToCloudinary = async (file) => {
         return new Promise((resolve, reject) => {
             const formData = new FormData();
@@ -173,10 +168,7 @@ export default function Settings() {
                 }
             };
 
-            xhr.onerror = () => {
-                reject(new Error('Network error'));
-            };
-
+            xhr.onerror = () => reject(new Error('Network error'));
             xhr.send(formData);
         });
     };
@@ -202,8 +194,7 @@ export default function Settings() {
         try {
             const downloadUrl = await uploadToCloudinary(file);
 
-            const userRef = doc(db, 'users', currentUser.uid);
-            await updateDoc(userRef, {
+            await updateDoc(doc(db, 'users', currentUser.uid), {
                 profileImageUrl: downloadUrl,
                 updatedAt: new Date().toISOString()
             });
@@ -223,22 +214,13 @@ export default function Settings() {
         }
     };
 
-    /**
-     * Save the profile. This is where the role change is persisted.
-     * - If the signed-in user is an admin, they can change the role.
-     * - If not, the role field is not editable in the UI, and the update
-     *   payload strips out `role` to prevent accidental escalation.
-     */
     const handleSaveProfile = async () => {
         if (saving) return;
 
-        // Only include role in the update if the current user is allowed
-        // to change it AND they actually changed it.
         const originalRole = userProfile?.role || 'user';
         const roleChanged = canEditRole && profileForm.role && profileForm.role !== originalRole;
 
         setSaving(true);
-
         try {
             const updates = {
                 firstName: profileForm.firstName.trim(),
@@ -248,22 +230,15 @@ export default function Settings() {
                 updatedAt: new Date().toISOString()
             };
 
-            // Only add the role key when it's safe to write.
             if (roleChanged) {
                 updates.role = profileForm.role;
-                // Keep role in user_roles in sync if it exists there too.
-                // This is what the auth helpers read from.
                 updates.roleUpdatedAt = new Date().toISOString();
                 updates.roleUpdatedBy = currentUser.uid;
             }
 
             if (isOnline) {
-                const userRef = doc(db, 'users', currentUser.uid);
-                await updateDoc(userRef, updates);
+                await updateDoc(doc(db, 'users', currentUser.uid), updates);
 
-                // If the role changed, mirror to user_roles so any function
-                // or context that reads from that collection sees the new
-                // value too.
                 if (roleChanged) {
                     try {
                         const roleRef = doc(db, 'user_roles', currentUser.uid);
@@ -271,16 +246,14 @@ export default function Settings() {
                         if (roleSnap.exists()) {
                             await updateDoc(roleRef, {
                                 role: updates.role,
-                                updatedAt: new Date().toISOString(),
+                                updatedAt: new Date().toISOString()
                             });
                         }
                     } catch (roleErr) {
                         console.warn('Could not mirror role to user_roles:', roleErr.message);
                     }
 
-                    // Force a token refresh so the new role shows up in
-                    // the ID token claims on the next request. Firebase
-                    // caches claims for up to 1 hour otherwise.
+                    // Force a token refresh so the new role takes effect.
                     try {
                         await currentUser.getIdToken(true);
                     } catch (refreshErr) {
@@ -288,10 +261,7 @@ export default function Settings() {
                     }
                 }
 
-                // Update display name in auth
-                await updateProfile(currentUser, {
-                    displayName: updates.fullName
-                });
+                await updateProfile(currentUser, { displayName: updates.fullName });
 
                 showNotification(
                     roleChanged
@@ -304,7 +274,6 @@ export default function Settings() {
                 showNotification('Profile saved offline - will sync when online', 'info');
             }
 
-            // Update local state
             setUserProfile(prev => ({ ...prev, ...updates }));
             await saveToIndexedDB('user_profile', { ...userProfile, ...updates, uid: currentUser.uid });
             await updateUserData(updates);
@@ -345,23 +314,14 @@ export default function Settings() {
             await updatePassword(currentUser, newPassword);
 
             setShowPasswordModal(false);
-            setPasswordForm({
-                currentPassword: '',
-                newPassword: '',
-                confirmPassword: ''
-            });
+            setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
             showNotification('Password changed successfully!', 'success');
-
         } catch (error) {
             console.error('Error changing password:', error);
             let errorMessage = 'Failed to change password. ';
-            if (error.code === 'auth/wrong-password') {
-                errorMessage = 'Current password is incorrect';
-            } else if (error.code === 'auth/weak-password') {
-                errorMessage = 'New password is too weak';
-            } else {
-                errorMessage += error.message;
-            }
+            if (error.code === 'auth/wrong-password') errorMessage = 'Current password is incorrect';
+            else if (error.code === 'auth/weak-password') errorMessage = 'New password is too weak';
+            else errorMessage += error.message;
             showNotification(errorMessage, 'error');
         } finally {
             setSaving(false);
@@ -387,14 +347,9 @@ export default function Settings() {
                 status: 'deleted',
                 deletedAt: new Date().toISOString()
             });
-
             await currentUser.delete();
-
             showNotification('Account deleted successfully', 'success');
-            setTimeout(() => {
-                navigate('/login');
-            }, 2000);
-
+            setTimeout(() => navigate('/login'), 2000);
         } catch (error) {
             console.error('Error deleting account:', error);
             showNotification('Failed to delete account: ' + error.message, 'error');
@@ -404,35 +359,17 @@ export default function Settings() {
     };
 
     const showNotification = (message, type = 'info') => {
-        const colors = {
-            success: '#27ae60',
-            error: '#e74c3c',
-            warning: '#f39c12',
-            info: '#3498db'
-        };
-        const iconMap = {
-            success: 'check-circle',
-            error: 'exclamation-circle',
-            warning: 'exclamation-triangle',
-            info: 'info-circle'
-        };
+        const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
+        const iconMap = { success: 'check-circle', error: 'exclamation-circle', warning: 'exclamation-triangle', info: 'info-circle' };
 
-        const notificationEl = document.createElement('div');
-        notificationEl.className = 'custom-notification';
-        notificationEl.style.backgroundColor = colors[type] || colors.info;
-        notificationEl.innerHTML = `
-            <i class="fas fa-${iconMap[type] || 'info-circle'}"></i>
-            <span>${message}</span>
-        `;
-        document.body.appendChild(notificationEl);
-
+        const el = document.createElement('div');
+        el.className = 'custom-notification';
+        el.style.backgroundColor = colors[type] || colors.info;
+        el.innerHTML = `<i class="fas fa-${iconMap[type] || 'info-circle'}"></i><span>${message}</span>`;
+        document.body.appendChild(el);
         setTimeout(() => {
-            notificationEl.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => {
-                if (notificationEl.parentNode) {
-                    notificationEl.parentNode.removeChild(notificationEl);
-                }
-            }, 300);
+            el.style.animation = 'slideOut 0.3s ease';
+            setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 300);
         }, 4000);
     };
 
@@ -443,376 +380,68 @@ export default function Settings() {
     return (
         <Layout title="Settings">
             <style>{`
-                .settings-container {
-                    max-width: 900px;
-                    margin: 0 auto;
-                    padding: 20px 0;
-                }
-
-                .settings-card {
-                    background: white;
-                    border-radius: 16px;
-                    box-shadow: var(--shadow);
-                    overflow: hidden;
-                }
-
-                .settings-header {
-                    padding: 25px 30px;
-                    border-bottom: 2px solid var(--border);
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    flex-wrap: wrap;
-                    gap: 15px;
-                }
-
-                .settings-header h2 {
-                    font-size: 22px;
-                    color: var(--secondary);
-                    font-weight: 700;
-                }
-
-                .settings-header .user-email {
-                    font-size: 14px;
-                    color: var(--gray);
-                }
-
-                .settings-tabs {
-                    display: flex;
-                    gap: 5px;
-                    border-bottom: 2px solid var(--border);
-                    padding: 0 30px;
-                    flex-wrap: wrap;
-                }
-
-                .settings-tab {
-                    padding: 12px 24px;
-                    border: none;
-                    background: transparent;
-                    color: var(--gray);
-                    font-weight: 600;
-                    cursor: pointer;
-                    transition: all 0.3s;
-                    font-size: 14px;
-                    border-bottom: 3px solid transparent;
-                    margin-bottom: -2px;
-                    display: flex;
-                    align-items: center;
-                    gap: 8px;
-                }
-
+                .settings-container { max-width: 900px; margin: 0 auto; padding: 20px 0; }
+                .settings-card { background: white; border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+                .settings-header { padding: 25px 30px; border-bottom: 2px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+                .settings-header h2 { font-size: 22px; color: var(--secondary); font-weight: 700; }
+                .settings-header .user-email { font-size: 14px; color: var(--gray); }
+                .settings-tabs { display: flex; gap: 5px; border-bottom: 2px solid var(--border); padding: 0 30px; flex-wrap: wrap; }
+                .settings-tab { padding: 12px 24px; border: none; background: transparent; color: var(--gray); font-weight: 600; cursor: pointer; transition: all 0.3s; font-size: 14px; border-bottom: 3px solid transparent; margin-bottom: -2px; display: flex; align-items: center; gap: 8px; }
                 .settings-tab:hover { color: var(--secondary); }
-                .settings-tab.active {
-                    color: var(--primary);
-                    border-bottom-color: var(--primary);
-                }
-
+                .settings-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
                 .settings-body { padding: 30px; }
                 .settings-section { display: none; animation: fadeIn 0.3s ease; }
                 .settings-section.active { display: block; }
-
-                .profile-avatar-section {
-                    display: flex;
-                    align-items: center;
-                    gap: 25px;
-                    margin-bottom: 30px;
-                    padding: 20px;
-                    background: var(--light);
-                    border-radius: 12px;
-                    flex-wrap: wrap;
-                }
-
-                .profile-avatar {
-                    width: 100px;
-                    height: 100px;
-                    border-radius: 50%;
-                    overflow: hidden;
-                    background: var(--primary);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 48px;
-                    color: white;
-                    flex-shrink: 0;
-                    border: 3px solid var(--primary);
-                    position: relative;
-                }
-
+                .profile-avatar-section { display: flex; align-items: center; gap: 25px; margin-bottom: 30px; padding: 20px; background: var(--light); border-radius: 12px; flex-wrap: wrap; }
+                .profile-avatar { width: 100px; height: 100px; border-radius: 50%; overflow: hidden; background: var(--primary); display: flex; align-items: center; justify-content: center; font-size: 48px; color: white; flex-shrink: 0; border: 3px solid var(--primary); position: relative; }
                 .profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
-
-                .profile-avatar .avatar-placeholder {
-                    font-weight: 700;
-                    text-transform: uppercase;
-                }
-
-                .profile-avatar .upload-overlay {
-                    position: absolute;
-                    bottom: 0;
-                    left: 0;
-                    right: 0;
-                    background: rgba(0,0,0,0.6);
-                    padding: 8px;
-                    text-align: center;
-                    color: white;
-                    font-size: 11px;
-                    cursor: pointer;
-                    transition: all 0.3s;
-                    opacity: 0;
-                }
-
+                .profile-avatar .avatar-placeholder { font-weight: 700; text-transform: uppercase; }
+                .profile-avatar .upload-overlay { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.6); padding: 8px; text-align: center; color: white; font-size: 11px; cursor: pointer; transition: all 0.3s; opacity: 0; }
                 .profile-avatar:hover .upload-overlay { opacity: 1; }
-                .profile-avatar .upload-overlay i {
-                    display: block;
-                    font-size: 14px;
-                    margin-bottom: 2px;
-                }
-
+                .profile-avatar .upload-overlay i { display: block; font-size: 14px; margin-bottom: 2px; }
                 .avatar-info h4 { font-size: 18px; color: var(--secondary); margin-bottom: 5px; }
                 .avatar-info p { color: var(--gray); font-size: 14px; }
-
-                .upload-progress {
-                    width: 100%;
-                    height: 4px;
-                    background: var(--border);
-                    border-radius: 2px;
-                    overflow: hidden;
-                    margin-top: 8px;
-                }
-
-                .upload-progress .progress-bar {
-                    height: 100%;
-                    background: var(--primary);
-                    transition: width 0.3s ease;
-                    border-radius: 2px;
-                }
-
+                .upload-progress { width: 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+                .upload-progress .progress-bar { height: 100%; background: var(--primary); transition: width 0.3s ease; border-radius: 2px; }
                 .form-group { margin-bottom: 20px; }
-
-                .form-group label {
-                    display: block;
-                    font-size: 14px;
-                    font-weight: 600;
-                    color: var(--secondary);
-                    margin-bottom: 5px;
-                }
-
+                .form-group label { display: block; font-size: 14px; font-weight: 600; color: var(--secondary); margin-bottom: 5px; }
                 .form-group label .required { color: var(--danger); }
-
-                .form-group input,
-                .form-group select {
-                    width: 100%;
-                    padding: 10px 15px;
-                    border: 2px solid var(--border);
-                    border-radius: 8px;
-                    font-size: 14px;
-                    transition: all 0.3s;
-                    background: white;
-                    color: var(--secondary);
-                }
-
-                .form-group input:focus,
-                .form-group select:focus {
-                    outline: none;
-                    border-color: var(--primary);
-                }
-
-                .form-group input:disabled,
-                .form-group select:disabled {
-                    background: var(--light);
-                    cursor: not-allowed;
-                    opacity: 0.7;
-                }
-
-                .form-row {
-                    display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    gap: 20px;
-                }
-
-                .form-actions {
-                    display: flex;
-                    gap: 10px;
-                    margin-top: 20px;
-                    padding-top: 20px;
-                    border-top: 1px solid var(--border);
-                    flex-wrap: wrap;
-                }
-
-                .btn {
-                    padding: 10px 24px;
-                    border: none;
-                    border-radius: 8px;
-                    font-weight: 600;
-                    cursor: pointer;
-                    transition: all 0.3s;
-                    display: inline-flex;
-                    align-items: center;
-                    gap: 8px;
-                    font-size: 14px;
-                }
-
+                .form-group input, .form-group select { width: 100%; padding: 10px 15px; border: 2px solid var(--border); border-radius: 8px; font-size: 14px; transition: all 0.3s; background: white; color: var(--secondary); }
+                .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary); }
+                .form-group input:disabled, .form-group select:disabled { background: var(--light); cursor: not-allowed; opacity: 0.7; }
+                .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+                .form-actions { display: flex; gap: 10px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+                .btn { padding: 10px 24px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.3s; display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
                 .btn-primary { background: var(--primary); color: white; }
-                .btn-primary:hover {
-                    background: var(--primary-dark);
-                    transform: translateY(-2px);
-                    box-shadow: var(--shadow-lg);
-                }
-
+                .btn-primary:hover { background: var(--primary-dark); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
                 .btn-danger { background: var(--danger); color: white; }
                 .btn-danger:hover { opacity: 0.9; transform: translateY(-2px); }
-
-                .btn-outline {
-                    background: transparent;
-                    border: 2px solid var(--border);
-                    color: var(--secondary);
-                }
+                .btn-outline { background: transparent; border: 2px solid var(--border); color: var(--secondary); }
                 .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
-
                 .btn-success { background: var(--success); color: white; }
                 .btn-success:hover { opacity: 0.9; transform: translateY(-2px); }
-
                 .btn-warning { background: var(--warning); color: white; }
                 .btn-warning:hover { opacity: 0.9; transform: translateY(-2px); }
-
                 .btn-sm { padding: 6px 14px; font-size: 12px; }
-
-                .password-section {
-                    background: var(--light);
-                    border-radius: 12px;
-                    padding: 20px;
-                    margin-top: 20px;
-                }
-
-                .danger-zone {
-                    border: 2px solid var(--danger);
-                    border-radius: 12px;
-                    padding: 25px;
-                    margin-top: 30px;
-                    background: #fff5f5;
-                }
-
-                .danger-zone h4 {
-                    color: var(--danger);
-                    font-size: 18px;
-                    margin-bottom: 10px;
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                }
-
-                .danger-zone p {
-                    color: var(--gray);
-                    font-size: 14px;
-                    margin-bottom: 20px;
-                }
-
-                .danger-zone .delete-input {
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                    flex-wrap: wrap;
-                }
-
-                .danger-zone .delete-input input {
-                    flex: 1;
-                    min-width: 200px;
-                    padding: 10px 15px;
-                    border: 2px solid var(--border);
-                    border-radius: 8px;
-                    font-size: 14px;
-                }
-
-                .modal-overlay {
-                    position: fixed;
-                    top: 0; left: 0; right: 0; bottom: 0;
-                    background: rgba(0, 0, 0, 0.5);
-                    z-index: 1000;
-                    display: none;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 20px;
-                    backdrop-filter: blur(4px);
-                }
-
+                .password-section { background: var(--light); border-radius: 12px; padding: 20px; margin-top: 20px; }
+                .danger-zone { border: 2px solid var(--danger); border-radius: 12px; padding: 25px; margin-top: 30px; background: #fff5f5; }
+                .danger-zone h4 { color: var(--danger); font-size: 18px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; }
+                .danger-zone p { color: var(--gray); font-size: 14px; margin-bottom: 20px; }
+                .danger-zone .delete-input { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+                .danger-zone .delete-input input { flex: 1; min-width: 200px; padding: 10px 15px; border: 2px solid var(--border); border-radius: 8px; font-size: 14px; }
+                .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 20px; backdrop-filter: blur(4px); }
                 .modal-overlay.active { display: flex; }
-
-                .modal {
-                    background: white;
-                    border-radius: 16px;
-                    max-width: 500px;
-                    width: 100%;
-                    max-height: 90vh;
-                    overflow-y: auto;
-                    padding: 30px;
-                    animation: slideUp 0.3s ease;
-                }
-
-                .modal-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    margin-bottom: 25px;
-                }
-
+                .modal { background: white; border-radius: 16px; max-width: 500px; width: 100%; max-height: 90vh; overflow-y: auto; padding: 30px; animation: slideUp 0.3s ease; }
+                .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
                 .modal-header h2 { font-size: 22px; color: var(--secondary); }
-
-                .modal-close {
-                    width: 40px;
-                    height: 40px;
-                    border: none;
-                    border-radius: 50%;
-                    background: var(--light);
-                    cursor: pointer;
-                    font-size: 18px;
-                    transition: all 0.3s;
-                }
+                .modal-close { width: 40px; height: 40px; border: none; border-radius: 50%; background: var(--light); cursor: pointer; font-size: 18px; transition: all 0.3s; }
                 .modal-close:hover { background: var(--border); }
-
-                .modal-footer {
-                    display: flex;
-                    gap: 10px;
-                    justify-content: flex-end;
-                    margin-top: 25px;
-                    padding-top: 20px;
-                    border-top: 1px solid var(--border);
-                }
-
-                .cached-indicator {
-                    background: #d1ecf1;
-                    color: #0c5460;
-                    padding: 8px 16px;
-                    border-radius: 8px;
-                    margin-bottom: 20px;
-                    display: flex;
-                    align-items: center;
-                    gap: 10px;
-                    font-size: 13px;
-                    border: 1px solid #bee5eb;
-                }
-
-                .role-locked-hint {
-                    font-size: 12px;
-                    color: var(--gray);
-                    margin-top: 4px;
-                    display: flex;
-                    align-items: center;
-                    gap: 5px;
-                }
-
-                @keyframes slideUp {
-                    from { transform: translateY(20px); opacity: 0; }
-                    to { transform: translateY(0); opacity: 1; }
-                }
-
-                @keyframes fadeIn {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
-                }
-
-                @keyframes spin {
-                    to { transform: rotate(360deg); }
-                }
-
+                .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; padding-top: 20px; border-top: 1px solid var(--border); }
+                .cached-indicator { background: #d1ecf1; color: #0c5460; padding: 8px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; font-size: 13px; border: 1px solid #bee5eb; }
+                .role-locked-hint { font-size: 12px; color: var(--gray); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+                @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+                @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+                @keyframes spin { to { transform: rotate(360deg); } }
                 @media (max-width: 768px) {
                     .settings-header { padding: 20px; }
                     .settings-tabs { padding: 0 15px; }
@@ -823,7 +452,6 @@ export default function Settings() {
                     .danger-zone .delete-input { flex-direction: column; }
                     .danger-zone .delete-input input { width: 100%; }
                 }
-
                 @media (max-width: 480px) {
                     .profile-avatar { width: 80px; height: 80px; font-size: 36px; }
                     .settings-tab { padding: 8px 12px; font-size: 12px; }
@@ -847,20 +475,14 @@ export default function Settings() {
                         </div>
                         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                             <span style={{
-                                padding: '4px 12px',
-                                borderRadius: '20px',
-                                fontSize: '12px',
-                                fontWeight: '600',
+                                padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600',
                                 background: ADMIN_ROLES.has(profileForm.role) ? '#d4edda' : '#d1ecf1',
                                 color: ADMIN_ROLES.has(profileForm.role) ? '#155724' : '#0c5460'
                             }}>
                                 {profileForm.role || 'user'}
                             </span>
                             <span style={{
-                                padding: '4px 12px',
-                                borderRadius: '20px',
-                                fontSize: '12px',
-                                fontWeight: '600',
+                                padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600',
                                 background: isOnline ? '#d4edda' : '#fff3cd',
                                 color: isOnline ? '#155724' : '#856404'
                             }}>
@@ -871,22 +493,13 @@ export default function Settings() {
                     </div>
 
                     <div className="settings-tabs">
-                        <button
-                            className={`settings-tab ${activeTab === 'profile' ? 'active' : ''}`}
-                            onClick={() => setActiveTab('profile')}
-                        >
+                        <button className={`settings-tab ${activeTab === 'profile' ? 'active' : ''}`} onClick={() => setActiveTab('profile')}>
                             <i className="fas fa-user"></i> Profile
                         </button>
-                        <button
-                            className={`settings-tab ${activeTab === 'security' ? 'active' : ''}`}
-                            onClick={() => setActiveTab('security')}
-                        >
+                        <button className={`settings-tab ${activeTab === 'security' ? 'active' : ''}`} onClick={() => setActiveTab('security')}>
                             <i className="fas fa-lock"></i> Security
                         </button>
-                        <button
-                            className={`settings-tab ${activeTab === 'danger' ? 'active' : ''}`}
-                            onClick={() => setActiveTab('danger')}
-                        >
+                        <button className={`settings-tab ${activeTab === 'danger' ? 'active' : ''}`} onClick={() => setActiveTab('danger')}>
                             <i className="fas fa-exclamation-triangle"></i> Danger Zone
                         </button>
                     </div>
@@ -934,58 +547,31 @@ export default function Settings() {
                                 <div className="form-row">
                                     <div className="form-group">
                                         <label>First Name <span className="required">*</span></label>
-                                        <input
-                                            type="text"
-                                            id="firstName"
-                                            value={profileForm.firstName}
-                                            onChange={handleProfileChange}
-                                            required
-                                        />
+                                        <input type="text" id="firstName" value={profileForm.firstName} onChange={handleProfileChange} required />
                                     </div>
                                     <div className="form-group">
                                         <label>Last Name <span className="required">*</span></label>
-                                        <input
-                                            type="text"
-                                            id="lastName"
-                                            value={profileForm.lastName}
-                                            onChange={handleProfileChange}
-                                            required
-                                        />
+                                        <input type="text" id="lastName" value={profileForm.lastName} onChange={handleProfileChange} required />
                                     </div>
                                 </div>
 
                                 <div className="form-row">
                                     <div className="form-group">
                                         <label>Email Address</label>
-                                        <input
-                                            type="email"
-                                            id="email"
-                                            value={profileForm.email}
-                                            disabled
-                                        />
+                                        <input type="email" id="email" value={profileForm.email} disabled />
                                         <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '4px' }}>
                                             Email cannot be changed here. Contact administrator.
                                         </div>
                                     </div>
                                     <div className="form-group">
                                         <label>Phone Number</label>
-                                        <input
-                                            type="tel"
-                                            id="phone"
-                                            value={profileForm.phone}
-                                            onChange={handleProfileChange}
-                                            placeholder="Enter phone number"
-                                        />
+                                        <input type="tel" id="phone" value={profileForm.phone} onChange={handleProfileChange} placeholder="Enter phone number" />
                                     </div>
                                 </div>
 
                                 <div className="form-row">
-                                    {/* === ROLE — editable by admins only === */}
                                     <div className="form-group">
-                                        <label>
-                                            Role{' '}
-                                            {canEditRole && <span className="required">*</span>}
-                                        </label>
+                                        <label>Role {canEditRole && <span className="required">*</span>}</label>
                                         <select
                                             id="role"
                                             value={profileForm.role}
@@ -1010,12 +596,7 @@ export default function Settings() {
                                     </div>
                                     <div className="form-group">
                                         <label>School ID</label>
-                                        <input
-                                            type="text"
-                                            id="schoolId"
-                                            value={profileForm.schoolId}
-                                            disabled
-                                        />
+                                        <input type="text" id="schoolId" value={profileForm.schoolId} disabled />
                                     </div>
                                 </div>
 
@@ -1023,7 +604,17 @@ export default function Settings() {
                                     <button type="submit" className="btn btn-primary" disabled={saving}>
                                         {saving ? (
                                             <>
-                                                <span className="loading-spinner" style={{ width: '18px', height: '18px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 1s linear infinite' }}></span>
+                                                <span
+                                                    className="loading-spinner"
+                                                    style={{
+                                                        width: '18px',
+                                                        height: '18px',
+                                                        border: '2px solid rgba(255,255,255,0.3)',
+                                                        borderTopColor: 'white',
+                                                        borderRadius: '50%',
+                                                        animation: 'spin 1s linear infinite'
+                                                    }}
+                                                />
                                                 Saving...
                                             </>
                                         ) : (
@@ -1045,13 +636,78 @@ export default function Settings() {
                                 <p style={{ color: 'var(--gray)', fontSize: '14px', marginBottom: '20px' }}>
                                     Change your password regularly to keep your account secure.
                                 </p>
-                                <button
-                                    className="btn btn-warning"
-                                    onClick={() => setShowPasswordModal(true)}
-                                    disabled={!isOnline}
-                                >
+                                <button className="btn btn-warning" onClick={() => setShowPasswordModal(true)} disabled={!isOnline}>
                                     <i className="fas fa-lock"></i> Change Password
                                 </button>
                                 {!isOnline && (
                                     <div style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '8px' }}>
-                                        <i className="fas fa-info-circle"></i
+                                        <i className="fas fa-info-circle"></i> You need to be online to change password.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Danger Zone */}
+                        <div className={`settings-section ${activeTab === 'danger' ? 'active' : ''}`}>
+                            <div className="danger-zone">
+                                <h4><i className="fas fa-exclamation-triangle"></i> Delete Account</h4>
+                                <p>
+                                    Once you delete your account, there is no going back. Please be certain.
+                                    This action will permanently delete all your data.
+                                </p>
+                                <div className="delete-input">
+                                    <input
+                                        type="text"
+                                        placeholder='Type "DELETE" to confirm'
+                                        value={deleteConfirm}
+                                        onChange={(e) => setDeleteConfirm(e.target.value)}
+                                    />
+                                    <button className="btn btn-danger" onClick={handleDeleteAccount} disabled={!isOnline || saving}>
+                                        <i className="fas fa-trash"></i> Delete Account
+                                    </button>
+                                </div>
+                                {!isOnline && (
+                                    <div style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '10px' }}>
+                                        <i className="fas fa-info-circle"></i> You need to be online to delete your account.
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Change Password Modal */}
+            <div className={`modal-overlay ${showPasswordModal ? 'active' : ''}`}>
+                <div className="modal">
+                    <div className="modal-header">
+                        <h2>Change Password</h2>
+                        <button className="modal-close" onClick={() => setShowPasswordModal(false)}>
+                            <i className="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <form onSubmit={handleChangePassword}>
+                        <div className="form-group">
+                            <label>Current Password <span className="required">*</span></label>
+                            <input type="password" id="currentPassword" value={passwordForm.currentPassword} onChange={handlePasswordChange} required />
+                        </div>
+                        <div className="form-group">
+                            <label>New Password <span className="required">*</span></label>
+                            <input type="password" id="newPassword" value={passwordForm.newPassword} onChange={handlePasswordChange} required placeholder="Minimum 6 characters" />
+                        </div>
+                        <div className="form-group">
+                            <label>Confirm New Password <span className="required">*</span></label>
+                            <input type="password" id="confirmPassword" value={passwordForm.confirmPassword} onChange={handlePasswordChange} required />
+                        </div>
+                        <div className="modal-footer">
+                            <button type="button" className="btn btn-outline" onClick={() => setShowPasswordModal(false)}>Cancel</button>
+                            <button type="submit" className="btn btn-primary" disabled={saving}>
+                                {saving ? 'Updating...' : 'Update Password'}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </Layout>
+    );
+}
