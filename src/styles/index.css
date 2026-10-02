@@ -2857,7 +2857,10 @@ tbody tr:hover td { background: var(--bg); }
 /* ============================================================
    29. LOGO ANIMATION
    ============================================================ */
-.logo-container { margin-bottom: 24px; }
+/* NOTE: The header logo is styled exclusively by Layout.css.
+   The global sheet intentionally does NOT touch .logo-container
+   so it does not fight the header's grid centering rules.
+   Only the standalone animated-logo class is defined here. */
 
 .animated-logo {
     width: 100px;
