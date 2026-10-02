@@ -43,10 +43,21 @@ export default function Settings() {
     const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME || 'your-cloud-name';
     const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET || 'school_profile';
 
-    // The role of the currently signed-in user determines whether they
-    // may edit the role field.
-    const currentRole = userRole || userData?.role || userProfile?.role || 'user';
-    const canEditRole = ADMIN_ROLES.has(currentRole);
+    // ------------------------------------------------------------------
+    // ROLE EDITING
+    // ------------------------------------------------------------------
+    // 🔓 TEST MODE — REMOVE THE NEXT TWO LINES BEFORE PRODUCTION LAUNCH.
+    // Currently allows any signed-in user to change their own role so the
+    // team can walk through every role's experience (admin / teacher / user)
+    // without needing a Firestore console.
+    const TEST_MODE_ALLOW_ROLE_EDIT = true;
+    const canEditRole = TEST_MODE_ALLOW_ROLE_EDIT || ADMIN_ROLES.has(userRole || userData?.role || userProfile?.role || 'user');
+    // 🔓 END TEST MODE
+    //
+    // Production version — delete the line above and use this instead:
+    // const currentRole = userRole || userData?.role || userProfile?.role || 'user';
+    // const canEditRole = ADMIN_ROLES.has(currentRole);
+    // ------------------------------------------------------------------
 
     // Form states
     const [profileForm, setProfileForm] = useState({
@@ -248,6 +259,18 @@ export default function Settings() {
                                 role: updates.role,
                                 updatedAt: new Date().toISOString()
                             });
+                        } else {
+                            // Create the doc if it doesn't exist yet (useful in test mode
+                            // so a role change on a brand-new account persists).
+                            const { setDoc } = await import('firebase/firestore');
+                            await setDoc(roleRef, {
+                                uid: currentUser.uid,
+                                email: currentUser.email,
+                                role: updates.role,
+                                schoolId: userData?.schoolId || '',
+                                createdAt: new Date().toISOString(),
+                                updatedAt: new Date().toISOString()
+                            }, { merge: true });
                         }
                     } catch (roleErr) {
                         console.warn('Could not mirror role to user_roles:', roleErr.message);
@@ -439,6 +462,8 @@ export default function Settings() {
                 .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; padding-top: 20px; border-top: 1px solid var(--border); }
                 .cached-indicator { background: #d1ecf1; color: #0c5460; padding: 8px 16px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; font-size: 13px; border: 1px solid #bee5eb; }
                 .role-locked-hint { font-size: 12px; color: var(--gray); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+                .test-mode-banner { background: #fff3cd; color: #856404; padding: 10px 14px; border-radius: 8px; font-size: 12px; margin-bottom: 10px; display: flex; align-items: flex-start; gap: 8px; border: 1px solid #ffeeba; line-height: 1.5; }
+                .test-mode-banner i { color: #d39e00; font-size: 14px; margin-top: 1px; flex-shrink: 0; }
                 @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
                 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
                 @keyframes spin { to { transform: rotate(360deg); } }
@@ -572,6 +597,19 @@ export default function Settings() {
                                 <div className="form-row">
                                     <div className="form-group">
                                         <label>Role {canEditRole && <span className="required">*</span>}</label>
+
+                                        {TEST_MODE_ALLOW_ROLE_EDIT && (
+                                            <div className="test-mode-banner">
+                                                <i className="fas fa-flask"></i>
+                                                <span>
+                                                    <strong>Test mode active.</strong> Role editing is unlocked
+                                                    for all signed-in users so the team can preview each role&rsquo;s
+                                                    experience. Remove the <code>TEST_MODE_ALLOW_ROLE_EDIT</code>
+                                                    flag in <code>Settings.jsx</code> before going live.
+                                                </span>
+                                            </div>
+                                        )}
+
                                         <select
                                             id="role"
                                             value={profileForm.role}
@@ -582,10 +620,11 @@ export default function Settings() {
                                                 <option key={r.value} value={r.value}>{r.label}</option>
                                             ))}
                                         </select>
+
                                         {canEditRole ? (
                                             <div className="role-locked-hint">
                                                 <i className="fas fa-shield-alt" style={{ color: 'var(--success)' }}></i>
-                                                You can change roles. Changes take effect on the next sign-in.
+                                                Changes take effect on the next request (token refresh runs automatically).
                                             </div>
                                         ) : (
                                             <div className="role-locked-hint">
@@ -664,50 +703,4 @@ export default function Settings() {
                                     />
                                     <button className="btn btn-danger" onClick={handleDeleteAccount} disabled={!isOnline || saving}>
                                         <i className="fas fa-trash"></i> Delete Account
-                                    </button>
-                                </div>
-                                {!isOnline && (
-                                    <div style={{ fontSize: '12px', color: 'var(--warning)', marginTop: '10px' }}>
-                                        <i className="fas fa-info-circle"></i> You need to be online to delete your account.
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {/* Change Password Modal */}
-            <div className={`modal-overlay ${showPasswordModal ? 'active' : ''}`}>
-                <div className="modal">
-                    <div className="modal-header">
-                        <h2>Change Password</h2>
-                        <button className="modal-close" onClick={() => setShowPasswordModal(false)}>
-                            <i className="fas fa-times"></i>
-                        </button>
-                    </div>
-                    <form onSubmit={handleChangePassword}>
-                        <div className="form-group">
-                            <label>Current Password <span className="required">*</span></label>
-                            <input type="password" id="currentPassword" value={passwordForm.currentPassword} onChange={handlePasswordChange} required />
-                        </div>
-                        <div className="form-group">
-                            <label>New Password <span className="required">*</span></label>
-                            <input type="password" id="newPassword" value={passwordForm.newPassword} onChange={handlePasswordChange} required placeholder="Minimum 6 characters" />
-                        </div>
-                        <div className="form-group">
-                            <label>Confirm New Password <span className="required">*</span></label>
-                            <input type="password" id="confirmPassword" value={passwordForm.confirmPassword} onChange={handlePasswordChange} required />
-                        </div>
-                        <div className="modal-footer">
-                            <button type="button" className="btn btn-outline" onClick={() => setShowPasswordModal(false)}>Cancel</button>
-                            <button type="submit" className="btn btn-primary" disabled={saving}>
-                                {saving ? 'Updating...' : 'Update Password'}
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-        </Layout>
-    );
-}
+                                    </button
