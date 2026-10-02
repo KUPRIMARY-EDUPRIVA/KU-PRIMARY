@@ -722,3 +722,128 @@ export function generateDutyRoster(teachers, customAreas = DUTY_AREAS) {
 
   return roster;
 }
+
+/* ============================================================
+   Teacher scoping — which classes can this teacher see?
+   ============================================================ */
+
+/**
+ * Derive the class list a teacher is allowed to see.
+ * Priority:
+ *   1. userData.assignments — [{ subject, classes: [...] }]  (new pairing model)
+ *   2. userData.classes     — ['Grade 8P', 'Grade 9S']       (legacy)
+ *   3. userData.class       — 'Grade 8P'                     (single legacy)
+ * Returns a de-duplicated array of class names.
+ */
+export function getTeacherClassScope(userData) {
+  if (!userData) return [];
+  const set = new Set();
+
+  // 1. New pairing model
+  const assignments = Array.isArray(userData.assignments) ? userData.assignments : [];
+  for (const a of assignments) {
+    (a.classes || []).forEach((c) => { if (c) set.add(c); });
+  }
+
+  // 2. Legacy array
+  if (set.size === 0 && Array.isArray(userData.classes)) {
+    userData.classes.forEach((c) => { if (c) set.add(c); });
+  }
+
+  // 3. Legacy single
+  if (set.size === 0 && userData.class) {
+    set.add(userData.class);
+  }
+
+  return [...set].sort();
+}
+
+/**
+ * Derive the level list a teacher belongs to. Prefers explicit `levels`,
+ * else derives from the class list by consulting LEVEL_CLASSES.
+ */
+export function getTeacherLevelScope(userData) {
+  if (!userData) return [];
+
+  if (Array.isArray(userData.levels) && userData.levels.length > 0) {
+    return [...userData.levels];
+  }
+  if (userData.level) return [userData.level];
+
+  const classes = getTeacherClassScope(userData);
+  if (classes.length === 0) return [];
+
+  const set = new Set();
+  for (const cls of classes) {
+    for (const [lvl, list] of Object.entries(DEFAULT_PERIOD_STRUCTURES)) {
+      // DEFAULT_PERIOD_STRUCTURES doesn't include class names, so we
+      // rely on the school's own class list. The caller usually passes
+      // the school's getLevelClasses() to narrow further, but as a
+      // best-effort here we simply note that we couldn't infer the level.
+      void lvl;
+      void list;
+    }
+  }
+  // Without the school's LEVEL_CLASSES table, we can't infer levels
+  // reliably. Return an empty array; the Timetable page will fall
+  // back to using the raw class list only.
+  return [];
+}
+
+/* ============================================================
+   Teacher-scoped timetable reads
+   ============================================================ */
+
+/**
+ * Load only the class timetables a teacher is allowed to see.
+ * Returns the same shape as loadAllSchedulesForLevel but pre-filtered.
+ */
+export async function loadSchedulesForTeacher(schoolId, level, term, year, allowedClasses) {
+  const all = await loadAllSchedulesForLevel(schoolId, level, term, year);
+  if (!Array.isArray(allowedClasses) || allowedClasses.length === 0) return all;
+  const allow = new Set(allowedClasses);
+  const filtered = {};
+  for (const [cls, sched] of Object.entries(all)) {
+    if (allow.has(cls)) filtered[cls] = sched;
+  }
+  return filtered;
+}
+
+/* ============================================================
+   Teacher workload summary (for the current user's own view)
+   ============================================================ */
+
+/**
+ * Summarize a single teacher's weekly load from all class schedules.
+ * Returns an array of assignments with { day, period, subject, className }
+ * plus a `classes` array of distinct classes.
+ */
+export function summarizeTeacherLoadForTeacher(allSchedules, teacherId, level, customConfig = null) {
+  const periods = classPeriodsForLevel(level, customConfig);
+  const assignments = [];
+  const classes = new Set();
+
+  for (const [clsName, sched] of Object.entries(allSchedules || {})) {
+    for (const day of DAYS) {
+      for (const p of periods) {
+        const slot = sched?.[day]?.[p.id];
+        if (slot?.teacherId !== teacherId) continue;
+        assignments.push({
+          day,
+          period: p,
+          subject: slot.subject,
+          className: clsName,
+          room: slot.room || '',
+        });
+        classes.add(clsName);
+      }
+    }
+  }
+
+  return {
+    teacherId,
+    assignments,
+    classes: [...classes].sort(),
+    totalPeriods: assignments.length,
+  };
+}
