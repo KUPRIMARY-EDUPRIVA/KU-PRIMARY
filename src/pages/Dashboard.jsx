@@ -1181,7 +1181,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-active"></span>
                                 <span>Active</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/students')}>View All →</button>
+                            <button className="stat-more" onClick={() => navigate('/students')}>View All</button>
                         </div>
                     </div>
 
@@ -1198,7 +1198,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-active"></span>
                                 <span>Active</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/teachers')}>Manage →</button>
+                            <button className="stat-more" onClick={() => navigate('/teachers')}>Manage</button>
                         </div>
                     </div>
 
@@ -1215,7 +1215,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-warning"></span>
                                 <span>Active</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/exams')}>Schedule →</button>
+                            <button className="stat-more" onClick={() => navigate('/exams')}>Schedule</button>
                         </div>
                     </div>
 
@@ -1232,7 +1232,7 @@ export default function Dashboard() {
                                 <i className="fas fa-arrow-up"></i>
                                 <span>Pending</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/exams')}>Review →</button>
+                            <button className="stat-more" onClick={() => navigate('/exams')}>Review</button>
                         </div>
                     </div>
 
@@ -1249,7 +1249,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-info"></span>
                                 <span>{stats.resultsPublished}</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/results')}>Publish →</button>
+                            <button className="stat-more" onClick={() => navigate('/results')}>Publish</button>
                         </div>
                     </div>
 
@@ -1267,7 +1267,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-warning"></span>
                                 <span>{stats.storageUsage}</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/school-profile')}>Manage →</button>
+                            <button className="stat-more" onClick={() => navigate('/school-profile')}>Manage</button>
                         </div>
                     </div>
 
@@ -1320,7 +1320,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-active"></span>
                                 <span>Assigned</span>
                             </div>
-                            <button className="stat-more" onClick={() => handleQuickAction('my-classes')}>View →</button>
+                            <button className="stat-more" onClick={() => handleQuickAction('my-classes')}>View</button>
                         </div>
                     </div>
 
@@ -1337,7 +1337,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-warning"></span>
                                 <span>Total</span>
                             </div>
-                            <button className="stat-more" onClick={() => handleQuickAction('view-exams')}>View →</button>
+                            <button className="stat-more" onClick={() => handleQuickAction('view-exams')}>View</button>
                         </div>
                     </div>
 
@@ -1354,7 +1354,7 @@ export default function Dashboard() {
                                 <i className="fas fa-arrow-up"></i>
                                 <span>To Grade</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/exams')}>Grade →</button>
+                            <button className="stat-more" onClick={() => navigate('/exams')}>Grade</button>
                         </div>
                     </div>
 
@@ -1371,7 +1371,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-info"></span>
                                 <span>Completed</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/results')}>Details →</button>
+                            <button className="stat-more" onClick={() => navigate('/results')}>Details</button>
                         </div>
                     </div>
 
@@ -1442,7 +1442,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-warning"></span>
                                 <span>Scheduled</span>
                             </div>
-                            <button className="stat-more" onClick={() => handleQuickAction('take-exam')}>View →</button>
+                            <button className="stat-more" onClick={() => handleQuickAction('take-exam')}>View</button>
                         </div>
                     </div>
 
@@ -1459,7 +1459,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-info"></span>
                                 <span>Published</span>
                             </div>
-                            <button className="stat-more" onClick={() => handleQuickAction('view-results')}>View →</button>
+                            <button className="stat-more" onClick={() => handleQuickAction('view-results')}>View</button>
                         </div>
                     </div>
 
@@ -1476,7 +1476,7 @@ export default function Dashboard() {
                                 <span className="status-dot status-active"></span>
                                 <span>Completed</span>
                             </div>
-                            <button className="stat-more" onClick={() => navigate('/scores')}>Details →</button>
+                            <button className="stat-more" onClick={() => navigate('/scores')}>Details</button>
                         </div>
                     </div>
 
