@@ -258,35 +258,37 @@ export default function Teachers() {
   };
 
   // ---------------------------------------------------------------
-  // Password generation
+  // Password — fixed default that admins share with teachers.
+  // Firebase's own verification email handles onboarding; we do NOT
+  // send a separate welcome email.
   // ---------------------------------------------------------------
-  const generateTempPassword = () => {
-    const length = 12;
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
-    let password = '';
-    // Ensure at least one of each category
-    const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-    const lower = 'abcdefghijkmnpqrstuvwxyz';
-    const digit = '23456789';
-    const special = '!@#$%';
-    password += upper.charAt(Math.floor(Math.random() * upper.length));
-    password += lower.charAt(Math.floor(Math.random() * lower.length));
-    password += digit.charAt(Math.floor(Math.random() * digit.length));
-    password += special.charAt(Math.floor(Math.random() * special.length));
-    for (let i = password.length; i < length; i++) {
-      password += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    // Shuffle
-    return password.split('').sort(() => Math.random() - 0.5).join('');
-  };
+  const DEFAULT_TEACHER_PASSWORD = '12345678';
 
   // ---------------------------------------------------------------
   // Account creation via Firebase Auth REST API
+  //
+  // Writes the teacher profile to BOTH:
+  //   - user_roles/{uid}  → role-based access
+  //   - users/{uid}       → AuthContext source of truth
+  //
+  // This is what makes Results.jsx and Students.jsx see the
+  // teacher's assignments, classes, subjects and level.
   // ---------------------------------------------------------------
-  const createTeacherAccountViaAPI = async (email, fullName, schoolId) => {
+  const createTeacherAccountViaAPI = async (
+    email,
+    fullName,
+    sid,
+    assignments = [],
+    classes = [],
+    subjects = [],
+    level = ''
+  ) => {
     try {
       const API_KEY = process.env.REACT_APP_FIREBASE_API_KEY;
-      const tempPassword = generateTempPassword();
+      const tempPassword = DEFAULT_TEACHER_PASSWORD;
+      const nameParts = String(fullName || '').trim().split(/\s+/);
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ') || '';
 
       const createResponse = await fetch(
         `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${API_KEY}`,
@@ -294,7 +296,7 @@ export default function Teachers() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            email: email,
+            email,
             password: tempPassword,
             displayName: fullName,
             returnSecureToken: false
@@ -307,89 +309,73 @@ export default function Teachers() {
       if (!createResponse.ok) {
         if (createData.error?.message === 'EMAIL_EXISTS') {
           const existingTeacher = await getDocs(
-            query(collection(db, 'teachers'), where('email', '==', email), where('schoolId', '==', schoolId))
+            query(collection(db, 'teachers'), where('email', '==', email), where('schoolId', '==', sid))
           );
 
           if (!existingTeacher.empty) {
             return {
               success: true,
               uid: existingTeacher.docs[0].data().uid || null,
-              email: email,
-              existing: true,
-              tempPassword: null
+              email,
+              existing: true
             };
           }
 
-          return {
-            success: true,
-            email: email,
-            existing: true,
-            uid: null,
-            tempPassword: null
-          };
+          return { success: true, email, existing: true, uid: null };
         }
 
         throw new Error(createData.error?.message || 'Failed to create account');
       }
 
       const uid = createData.localId;
+      const nowIso = new Date().toISOString();
 
+      // ---- user_roles/{uid} (role-based access) ----
       await setDoc(doc(db, 'user_roles', uid), {
-        uid: uid,
-        email: email,
+        uid,
+        email,
         role: 'teacher',
-        schoolId: schoolId,
-        createdAt: new Date().toISOString()
-      });
+        schoolId: sid,
+        level,
+        assignments,
+        assignedClasses: classes,
+        assignedSubjects: subjects,
+        createdAt: nowIso
+      }, { merge: true });
 
-      return {
-        success: true,
-        uid: uid,
-        email: email,
-        tempPassword
-      };
+      // ---- users/{uid} (AuthContext source of truth) ----
+      // Written here so Results.jsx / Students.jsx can read
+      // `userData.assignments`, `userData.classes`, etc.
+      await setDoc(doc(db, 'users', uid), {
+        uid,
+        email,
+        firstName,
+        lastName,
+        fullName: fullName || `${firstName} ${lastName}`.trim(),
+        role: 'teacher',
+        schoolId: sid,
+        // Authoritative shape other pages read:
+        assignments,
+        // Legacy fields other pages still fall back to:
+        classes,
+        subjects,
+        levels: level ? [level] : [],
+        level,
+        status: 'invited',
+        createdAt: nowIso
+      }, { merge: true });
+
+      return { success: true, uid, email, tempPassword };
     } catch (error) {
       console.error('Error creating teacher account via API:', error);
       if (error.message?.includes('EMAIL_EXISTS')) {
-        return { success: true, email, existing: true, tempPassword: null };
+        return { success: true, email, existing: true };
       }
       return {
         success: false,
         error: error.message || 'Unknown error occurred',
         code: error.code || 'unknown'
       };
-    }
-  };
-
-  // ---------------------------------------------------------------
-  // Send welcome email via Netlify function
-  // ---------------------------------------------------------------
-  const sendWelcomeEmail = async ({
-    teacherEmail, teacherName, tempPassword,
-    schoolName, schoolId, loginUrl, invitedByName
-  }) => {
-    try {
-      const res = await fetch('/api/send-teacher-welcome', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          teacherEmail,
-          teacherName,
-          tempPassword,
-          schoolName,
-          schoolId,
-          loginUrl: loginUrl || window.location.origin + '/login',
-          invitedByName
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      return {
-        success: res.ok && data.success,
-        error: data.error || (res.ok ? null : `HTTP ${res.status}`)
-      };
-    } catch (err) {
-      console.error('Welcome email send failed:', err);
-      return { success: false, error: err.message };
     }
   };
 
@@ -443,7 +429,7 @@ export default function Teachers() {
       console.error('Error resending invitation:', error);
 
       if (error.code === 'auth/user-not-found') {
-        if (window.confirm('The teacher account no longer exists. Would you like to recreate it and send a new invitation?')) {
+        if (window.confirm('The teacher account no longer exists. Would you like to recreate it?')) {
           await handleRecreateTeacher(teacher);
         }
       } else {
@@ -458,38 +444,28 @@ export default function Teachers() {
 
     try {
       const fullName = `${teacher.firstName || ''} ${teacher.lastName || ''}`.trim();
-      const result = await createTeacherAccountViaAPI(teacher.email, fullName, schoolId);
+      const assignments = reconstructAssignments(teacher);
+      const derived = deriveLegacyFields(assignments);
+
+      const result = await createTeacherAccountViaAPI(
+        teacher.email,
+        fullName,
+        schoolId,
+        assignments,
+        derived.classes,
+        derived.subjects,
+        teacher.level || ''
+      );
 
       if (!result.success) throw new Error(result.error);
-
-      if (result.tempPassword) {
-        const emailResult = await sendWelcomeEmail({
-          teacherEmail: teacher.email,
-          teacherName: fullName,
-          tempPassword: result.tempPassword,
-          schoolName: userData?.schoolName || 'Your School',
-          schoolId,
-          loginUrl: window.location.origin + '/login',
-          invitedByName: userData?.fullName || userData?.firstName || 'Administrator'
-        });
-
-        if (!emailResult.success) {
-          showNotification(
-            `Account recreated but welcome email failed: ${emailResult.error}. Temp password: ${result.tempPassword}`,
-            'warning'
-          );
-        } else {
-          showNotification(`Welcome email sent to ${teacher.email}`, 'success');
-        }
-      } else {
-        showNotification(`Invitation processed for ${teacher.email}`, 'success');
-      }
 
       await updateDoc(doc(db, 'teachers', teacher.id), {
         uid: result.uid,
         invitedAt: new Date().toISOString(),
         status: 'invited'
       });
+
+      showNotification(`Account recreated for ${teacher.email}`, 'success');
     } catch (error) {
       console.error('Error recreating teacher account:', error);
       showNotification('Failed to recreate teacher account: ' + error.message, 'error');
@@ -759,11 +735,19 @@ export default function Teachers() {
     try {
       if (isOnline) {
         await deleteDoc(doc(db, 'teachers', teacher.id));
+
         if (teacher.uid) {
+          // Clean up the mirrored records so AuthContext / other pages
+          // don't keep reading a ghost teacher.
           try {
             await deleteDoc(doc(db, 'user_roles', teacher.uid));
           } catch (roleError) {
             console.warn('Could not delete user_roles:', roleError);
+          }
+          try {
+            await deleteDoc(doc(db, 'users', teacher.uid));
+          } catch (userError) {
+            console.warn('Could not delete users doc:', userError);
           }
         }
         showNotification('Teacher deleted successfully', 'success');
@@ -826,13 +810,28 @@ export default function Teachers() {
           }
 
           await updateDoc(doc(db, 'teachers', editingTeacher.id), data);
+
           if (editingTeacher.uid) {
+            // Sync to user_roles (role-based access)
             await updateDoc(doc(db, 'user_roles', editingTeacher.uid), {
               assignments: data.assignments,
               assignedClasses: data.classes,
-              assignedSubjects: data.subjects
+              assignedSubjects: data.subjects,
+              level: data.level
             });
+
+            // Sync to users (AuthContext source of truth) so
+            // Results.jsx / Students.jsx pick up changes immediately.
+            await setDoc(doc(db, 'users', editingTeacher.uid), {
+              assignments: data.assignments,
+              classes: data.classes,
+              subjects: data.subjects,
+              levels: data.level ? [data.level] : [],
+              level: data.level,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
           }
+
           await AuditLogService.logAction(
             schoolId,
             { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
@@ -853,10 +852,20 @@ export default function Teachers() {
         }
       } else {
         setSpinnerVisible(true);
-        setSpinnerText('Creating teacher account and sending welcome email...');
+        setSpinnerText('Creating teacher account...');
 
         if (isOnline) {
-          const result = await createTeacherAccountViaAPI(email, fullName, schoolId);
+          // Pass assignments/classes/subjects/level into the account
+          // creation so all three collections are populated at once.
+          const result = await createTeacherAccountViaAPI(
+            email,
+            fullName,
+            schoolId,
+            data.assignments,
+            data.classes,
+            data.subjects,
+            data.level
+          );
           if (!result.success) throw new Error(result.error);
 
           data.uid = result.uid;
@@ -867,55 +876,18 @@ export default function Teachers() {
 
           const docRef = await addDoc(collection(db, 'teachers'), data);
 
-          // Mirror to user_roles so access checks work
-          if (data.uid) {
-            try {
-              await setDoc(doc(db, 'user_roles', data.uid), {
-                uid: data.uid,
-                email: data.email,
-                role: 'teacher',
-                schoolId,
-                assignments: data.assignments,
-                assignedClasses: data.classes,
-                assignedSubjects: data.subjects,
-                createdAt: new Date().toISOString()
-              }, { merge: true });
-            } catch (roleErr) {
-              console.warn('Could not mirror to user_roles:', roleErr);
-            }
-          }
-
-          // Send the welcome email
-          if (result.tempPassword) {
-            const emailResult = await sendWelcomeEmail({
-              teacherEmail: email,
-              teacherName: fullName,
-              tempPassword: result.tempPassword,
-              schoolName: userData?.schoolName || 'Your School',
-              schoolId,
-              loginUrl: window.location.origin + '/login',
-              invitedByName: userData?.fullName || userData?.firstName || 'Administrator'
-            });
-
-            if (!emailResult.success) {
-              showNotification(
-                `Teacher created but welcome email failed: ${emailResult.error}. ` +
-                `Temp password: ${result.tempPassword}`,
-                'warning'
-              );
-            } else {
-              showNotification(`Teacher added — welcome email sent to ${email}`, 'success');
-            }
-          } else if (result.existing) {
-            showNotification(`Existing account found for ${email} — no new email sent.`, 'info');
-          }
-
           await AuditLogService.logAction(
             schoolId,
             { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
             'TEACHER_CREATED',
             { entityId: docRef.id, email: data.email }
           );
+
+          if (result.existing) {
+            showNotification(`Existing account found for ${email}. Profile linked.`, 'info');
+          } else {
+            showNotification(`Teacher added. Default password: 12345678`, 'success');
+          }
         } else {
           // Offline: no account creation possible
           showNotification('Adding teachers requires an internet connection.', 'warning');
@@ -1213,7 +1185,7 @@ export default function Teachers() {
                 <div className="help-text">
                   {editingTeacher
                     ? 'Change the email only if necessary. The account email is not changed automatically.'
-                    : 'A welcome email with a temporary password will be sent to this address.'}
+                    : 'A Firebase verification email will be sent to this address. Initial password: 12345678'}
                 </div>
               </div>
 
@@ -1346,7 +1318,7 @@ export default function Teachers() {
                   Cancel
                 </button>
                 <button type="submit" className="btn btn-primary">
-                  {editingTeacher ? 'Update Teacher' : 'Save & Send Welcome Email'}
+                  {editingTeacher ? 'Update Teacher' : 'Save Teacher'}
                 </button>
               </div>
             </form>
