@@ -77,6 +77,47 @@ const Header = ({ toggleSideNav }) => {
         return colors[index];
     };
 
+    // Return a compact name for mobile display.
+    // Examples:
+    //   "KENYATTA PREPARATORY ACADEMY" -> "KENYATTA SCHOOL"
+    //   "St. Mary's Boys High School"  -> "St. Mary's SCHOOL"
+    //   "EduPriva"                      -> "EduPriva"
+    //   "Nairobi Primary"               -> "Nairobi SCHOOL"
+    const getShortSchoolName = (name) => {
+        if (!name) return 'EduPriva';
+        const trimmed = String(name).trim();
+        const parts = trimmed.split(/\s+/);
+        if (parts.length <= 1) return trimmed;
+
+        // Common suffix words we don't want to include in the short form
+        const skipWords = new Set([
+            'primary', 'secondary', 'preparatory', 'prep', 'academy',
+            'school', 'high', 'junior', 'senior', 'mixed', 'girls', 'boys',
+            'integrated', 'day', 'boarding',
+        ]);
+
+        // Walk back from the start to find the first meaningful word —
+        // this preserves multi-word proper names like "St. Mary's".
+        let startIdx = 0;
+        while (
+            startIdx < parts.length - 1 &&
+            skipWords.has(parts[startIdx].toLowerCase())
+        ) {
+            startIdx++;
+        }
+
+        // Grab from startIdx up to (but excluding) the first suffix word
+        const taken = [];
+        for (let i = startIdx; i < parts.length; i++) {
+            if (skipWords.has(parts[i].toLowerCase())) break;
+            taken.push(parts[i]);
+        }
+
+        // If we took nothing (e.g. name was all suffix words), fall back to the first word
+        const base = taken.length > 0 ? taken.join(' ') : parts[0];
+        return `${base} SCHOOL`;
+    };
+
     // Check if user is super admin
     const isSuperAdmin = userRole === 'super-admin';
 
@@ -109,6 +150,7 @@ const Header = ({ toggleSideNav }) => {
                     />
                 )}
                 <div className="school-name-header">{schoolName}</div>
+                <div className="school-name-short">{getShortSchoolName(schoolName)}</div>
             </div>
             
             {/* Right - User Profile & Role */}
