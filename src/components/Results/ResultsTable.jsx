@@ -1,11 +1,13 @@
 // src/components/Results/ResultsTable.jsx
 import React, { useMemo } from 'react';
 import { getCBCGrade } from '../../utils/constants';
+import ScoreEntryCell from './ScoreEntryCell';
 
 export default function ResultsTable({
     students, pendingInputs, setPendingInputs, isReadOnly,
     currentPage, setCurrentPage, pageSize,
-    onSaveAll, saving, onPublish, onViewScores, onGenerateReport, onDownloadPDF
+    onSaveAll, saving, onPublish, onViewScores, onGenerateReport, onDownloadPDF,
+    paperConfig = []   // NEW
 }) {
     const sorted = useMemo(
         () => [...students].sort((a, b) => (b.average || 0) - (a.average || 0)),
@@ -60,20 +62,17 @@ export default function ResultsTable({
                                     <td style={{ padding: '10px 15px' }}>{s.firstName} {s.lastName}</td>
                                     <td style={{ padding: '10px 15px' }}>{s.admissionNumber || s.studentId || 'N/A'}</td>
                                     <td style={{ padding: '10px 15px' }}>
-                                        <input
-                                            type="number"
-                                            min="0" max="100"
-                                            value={pendingInputs[s.id] ?? ''}
-                                            readOnly={isReadOnly}
-                                            onChange={(e) => setPendingInputs(prev => ({ ...prev, [s.id]: e.target.value }))}
-                                            placeholder="Score"
-                                            style={{
-                                                width: 70, padding: '5px 8px', textAlign: 'center',
-                                                border: `2px solid ${pending ? 'var(--warning)' : 'var(--border)'}`,
-                                                borderRadius: 6
-                                            }}
+                                        <ScoreEntryCell
+                                            studentId={s.id}
+                                            papers={paperConfig}
+                                            value={pending ? pendingInputs[s.id] : undefined}
+                                            currentRecord={s.currentRecord}
+                                            isReadOnly={isReadOnly}
+                                            onChange={(v) => setPendingInputs(prev => ({ ...prev, [s.id]: v }))}
                                         />
-                                        <div style={{ fontSize: 10, color: 'var(--gray)' }}>Avg: {s.average ?? 'N/A'}%</div>
+                                        <div style={{ fontSize: 10, color: 'var(--gray)' }}>
+                                            Avg: {s.average ?? 'N/A'}%
+                                        </div>
                                     </td>
                                     <td style={{ padding: '10px 15px' }}>{grade.code}</td>
                                     <td style={{ padding: '10px 15px' }}>{grade.points.toFixed(1)}</td>
