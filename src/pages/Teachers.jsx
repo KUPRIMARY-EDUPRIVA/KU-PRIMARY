@@ -15,6 +15,31 @@ import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { LEVEL_SUBJECTS, LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/constants';
 
+// ---------------------------------------------------------------------------
+// Helper: given a class name, work out its level from LEVEL_CLASSES.
+// Used when reconstructing assignments from legacy teacher docs that
+// stored classes and subjects flat, without a level per pairing.
+// ---------------------------------------------------------------------------
+function inferLevelFromClass(className) {
+  if (!className) return '';
+  const target = String(className).trim().toLowerCase();
+  for (const [lvl, list] of Object.entries(LEVEL_CLASSES)) {
+    if (list.some((c) => String(c).trim().toLowerCase() === target)) {
+      return lvl;
+    }
+  }
+  return '';
+}
+
+// The "primary" level for legacy consumers = first level used.
+function deriveLevelsFromAssignments(assignments) {
+  const set = new Set();
+  (assignments || []).forEach((a) => {
+    if (a.level) set.add(a.level);
+  });
+  return [...set];
+}
+
 export default function Teachers() {
   const navigate = useNavigate();
   const { currentUser, userData, userRole } = useAuth();
@@ -46,15 +71,13 @@ export default function Teachers() {
   const [showTeacherModal, setShowTeacherModal] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState(null);
 
-  // Form state — `assignments` is the authoritative pairing; subjects/classes
-  // are kept in sync for backward compatibility with older pages.
+  // Form state — `assignments` is the authoritative pairing.
+  // Each entry now carries its own `level`:
+  //   { level, subject, classes: [...] }
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
     email: '',
-    level: '',
-    subjects: [],
-    classes: [],
     assignments: [],
     status: 'active',
     phone: '',
@@ -62,7 +85,8 @@ export default function Teachers() {
     address: ''
   });
 
-  // Add-assignment sub-form state
+  // Add-assignment sub-form state — the level now lives here.
+  const [newAssignmentLevel, setNewAssignmentLevel] = useState('');
   const [newAssignmentSubject, setNewAssignmentSubject] = useState('');
   const [newAssignmentClasses, setNewAssignmentClasses] = useState([]);
 
@@ -172,34 +196,53 @@ export default function Teachers() {
     return [];
   };
 
-  // Derive `subjects` and `classes` from the `assignments` array.
+  // Derive the legacy flat fields from `assignments`.
+  // Now also derives a `levels` array so old consumers of
+  // `userData.levels` keep working.
   const deriveLegacyFields = (assignments) => {
     const subjectSet = new Set();
     const classSet = new Set();
-    assignments.forEach(a => {
+    const levelSet = new Set();
+    (assignments || []).forEach(a => {
       if (a.subject) subjectSet.add(a.subject);
+      if (a.level) levelSet.add(a.level);
       (a.classes || []).forEach(c => classSet.add(c));
     });
     return {
       subjects: [...subjectSet],
-      classes: [...classSet]
+      classes: [...classSet],
+      levels: [...levelSet]
     };
   };
 
   // Reconstruct `assignments` from a legacy teacher doc.
+  // Guarantees every entry has a `level`, either from the saved record
+  // or inferred from the class name.
   const reconstructAssignments = (teacher) => {
     if (Array.isArray(teacher.assignments) && teacher.assignments.length > 0) {
-      return teacher.assignments.map(a => ({
-        subject: a.subject,
-        classes: Array.isArray(a.classes) ? [...a.classes] : []
-      }));
+      return teacher.assignments.map(a => {
+        const classes = Array.isArray(a.classes) ? [...a.classes] : [];
+        let level = a.level || '';
+        if (!level && classes.length > 0) {
+          level = inferLevelFromClass(classes[0]);
+        }
+        return {
+          level,
+          subject: a.subject,
+          classes
+        };
+      });
     }
     // Legacy: no pairings saved. Duplicate every class across every subject
-    // so the admin can then trim from the UI.
+    // so the admin can then trim from the UI. Level inferred per class.
     const subs = teacherSubjects(teacher);
     const clss = teacherClasses(teacher);
     if (subs.length && clss.length) {
-      return subs.map(s => ({ subject: s, classes: [...clss] }));
+      return subs.map(s => ({
+        level: inferLevelFromClass(clss[0]) || '',
+        subject: s,
+        classes: [...clss]
+      }));
     }
     return [];
   };
@@ -259,8 +302,6 @@ export default function Teachers() {
 
   // ---------------------------------------------------------------
   // Password — fixed default that admins share with teachers.
-  // Firebase's own verification email handles onboarding; we do NOT
-  // send a separate welcome email.
   // ---------------------------------------------------------------
   const DEFAULT_TEACHER_PASSWORD = '12345678';
 
@@ -270,9 +311,6 @@ export default function Teachers() {
   // Writes the teacher profile to BOTH:
   //   - user_roles/{uid}  → role-based access
   //   - users/{uid}       → AuthContext source of truth
-  //
-  // This is what makes Results.jsx and Students.jsx see the
-  // teacher's assignments, classes, subjects and level.
   // ---------------------------------------------------------------
   const createTeacherAccountViaAPI = async (
     email,
@@ -281,7 +319,7 @@ export default function Teachers() {
     assignments = [],
     classes = [],
     subjects = [],
-    level = ''
+    levels = []
   ) => {
     try {
       const API_KEY = process.env.REACT_APP_FIREBASE_API_KEY;
@@ -329,6 +367,7 @@ export default function Teachers() {
 
       const uid = createData.localId;
       const nowIso = new Date().toISOString();
+      const primaryLevel = levels[0] || '';
 
       // ---- user_roles/{uid} (role-based access) ----
       await setDoc(doc(db, 'user_roles', uid), {
@@ -336,7 +375,8 @@ export default function Teachers() {
         email,
         role: 'teacher',
         schoolId: sid,
-        level,
+        level: primaryLevel,
+        levels,
         assignments,
         assignedClasses: classes,
         assignedSubjects: subjects,
@@ -344,8 +384,6 @@ export default function Teachers() {
       }, { merge: true });
 
       // ---- users/{uid} (AuthContext source of truth) ----
-      // Written here so Results.jsx / Students.jsx can read
-      // `userData.assignments`, `userData.classes`, etc.
       await setDoc(doc(db, 'users', uid), {
         uid,
         email,
@@ -359,8 +397,8 @@ export default function Teachers() {
         // Legacy fields other pages still fall back to:
         classes,
         subjects,
-        levels: level ? [level] : [],
-        level,
+        levels,
+        level: primaryLevel,
         status: 'invited',
         createdAt: nowIso
       }, { merge: true });
@@ -454,7 +492,7 @@ export default function Teachers() {
         assignments,
         derived.classes,
         derived.subjects,
-        teacher.level || ''
+        derived.levels
       );
 
       if (!result.success) throw new Error(result.error);
@@ -476,11 +514,18 @@ export default function Teachers() {
 
   // ---------------------------------------------------------------
   // Assignment sub-form handlers
-  // ---------------------------------------------------------------
+  //
+  // Each added assignment carries its own level.
+  // ------------------------------------------------------------------
   const handleAddAssignment = () => {
+    const level = newAssignmentLevel;
     const subject = newAssignmentSubject.trim();
     const classes = [...newAssignmentClasses].filter(Boolean);
 
+    if (!level) {
+      showNotification('Please select a level for this assignment.', 'warning');
+      return;
+    }
     if (!subject) {
       showNotification('Please select a subject.', 'warning');
       return;
@@ -491,7 +536,10 @@ export default function Teachers() {
     }
 
     setFormData(prev => {
-      const existingIdx = prev.assignments.findIndex(a => a.subject === subject);
+      // Same (level, subject) pair already exists? Merge the classes.
+      const existingIdx = prev.assignments.findIndex(
+        a => a.level === level && a.subject === subject
+      );
       let next;
       if (existingIdx >= 0) {
         const merged = new Set([
@@ -499,22 +547,24 @@ export default function Teachers() {
           ...classes
         ]);
         next = prev.assignments.slice();
-        next[existingIdx] = { subject, classes: [...merged] };
+        next[existingIdx] = { level, subject, classes: [...merged] };
       } else {
-        next = [...prev.assignments, { subject, classes }];
+        next = [...prev.assignments, { level, subject, classes }];
       }
       const derived = deriveLegacyFields(next);
       return { ...prev, assignments: next, ...derived };
     });
 
+    // Reset only subject/classes; keep the level selected so the admin
+    // can quickly add several subjects for the same level.
     setNewAssignmentSubject('');
     setNewAssignmentClasses([]);
   };
 
-  const handleRemoveClassFromAssignment = (subject, cls) => {
+  const handleRemoveClassFromAssignment = (level, subject, cls) => {
     setFormData(prev => {
       const next = prev.assignments
-        .map(a => a.subject === subject
+        .map(a => (a.level === level && a.subject === subject)
           ? { ...a, classes: a.classes.filter(c => c !== cls) }
           : a)
         .filter(a => a.classes.length > 0);
@@ -523,9 +573,11 @@ export default function Teachers() {
     });
   };
 
-  const handleRemoveAssignment = (subject) => {
+  const handleRemoveAssignment = (level, subject) => {
     setFormData(prev => {
-      const next = prev.assignments.filter(a => a.subject !== subject);
+      const next = prev.assignments.filter(
+        a => !(a.level === level && a.subject === subject)
+      );
       const derived = deriveLegacyFields(next);
       return { ...prev, assignments: next, ...derived };
     });
@@ -579,7 +631,18 @@ export default function Teachers() {
             {assignments.length > 0 ? (
               <div className="assignments-list">
                 {assignments.map(a => (
-                  <div key={a.subject} className="assignment-line">
+                  <div
+                    key={`${a.level || 'na'}-${a.subject}`}
+                    className="assignment-line"
+                  >
+                    {a.level && (
+                      <>
+                        <span className="level-tag">
+                          {LEVEL_DISPLAY_NAMES[a.level] || a.level}
+                        </span>
+                        <span className="assign-sep">/</span>
+                      </>
+                    )}
                     <span className="subject-tag">{a.subject}</span>
                     <span className="assign-arrow">→</span>
                     <span className="classes-inline">
@@ -694,10 +757,11 @@ export default function Teachers() {
   const handleAddTeacher = () => {
     setEditingTeacher(null);
     setFormData({
-      firstName: '', lastName: '', email: '', level: '',
-      subjects: [], classes: [], assignments: [],
+      firstName: '', lastName: '', email: '',
+      assignments: [],
       status: 'active', phone: '', qualification: '', address: ''
     });
+    setNewAssignmentLevel('');
     setNewAssignmentSubject('');
     setNewAssignmentClasses([]);
     setShowTeacherModal(true);
@@ -705,22 +769,19 @@ export default function Teachers() {
 
   const handleEditTeacher = (teacher) => {
     const assignments = reconstructAssignments(teacher);
-    const legacy = deriveLegacyFields(assignments);
 
     setEditingTeacher(teacher);
     setFormData({
       firstName: teacher.firstName || '',
       lastName: teacher.lastName || '',
       email: teacher.email || '',
-      level: teacher.level || '',
-      subjects: legacy.subjects,
-      classes: legacy.classes,
       assignments,
       status: teacher.status || 'active',
       phone: teacher.phone || '',
       qualification: teacher.qualification || '',
       address: teacher.address || ''
     });
+    setNewAssignmentLevel('');
     setNewAssignmentSubject('');
     setNewAssignmentClasses([]);
     setShowTeacherModal(true);
@@ -737,8 +798,6 @@ export default function Teachers() {
         await deleteDoc(doc(db, 'teachers', teacher.id));
 
         if (teacher.uid) {
-          // Clean up the mirrored records so AuthContext / other pages
-          // don't keep reading a ghost teacher.
           try {
             await deleteDoc(doc(db, 'user_roles', teacher.uid));
           } catch (roleError) {
@@ -775,17 +834,20 @@ export default function Teachers() {
     const fullName = `${formData.firstName.trim()} ${formData.lastName.trim()}`;
 
     if (formData.assignments.length === 0) {
-      showNotification('Please add at least one subject-class assignment.', 'warning');
+      showNotification('Please add at least one level/subject/class assignment.', 'warning');
       return;
     }
 
     const derived = deriveLegacyFields(formData.assignments);
+    const primaryLevel = derived.levels[0] || '';
 
     const data = {
       firstName: formData.firstName.trim(),
       lastName: formData.lastName.trim(),
       email,
-      level: formData.level,
+      // `level` is kept for legacy consumers; it's the first level used.
+      level: primaryLevel,
+      levels: derived.levels,
       assignments: formData.assignments,
       subjects: derived.subjects,
       classes: derived.classes,
@@ -812,22 +874,20 @@ export default function Teachers() {
           await updateDoc(doc(db, 'teachers', editingTeacher.id), data);
 
           if (editingTeacher.uid) {
-            // Sync to user_roles (role-based access)
             await updateDoc(doc(db, 'user_roles', editingTeacher.uid), {
               assignments: data.assignments,
               assignedClasses: data.classes,
               assignedSubjects: data.subjects,
-              level: data.level
+              level: primaryLevel,
+              levels: derived.levels
             });
 
-            // Sync to users (AuthContext source of truth) so
-            // Results.jsx / Students.jsx pick up changes immediately.
             await setDoc(doc(db, 'users', editingTeacher.uid), {
               assignments: data.assignments,
               classes: data.classes,
               subjects: data.subjects,
-              levels: data.level ? [data.level] : [],
-              level: data.level,
+              levels: derived.levels,
+              level: primaryLevel,
               updatedAt: new Date().toISOString()
             }, { merge: true });
           }
@@ -855,8 +915,6 @@ export default function Teachers() {
         setSpinnerText('Creating teacher account...');
 
         if (isOnline) {
-          // Pass assignments/classes/subjects/level into the account
-          // creation so all three collections are populated at once.
           const result = await createTeacherAccountViaAPI(
             email,
             fullName,
@@ -864,7 +922,7 @@ export default function Teachers() {
             data.assignments,
             data.classes,
             data.subjects,
-            data.level
+            derived.levels
           );
           if (!result.success) throw new Error(result.error);
 
@@ -889,7 +947,6 @@ export default function Teachers() {
             showNotification(`Teacher added. Default password: 12345678`, 'success');
           }
         } else {
-          // Offline: no account creation possible
           showNotification('Adding teachers requires an internet connection.', 'warning');
           return;
         }
@@ -897,10 +954,11 @@ export default function Teachers() {
 
       setShowTeacherModal(false);
       setFormData({
-        firstName: '', lastName: '', email: '', level: '',
-        subjects: [], classes: [], assignments: [],
+        firstName: '', lastName: '', email: '',
+        assignments: [],
         status: 'active', phone: '', qualification: '', address: ''
       });
+      setNewAssignmentLevel('');
       setNewAssignmentSubject('');
       setNewAssignmentClasses([]);
     } catch (error) {
@@ -913,17 +971,18 @@ export default function Teachers() {
 
   const handleExportCSV = () => {
     const data = filteredTeachers.length ? filteredTeachers : teachers;
-    const headers = ['ID', 'First Name', 'Last Name', 'Email', 'Level', 'Assignments', 'Status', 'Phone', 'Qualification', 'UID'];
+    const headers = ['ID', 'First Name', 'Last Name', 'Email', 'Levels', 'Assignments', 'Status', 'Phone', 'Qualification', 'UID'];
     const rows = data.map(t => {
       const assignmentsStr = (t.assignments || [])
-        .map(a => `${a.subject}: ${(a.classes || []).join('|')}`)
+        .map(a => `${a.level || ''}: ${a.subject}: ${(a.classes || []).join('|')}`)
         .join('; ');
+      const levelsStr = (t.levels || []).join('|');
       return [
         t.teacherId || '',
         t.firstName || '',
         t.lastName || '',
         t.email || '',
-        t.level || '',
+        levelsStr,
         assignmentsStr,
         t.status || '',
         t.phone || '',
@@ -1003,7 +1062,9 @@ export default function Teachers() {
         .assignments-list { display: flex; flex-direction: column; gap: 6px; }
         .assignment-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
         .assign-arrow { color: var(--gray); font-weight: 700; }
+        .assign-sep { color: var(--gray); font-weight: 700; }
         .classes-inline { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+        .level-tag { padding: 2px 10px; background: #eef2ff; border-radius: 12px; font-size: 11px; color: #3730a3; border: 1px solid #c7d2fe; white-space: nowrap; font-weight: 600; }
         .subject-tag { padding: 2px 10px; background: var(--light); border-radius: 12px; font-size: 12px; color: var(--secondary); border: 1px solid var(--border); white-space: nowrap; }
         .class-tag { padding: 2px 10px; background: #d1ecf1; border-radius: 12px; font-size: 12px; color: #0c5460; border: 1px solid #bee5eb; white-space: nowrap; }
         .status-badge { padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
@@ -1044,6 +1105,7 @@ export default function Teachers() {
         .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--primary); }
         .form-group select[multiple] { height: 120px; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .form-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
         .modal-footer { display: flex; gap: 10px; justify-content: flex-end; margin-top: 25px; padding-top: 20px; border-top: 1px solid var(--border); }
         .help-text { font-size: 12px; color: var(--gray); margin-top: 5px; }
         .spinner-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255, 255, 255, 0.8); z-index: 9999; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 20px; }
@@ -1054,7 +1116,7 @@ export default function Teachers() {
           .stats-grid { grid-template-columns: repeat(2, 1fr); }
           .filters-section { flex-direction: column; align-items: stretch; }
           .search-input, .filter-select { width: 100%; }
-          .form-row { grid-template-columns: 1fr; }
+          .form-row, .form-row-3 { grid-template-columns: 1fr; }
           .modal { padding: 20px; }
           .pagination { flex-direction: column; }
         }
@@ -1189,50 +1251,61 @@ export default function Teachers() {
                 </div>
               </div>
 
-              <div className="form-group">
-                <label>Level</label>
-                <select value={formData.level}
-                  onChange={(e) => setFormData({
-                    ...formData,
-                    level: e.target.value,
-                    subjects: [],
-                    classes: [],
-                    assignments: []
-                  })}>
-                  <option value="">Select Level</option>
-                  {Object.entries(LEVEL_DISPLAY_NAMES).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
-                  ))}
-                </select>
-                <div className="help-text">Changing level clears subject/class assignments below.</div>
-              </div>
-
-              {/* Assignments builder */}
+              {/* Assignments builder — level is now inside each assignment */}
               <div className="form-group">
                 <label>Teaching Assignments <span className="required">*</span></label>
                 <div className="help-text" style={{ marginBottom: 12 }}>
-                  Pair each subject with the specific classes the teacher handles it in.
-                  Example: Mathematics → Grade 8P, Grade 8Q. Kiswahili → Grade 9S.
+                  Pair each level, subject, and the classes the teacher handles.
+                  A teacher can be assigned to multiple levels (e.g. Grade 6 East for
+                  Mathematics and Grade 7 West for Mathematics).
                 </div>
 
                 {formData.assignments.length > 0 && (
                   <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
                     {formData.assignments.map(a => (
-                      <div key={a.subject} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderBottom: '1px solid var(--border)', background: 'white' }}>
-                        <div style={{ fontWeight: 600, minWidth: 130, color: 'var(--secondary)' }}>{a.subject}</div>
+                      <div
+                        key={`${a.level || 'na'}-${a.subject}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12,
+                          padding: '10px 14px',
+                          borderBottom: '1px solid var(--border)',
+                          background: 'white'
+                        }}
+                      >
+                        <div style={{ minWidth: 150, color: 'var(--secondary)', fontSize: 13 }}>
+                          {a.level ? (
+                            <span className="level-tag">
+                              {LEVEL_DISPLAY_NAMES[a.level] || a.level}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: 'var(--gray)' }}>(no level)</span>
+                          )}
+                        </div>
+                        <div style={{ fontWeight: 600, minWidth: 130, color: 'var(--secondary)' }}>
+                          {a.subject}
+                        </div>
                         <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                           {a.classes.map(c => (
                             <span key={c} className="selected-item" style={{ background: '#d1ecf1', color: '#0c5460' }}>
                               {c}
-                              <button type="button" className="remove-btn" style={{ color: '#0c5460' }}
-                                onClick={() => handleRemoveClassFromAssignment(a.subject, c)}
-                                title={`Remove ${c}`}>×</button>
+                              <button
+                                type="button"
+                                className="remove-btn"
+                                style={{ color: '#0c5460' }}
+                                onClick={() => handleRemoveClassFromAssignment(a.level, a.subject, c)}
+                                title={`Remove ${c}`}
+                              >×</button>
                             </span>
                           ))}
                         </div>
-                        <button type="button" onClick={() => handleRemoveAssignment(a.subject)}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAssignment(a.level, a.subject)}
                           style={{ background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: 14, padding: '4px 8px' }}
-                          title={`Remove all ${a.subject} assignments`}>
+                          title={`Remove all ${a.subject} assignments`}
+                        >
                           <i className="fas fa-trash"></i>
                         </button>
                       </div>
@@ -1244,39 +1317,78 @@ export default function Teachers() {
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--gray)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.4 }}>
                     Add Assignment
                   </div>
+
+                  {/* Row 1: Level + Subject */}
                   <div className="form-row" style={{ marginBottom: 12 }}>
                     <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label style={{ fontSize: 13 }}>Level</label>
+                      <select
+                        value={newAssignmentLevel}
+                        onChange={(e) => {
+                          setNewAssignmentLevel(e.target.value);
+                          // Reset downstream selections — subjects and
+                          // classes depend on the chosen level.
+                          setNewAssignmentSubject('');
+                          setNewAssignmentClasses([]);
+                        }}
+                      >
+                        <option value="">Select level…</option>
+                        {Object.entries(LEVEL_DISPLAY_NAMES).map(([k, v]) => (
+                          <option key={k} value={k}>{v}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
                       <label style={{ fontSize: 13 }}>Subject</label>
-                      <select value={newAssignmentSubject}
-                        onChange={(e) => setNewAssignmentSubject(e.target.value)}>
-                        <option value="">Select subject…</option>
-                        {getAvailableSubjects(formData.level).map(s => (
+                      <select
+                        value={newAssignmentSubject}
+                        onChange={(e) => setNewAssignmentSubject(e.target.value)}
+                        disabled={!newAssignmentLevel}
+                      >
+                        <option value="">
+                          {newAssignmentLevel ? 'Select subject…' : 'Select level first'}
+                        </option>
+                        {getAvailableSubjects(newAssignmentLevel).map(s => (
                           <option key={s} value={s}>{s}</option>
                         ))}
                       </select>
                     </div>
-                    <div className="form-group" style={{ marginBottom: 0 }}>
-                      <label style={{ fontSize: 13 }}>Classes</label>
-                      <select multiple value={newAssignmentClasses}
-                        onChange={(e) => {
-                          const opts = e.target.options;
-                          const selected = [];
-                          for (let i = 0; i < opts.length; i++) {
-                            if (opts[i].selected) selected.push(opts[i].value);
-                          }
-                          setNewAssignmentClasses(selected);
-                        }}
-                        style={{ height: 120 }}>
-                        {getAvailableClasses(formData.level).map(c => (
-                          <option key={c} value={c}>{c}</option>
-                        ))}
-                      </select>
-                      <div className="help-text">Hold Ctrl/Cmd to select multiple classes.</div>
+                  </div>
+
+                  {/* Row 2: Classes */}
+                  <div className="form-group" style={{ marginBottom: 12 }}>
+                    <label style={{ fontSize: 13 }}>Classes</label>
+                    <select
+                      multiple
+                      value={newAssignmentClasses}
+                      onChange={(e) => {
+                        const opts = e.target.options;
+                        const selected = [];
+                        for (let i = 0; i < opts.length; i++) {
+                          if (opts[i].selected) selected.push(opts[i].value);
+                        }
+                        setNewAssignmentClasses(selected);
+                      }}
+                      disabled={!newAssignmentLevel}
+                      style={{ height: 120 }}
+                    >
+                      {getAvailableClasses(newAssignmentLevel).map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                    <div className="help-text">
+                      Hold Ctrl/Cmd to select multiple classes.
+                      {!newAssignmentLevel && ' Select a level to see classes.'}
                     </div>
                   </div>
-                  <button type="button" className="btn btn-primary" onClick={handleAddAssignment}
-                    disabled={!newAssignmentSubject || newAssignmentClasses.length === 0}
-                    style={{ width: '100%', justifyContent: 'center' }}>
+
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleAddAssignment}
+                    disabled={!newAssignmentLevel || !newAssignmentSubject || newAssignmentClasses.length === 0}
+                    style={{ width: '100%', justifyContent: 'center' }}
+                  >
                     <i className="fas fa-plus"></i> Add Assignment
                   </button>
                 </div>
