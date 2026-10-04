@@ -43,6 +43,8 @@ export const LEVEL_SUBJECTS = {
     'CRE/IRE/HRE',
     'Art and Craft',
     'Music',
+    'Environmental',
+    'Creative Activities',
     'Physical Education'
   ],
   'upper-primary': [
@@ -53,8 +55,10 @@ export const LEVEL_SUBJECTS = {
     'Social Studies',
     'CRE/IRE/HRE',
     'Art and Craft',
+    'Agriculture',
     'Music',
     'Physical Education'
+    
   ],
   'junior-school': [
     'English',
