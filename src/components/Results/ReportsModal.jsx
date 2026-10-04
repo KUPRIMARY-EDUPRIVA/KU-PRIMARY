@@ -1,35 +1,36 @@
 // src/components/Results/ReportsModal.jsx
 import React from 'react';
-import { getCBCGrade } from '../../utils/constants';
+import { getCBCGrade, computeScorePercentage } from '../../utils/constants';
 
 export default function ReportModal({ student, scores, meta, onClose, onDownloadPDF }) {
     const subjects = meta.subjects || [];
 
-    // Group scores by subject
+    // Group scores by subject → assessment type
     const subjectMap = {};
     subjects.forEach(sub => {
-        subjectMap[sub] = { 'Assessment 1': '-', 'Assessment 2': '-', 'Assessment 3': '-' };
+        subjectMap[sub] = { 'Assessment 1': null, 'Assessment 2': null, 'Assessment 3': null };
     });
 
     scores.forEach(sc => {
         if (sc.subject && subjectMap[sc.subject]) {
             const asm = sc.assessmentType || 'Assessment 1';
-            subjectMap[sc.subject][asm] = sc.score;
+            subjectMap[sc.subject][asm] = sc; // keep the whole record for paper detail
         }
     });
 
-    let totalMarks = 0;
-    let count = 0;
+    let totalMarks = 0, count = 0;
     const computedSubjects = subjects.map(sub => {
-        const validScores = [subjectMap[sub]['Assessment 1'], subjectMap[sub]['Assessment 2'], subjectMap[sub]['Assessment 3']].filter(v => v !== '-' && !isNaN(v));
-        const avg = validScores.length ? Math.round(validScores.reduce((a, b) => a + Number(b), 0) / validScores.length) : null;
-        if (avg !== null) {
-            totalMarks += avg;
-            count++;
-        }
+        const recs = ['Assessment 1', 'Assessment 2', 'Assessment 3']
+            .map(a => subjectMap[sub][a])
+            .filter(Boolean);
+        const pcts = recs.map(r => computeScorePercentage(r)).filter(v => v != null);
+        const avg = pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null;
+        if (avg !== null) { totalMarks += avg; count++; }
         return {
             subject: sub,
-            ...subjectMap[sub],
+            a1: subjectMap[sub]['Assessment 1'],
+            a2: subjectMap[sub]['Assessment 2'],
+            a3: subjectMap[sub]['Assessment 3'],
             average: avg,
             grade: avg !== null ? getCBCGrade(avg) : { code: '-', label: 'Not Assessed' }
         };
@@ -37,6 +38,31 @@ export default function ReportModal({ student, scores, meta, onClose, onDownload
 
     const overallAvg = count ? Math.round(totalMarks / count) : 0;
     const overallGrade = getCBCGrade(overallAvg);
+
+    const renderScoreCell = (rec) => {
+        if (!rec) return '-';
+        const pct = computeScorePercentage(rec);
+        if (rec.papers && Object.keys(rec.papers).length > 0) {
+            return (
+                <div style={{ fontSize: 11, lineHeight: 1.4, textAlign: 'left' }}>
+                    {Object.entries(rec.papers).map(([name, p]) => (
+                        <div key={name}>
+                            <strong>{name}:</strong> {p.score ?? '—'}/{p.max ?? '—'}
+                        </div>
+                    ))}
+                    <div style={{ color: 'var(--primary)', fontWeight: 700, marginTop: 2 }}>
+                        = {pct}%
+                    </div>
+                </div>
+            );
+        }
+        return (
+            <div style={{ textAlign: 'center' }}>
+                <div>{rec.score}/{rec.maxScore || 100}</div>
+                <div style={{ fontSize: 11, color: 'var(--primary)', fontWeight: 700 }}>{pct}%</div>
+            </div>
+        );
+    };
 
     return (
         <div style={overlay}>
@@ -77,9 +103,9 @@ export default function ReportModal({ student, scores, meta, onClose, onDownload
                             {computedSubjects.map((item, idx) => (
                                 <tr key={idx} style={{ borderBottom: '1px solid var(--border)' }}>
                                     <td style={td}>{item.subject}</td>
-                                    <td style={{ ...td, textAlign: 'center' }}>{item['Assessment 1']}</td>
-                                    <td style={{ ...td, textAlign: 'center' }}>{item['Assessment 2']}</td>
-                                    <td style={{ ...td, textAlign: 'center' }}>{item['Assessment 3']}</td>
+                                    <td style={{ ...td, textAlign: 'center' }}>{renderScoreCell(item.a1)}</td>
+                                    <td style={{ ...td, textAlign: 'center' }}>{renderScoreCell(item.a2)}</td>
+                                    <td style={{ ...td, textAlign: 'center' }}>{renderScoreCell(item.a3)}</td>
                                     <td style={{ ...td, textAlign: 'center', fontWeight: 'bold' }}>{item.average !== null ? `${item.average}%` : '-'}</td>
                                     <td style={{ ...td, textAlign: 'center', fontWeight: 'bold', color: 'var(--primary)' }}>{item.grade.code}</td>
                                 </tr>
