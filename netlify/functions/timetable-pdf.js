@@ -11,24 +11,10 @@
 //     matching the layout of a normal period.
 //   - Duty roster keeps duty areas as rows and days as columns
 //
-// Request body:
-//   {
-//     type,
-//     school: { name, address, phone, email, motto, website, logoUrl },
-//     logoUrl,
-//     term, year,
-//
-//     periods:     [{ id, name, start, end, type: 'class'|'break', label? }],
-//     breaks:      [{ id, name, start, end, label }],
-//     dutyAreas:   [{ id, label, start, end, time? }],
-//     levelDisplay:{ 'lower-primary': 'Lower Primary', ... },
-//     levelLabel:  'Lower Primary',
-//
-//     className, schedule,                 // class
-//     teacher, assignments,                // teacher
-//     level, classes: [...], schedules: {},// master
-//     roster,                              // duty
-//   }
+// Footer safety:
+//   Every grid is height-clamped to [startY, footerTop]. Rows are sized
+//   so the last row lands exactly on footerTop, and the footer is drawn
+//   once at a fixed y that always sits inside the A4 printable area.
 
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
@@ -72,8 +58,13 @@ const MARGIN = 28;
 const HEADER_LOGO = 46;
 const FOOTER_H = 40;
 
+// Minimum row heights so we never collapse to zero even with 12+ periods.
+const MIN_DAY_ROW_H = 22;
+const MIN_CLASS_ROW_H = 22;
+const MIN_MASTER_ROW_H = 16;
+
 /* ============================================================
-   Defaults (used only when the client doesn't send overrides)
+   Defaults
    ============================================================ */
 
 const DEFAULT_PERIODS = [
@@ -201,7 +192,7 @@ function normalizePeriods(payload) {
 }
 
 /* ============================================================
-   Image fetch (per cold start cache)
+   Image fetch
    ============================================================ */
 
 const logoCache = new Map();
@@ -318,6 +309,10 @@ function drawLetterheadHeader(doc, {
   return blockBottom + 8;
 }
 
+/**
+ * Draw the footer at a fixed y — always inside the printable area.
+ * Callers must have already clamped the grid so it ends above footerTop.
+ */
 function drawFooter(doc, school) {
   const pageW = doc.page.width;
   const pageH = doc.page.height;
@@ -349,13 +344,26 @@ function drawFooter(doc, school) {
    ============================================================ */
 
 /**
- * Compute the column layout for a grid:
- *   - dayColW  : width of the left column (Days / Time)
- *   - periods  : array of { period, x, w } describing each period column
- *
- * Class periods share the remaining space equally. Break columns get a
- * fixed narrow width so the label can be centered inside the band.
+ * Compute the available height for a grid: from startY down to the top
+ * of the footer, minus a small gutter so text never touches the footer rule.
  */
+function gridAvailableHeight(doc, startY, gutter = 6) {
+  const footerTop = doc.page.height - FOOTER_H;
+  return Math.max(0, footerTop - startY - gutter);
+}
+
+/**
+ * Given a desired row height and the number of rows to draw, clamp the
+ * row height so all rows fit inside availableH. Returns the final rowH.
+ */
+function clampRowHeight(desiredH, rowCount, availableH, minH) {
+  if (rowCount <= 0) return minH;
+  const maxFit = availableH / rowCount;
+  // Never shrink below minH — if maxFit is smaller, the caller should
+  // handle overflow another way (e.g. reduce periods per page).
+  return Math.max(minH, Math.min(desiredH, maxFit));
+}
+
 function layoutColumns({ x, totalW, dayColW, periods, breakColW = 26 }) {
   const classCount = periods.filter((p) => p.type !== 'break').length;
   const breakCount = periods.length - classCount;
@@ -374,65 +382,44 @@ function layoutColumns({ x, totalW, dayColW, periods, breakColW = 26 }) {
   return columns;
 }
 
-/**
- * Draw the period header row:
- *   [ Day / Time ] [ P1 08:00-08:40 ] [ P2 … ] [ 09:20-09:50 ] [ P3 … ] …
- *
- * Break columns show only their time range in the header (same visual
- * weight as a class period's time). The label ("BREAK", "LUNCH BREAK")
- * is rendered later, inside the vertical tinted band that spans all
- * five weekday rows.
- *
- * Returns the y-coordinate immediately below the header.
- */
 function drawPeriodHeaderRow(doc, { x, y, w, dayColW, columns, headerH }) {
-  // Header row background
   doc.rect(x, y, w, headerH).fill(COLORS.navy);
 
-  // Corner cell
   doc.font(FONT_BOLD).fontSize(8).fillColor(COLORS.white)
     .text('Day / Time', x + 4, y + headerH / 2 - 5,
       { width: dayColW - 8, align: 'left' });
 
-  // Vertical separators between day column and first period
   doc.save();
   doc.moveTo(x + dayColW, y).lineTo(x + dayColW, y + headerH)
     .lineWidth(0.5).strokeColor('#2b3a72').stroke();
   doc.restore();
 
   for (const { period, x: cx, w: colW } of columns) {
-    // Right edge separator for every column
     doc.save();
     doc.moveTo(cx, y).lineTo(cx, y + headerH)
       .lineWidth(0.5).strokeColor('#2b3a72').stroke();
     doc.restore();
 
-    // For a break, darken the header cell slightly so it reads as a
-    // distinct vertical band even at the top.
     if (period.type === 'break') {
       doc.save();
       doc.rect(cx + 0.5, y + 0.5, colW - 1, headerH - 1)
         .fill('#1c2652').restore();
     }
 
-    // Period name line (top). For breaks we hide the name — the label
-    // is rendered later inside the body band.
     if (period.type !== 'break') {
       doc.font(FONT_BOLD).fontSize(6.5).fillColor(COLORS.white)
         .text(period.name || 'Period', cx + 2, y + 4,
           { width: colW - 4, align: 'center', ellipsis: true });
     }
 
-    // Time range line (bottom) — same treatment for class and break
     if (period.time) {
-      doc.font(FONT_REGULAR).fontSize(period.type === 'break' ? 5.5 : 5.5)
+      doc.font(FONT_REGULAR).fontSize(5.5)
         .fillColor(period.type === 'break' ? '#e6bf55' : '#c7d0ea')
         .text(period.time, cx + 2, y + 13,
           { width: colW - 4, align: 'center', ellipsis: true });
     }
   }
 
-  // Final right edge
   doc.save();
   doc.moveTo(x + w, y).lineTo(x + w, y + headerH)
     .lineWidth(0.5).strokeColor('#2b3a72').stroke();
@@ -441,15 +428,6 @@ function drawPeriodHeaderRow(doc, { x, y, w, dayColW, columns, headerH }) {
   return y + headerH;
 }
 
-/**
- * Draw the vertical tinted band that spans all weekday rows for each
- * break column, plus the rotated break label centered inside it.
- * Called AFTER the weekday rows have been laid out so the band can
- * cover the entire break area.
- *
- * rowsTop    = y of the first weekday row
- * rowsBottom = y just below the last weekday row
- */
 function drawBreakBands(doc, { columns, rowsTop, rowsBottom }) {
   const totalH = rowsBottom - rowsTop;
   if (totalH <= 0) return;
@@ -457,12 +435,10 @@ function drawBreakBands(doc, { columns, rowsTop, rowsBottom }) {
   for (const { period, x: cx, w: colW } of columns) {
     if (period.type !== 'break') continue;
 
-    // Tinted background — full-height vertical band
     doc.save();
     doc.rect(cx + 0.3, rowsTop + 0.3, colW - 0.6, totalH - 0.6)
       .fill(COLORS.breakBg).restore();
 
-    // Redraw the vertical separator lines so they sit above the fill
     doc.save();
     doc.moveTo(cx, rowsTop).lineTo(cx, rowsBottom)
       .lineWidth(0.5).strokeColor(COLORS.border).stroke();
@@ -470,10 +446,12 @@ function drawBreakBands(doc, { columns, rowsTop, rowsBottom }) {
       .lineWidth(0.5).strokeColor(COLORS.border).stroke();
     doc.restore();
 
-    // Rotated label, centered inside the band
     const label = (period.label || period.name || 'BREAK').toUpperCase();
     doc.save();
-    doc.font(FONT_BOLD).fontSize(7).fillColor(COLORS.breakFg);
+    // Font size scaled to available height so long labels stay legible
+    // without overflowing the band.
+    const fontSize = Math.max(5.5, Math.min(7, totalH / 22));
+    doc.font(FONT_BOLD).fontSize(fontSize).fillColor(COLORS.breakFg);
     const cxMid = cx + colW / 2;
     const cyMid = rowsTop + totalH / 2;
     doc.rotate(-90, { origin: [cxMid, cyMid] });
@@ -486,23 +464,16 @@ function drawBreakBands(doc, { columns, rowsTop, rowsBottom }) {
   }
 }
 
-/**
- * Draw one weekday row. Break columns are left empty here — they are
- * drawn later as a full-height band by drawBreakBands().
- */
 function drawDayRow(doc, {
   x, y, w, h, day, dayColW, columns, schedule,
 }) {
-  // Day cell (left)
   doc.rect(x, y, dayColW, h).fill(COLORS.light);
   doc.strokeColor(COLORS.border).lineWidth(0.5)
     .rect(x, y, dayColW, h).stroke();
   doc.font(FONT_BOLD).fontSize(8.5).fillColor(COLORS.slate)
     .text(day, x + 4, y + h / 2 - 6, { width: dayColW - 8, align: 'left' });
 
-  // Period cells
   for (const { period, x: cx, w: colW } of columns) {
-    // Skip breaks — the tinted band is drawn separately, above the rows
     if (period.type === 'break') continue;
 
     doc.rect(cx, y, colW, h).strokeColor(COLORS.border).lineWidth(0.5).stroke();
@@ -546,12 +517,20 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
   });
 
   const gridW = pageW - MARGIN * 2;
-  const footerTop = doc.page.height - FOOTER_H;
-  const availableH = footerTop - startY - 8;
-
-  const dayColW = 90;
   const headerH = 26;
-  const dayRowH = Math.max(30, (availableH - headerH) / DAYS.length);
+  const dayColW = 90;
+
+  // Compute the exact vertical space the grid can occupy.
+  const availableH = gridAvailableHeight(doc, startY, 6);
+  const gridBodyH = Math.max(0, availableH - headerH);
+
+  // Clamp the day-row height so all five rows land exactly above the footer.
+  const dayRowH = clampRowHeight(
+    Number.POSITIVE_INFINITY, // we want to fill the space
+    DAYS.length,
+    gridBodyH,
+    MIN_DAY_ROW_H
+  );
 
   const columns = layoutColumns({
     x: MARGIN, totalW: gridW, dayColW, periods, breakColW: 26,
@@ -570,7 +549,6 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
     y += dayRowH;
   }
 
-  // Now paint the break bands across all five day rows.
   drawBreakBands(doc, {
     columns,
     rowsTop: headerBottom,
@@ -594,12 +572,18 @@ function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, 
   });
 
   const gridW = pageW - MARGIN * 2;
-  const footerTop = doc.page.height - FOOTER_H;
-  const availableH = footerTop - startY - 8;
-
-  const dayColW = 90;
   const headerH = 26;
-  const dayRowH = Math.max(30, (availableH - headerH) / DAYS.length);
+  const dayColW = 90;
+
+  const availableH = gridAvailableHeight(doc, startY, 6);
+  const gridBodyH = Math.max(0, availableH - headerH);
+
+  const dayRowH = clampRowHeight(
+    Number.POSITIVE_INFINITY,
+    DAYS.length,
+    gridBodyH,
+    MIN_DAY_ROW_H
+  );
 
   const columns = layoutColumns({
     x: MARGIN, totalW: gridW, dayColW, periods, breakColW: 26,
@@ -611,7 +595,6 @@ function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, 
   let y = headerBottom;
 
   for (const day of DAYS) {
-    // Day label cell
     doc.rect(MARGIN, y, dayColW, dayRowH).fill(COLORS.light);
     doc.strokeColor(COLORS.border).lineWidth(0.5)
       .rect(MARGIN, y, dayColW, dayRowH).stroke();
@@ -672,6 +655,9 @@ function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules,
   const headerH = 22;
   const dayRowH = 22;
 
+  // Block height = strip + header + 5 day rows + gutter
+  const blockH = 14 + headerH + dayRowH * DAYS.length + 8;
+
   const ensureSpace = (needed) => {
     if (y + needed > footerTop) {
       doc.addPage();
@@ -686,9 +672,18 @@ function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules,
   for (const cls of classes) {
     const schedule = schedules[cls] || {};
 
-    const stripH = 14;
-    ensureSpace(stripH + headerH + dayRowH * DAYS.length + 12);
+    // If a whole block can't fit on the current page, start a new page.
+    if (y + blockH > footerTop && y > MARGIN + HEADER_LOGO + 40) {
+      doc.addPage();
+      y = drawLetterheadHeader(doc, {
+        x: MARGIN, y: MARGIN, w: gridW,
+        school, logoImg,
+        title, subtitle,
+      });
+    }
 
+    // Class name strip
+    const stripH = 14;
     doc.rect(MARGIN, y, gridW, stripH).fill(COLORS.navy);
     doc.font(FONT_BOLD).fontSize(8).fillColor(COLORS.white)
       .text(String(cls).toUpperCase(), MARGIN + 6, y + 3,
@@ -704,9 +699,9 @@ function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules,
     });
     y = headerBottom;
 
+    // Day rows — bounded by dayRowH * 5, which fits because we checked
+    // blockH above before starting this class block.
     for (const day of DAYS) {
-      ensureSpace(dayRowH);
-
       doc.rect(MARGIN, y, dayColW, dayRowH).fill(COLORS.light);
       doc.strokeColor(COLORS.border).lineWidth(0.4)
         .rect(MARGIN, y, dayColW, dayRowH).stroke();
@@ -759,16 +754,24 @@ function drawDutyRoster(doc, school, logoImg, roster, term, year, dutyAreas) {
     subtitle: `${term} ${year}`,
   });
 
-  const footerTop = doc.page.height - FOOTER_H;
-  const availableH = footerTop - startY - 8;
-
-  const areaColW = 150;
-  const dayColW = (pageW - MARGIN * 2 - areaColW) / DAYS.length;
+  const gridW = pageW - MARGIN * 2;
   const headerH = 22;
-  const rowH = Math.max(20, (availableH - headerH) / Math.max(1, dutyAreas.length));
+  const areaColW = 150;
+  const dayColW = (gridW - areaColW) / DAYS.length;
+
+  const availableH = gridAvailableHeight(doc, startY, 6);
+  const gridBodyH = Math.max(0, availableH - headerH);
+
+  // Clamp duty-area row heights so they fit above the footer.
+  const rowH = clampRowHeight(
+    Number.POSITIVE_INFINITY,
+    dutyAreas.length,
+    gridBodyH,
+    MIN_DAY_ROW_H
+  );
 
   let y = startY;
-  doc.rect(MARGIN, y, pageW - MARGIN * 2, headerH).fill(COLORS.navy);
+  doc.rect(MARGIN, y, gridW, headerH).fill(COLORS.navy);
   doc.font(FONT_BOLD).fontSize(9).fillColor(COLORS.white)
     .text('Duty Area / Time', MARGIN + 4, y + 6, { width: areaColW, align: 'left' });
   for (let i = 0; i < DAYS.length; i += 1) {
