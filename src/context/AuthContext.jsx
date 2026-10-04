@@ -43,6 +43,35 @@ async function fetchSchoolBranding(schoolId) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Profile hydration: read the user's profile document from users/teachers/students
+// so we can pick up fields that aren't part of the JWT — profileImageUrl,
+// phone, firstName, lastName, fullName, photoURL, etc.
+//
+// Returns { data, collection } where collection is the Firestore collection
+// name we found the doc in, or { data: null, collection: null } if none exists.
+// ---------------------------------------------------------------------------
+async function fetchUserProfileDoc(uid, isOnline) {
+    if (!uid) return { data: null, collection: null };
+
+    if (isOnline) {
+        for (const name of ['users', 'teachers', 'students']) {
+            try {
+                const snap = await getDoc(doc(db, name, uid));
+                if (snap.exists()) {
+                    return { data: snap.data(), collection: name };
+                }
+            } catch (e) {
+                // Silent — a missing doc or a permission error just means we
+                // skip to the next collection.
+                console.warn(`Profile lookup failed for ${name}/${uid}:`, e);
+            }
+        }
+    }
+
+    return { data: null, collection: null };
+}
+
 export function AuthProvider({ children }) {
     const [currentUser, setCurrentUser] = useState(null);
     const [userData, setUserData] = useState(null);
@@ -83,16 +112,15 @@ export function AuthProvider({ children }) {
 
     // -----------------------------------------------------------------------
     // Resolve user document
-    //  1. Custom claims first (cheap, no Firestore reads)
+    //  1. Custom claims (fast) + profile doc read for non-JWT fields
     //  2. Firestore fallback (users → teachers → students)
     //  3. Offline cache
     //  4. Minimal shell
-    // In every branch, if we have a schoolId, we enrich with school branding.
     // -----------------------------------------------------------------------
     const resolveUser = useCallback(async (user, email) => {
         const uid = user.uid;
 
-        // 1. Custom claims
+        // ---- 1. Custom claims ----
         let tokenClaims = {};
         try {
             const tokenResult = await getIdTokenResult(user, true);
@@ -101,30 +129,62 @@ export function AuthProvider({ children }) {
             console.warn('getIdTokenResult failed:', e);
         }
 
-        // If claims are complete, no user-doc read needed — but we still need branding
         if (tokenClaims.role && tokenClaims.schoolId) {
             const branding = await fetchSchoolBranding(tokenClaims.schoolId);
+
+            // One extra read to hydrate profile-only fields (photo, phone, names).
+            // Falls back to the IndexedDB cache when offline.
+            let profileData = null;
+            let profileCollection = 'claims';
+
+            const fetched = await fetchUserProfileDoc(uid, isOnline);
+            if (fetched.data) {
+                profileData = fetched.data;
+                profileCollection = fetched.collection;
+            } else {
+                const cached = await getCachedUserData(uid);
+                if (cached) {
+                    profileData = cached;
+                    profileCollection = cached.collection || 'claims';
+                }
+            }
+
             return {
                 data: {
                     uid,
                     email: email || user.email || '',
+
+                    // Claims win for identity + scope
                     role: tokenClaims.role,
                     schoolId: tokenClaims.schoolId,
-                    level: tokenClaims.level || '',
-                    classes: tokenClaims.classes || [],
-                    subjects: tokenClaims.subjects || [],
-                    fullName: user.displayName || email || '',
+                    level: tokenClaims.level || profileData?.level || '',
+                    classes: tokenClaims.classes || profileData?.classes || [],
+                    subjects: tokenClaims.subjects || profileData?.subjects || [],
+
+                    // Profile-doc fields — everything the JWT doesn't carry
+                    firstName: profileData?.firstName || '',
+                    lastName: profileData?.lastName || '',
+                    fullName:
+                        profileData?.fullName
+                        || user.displayName
+                        || email
+                        || '',
+                    phone: profileData?.phone || '',
+                    profileImageUrl: profileData?.profileImageUrl || '',
+                    photoURL: profileData?.photoURL || user.photoURL || '',
+
+                    // School branding
                     ...(branding || {})
                 },
                 role: tokenClaims.role,
-                collection: 'claims',
+                collection: profileCollection,
                 schoolId: tokenClaims.schoolId,
                 claims: tokenClaims,
-                source: 'claims'
+                source: 'claims+profile'
             };
         }
 
-        // 2. Firestore fallback
+        // ---- 2. Firestore fallback ----
         const collections = ['users', 'teachers', 'students'];
         for (const name of collections) {
             try {
@@ -137,11 +197,21 @@ export function AuthProvider({ children }) {
                             : 'user');
                     const schoolId = data.schoolId || data.school_id || null;
 
-                    // Enrich with branding (1 extra read, only when claims are missing)
                     const branding = await fetchSchoolBranding(schoolId);
 
                     return {
-                        data: { ...data, uid, email: email || data.email || '', ...(branding || {}) },
+                        data: {
+                            ...data,
+                            uid,
+                            email: email || data.email || '',
+                            // Ensure the profile-photo field is always present so
+                            // the header has something to fall back on.
+                            profileImageUrl:
+                                data.profileImageUrl
+                                || data.photoURL
+                                || '',
+                            ...(branding || {})
+                        },
                         role,
                         collection: name,
                         schoolId,
@@ -154,10 +224,9 @@ export function AuthProvider({ children }) {
             }
         }
 
-        // 3. Offline cache
+        // ---- 3. Offline cache ----
         const cached = await getCachedUserData(uid);
         if (cached) {
-            // Cached data already includes branding if it was saved post-login
             return {
                 data: cached,
                 role: cached.role || 'user',
@@ -168,7 +237,7 @@ export function AuthProvider({ children }) {
             };
         }
 
-        // 4. Minimal shell
+        // ---- 4. Minimal shell ----
         return {
             data: {
                 uid,
@@ -182,7 +251,7 @@ export function AuthProvider({ children }) {
             claims: tokenClaims,
             source: 'fallback'
         };
-    }, [getCachedUserData]);
+    }, [getCachedUserData, isOnline]);
 
     // ---- Auth state listener ----
     useEffect(() => {
