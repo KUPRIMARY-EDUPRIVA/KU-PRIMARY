@@ -4,24 +4,40 @@
 //
 // POST body:
 //   {
-//     class?: 'Grade 7',            // optional, exact class name
-//     level?: 'junior-school',      // optional
+//     class?: 'Grade 7',
+//     level?: 'junior-school',
 //     term?: 'Term 1',
 //     year?: 2026,
 //     scope?: 'school' | 'class' | 'top'
 //   }
 //
-// Response: { success, summary, data }
+// CACHE: short TTLs. Performance data changes during exam periods,
+// so we keep the cache brief:
+//   - whole school:  5 minutes
+//   - a class:       3 minutes
+//   - top performers: 2 minutes
+//
+// If an admin wants a hard refresh, they can add an explicit
+// invalidation on the score-save path using cacheDelByPrefix.
 
 const { requireAuth, json, errorResponse } = require('./_lib/chatbotAuth');
 const { initAdmin } = require('./_lib/firebaseAdmin');
+const { cacheGet, cacheSet } = require('./_lib/blobCache');
 
-// Cap per-query reads. Chatbot answers are summaries — we don't need
-// every single score. If a school exceeds this, results are still
-// representative (they come back in Firestore's default order).
 const MAX_SCORES = 5000;
 const MAX_STUDENT_LOOKUPS = 500;
 const STUDENT_IN_CHUNK = 10;
+
+// Per-scope TTLs, in seconds.
+const TTL_BY_SCOPE = {
+    school: 5 * 60,
+    class: 3 * 60,
+    top: 2 * 60,
+};
+
+function resolveTtl(scope) {
+    return TTL_BY_SCOPE[scope] || TTL_BY_SCOPE.school;
+}
 
 exports.handler = async (event) => {
     if (event.httpMethod !== 'POST' && event.httpMethod !== 'GET') {
@@ -44,20 +60,30 @@ exports.handler = async (event) => {
         const className = params.class || null;
         const level = params.level || null;
 
+        // ------------------------------------------------------------
+        // CACHE: key includes every parameter that affects the result.
+        // Same term + year + scope + class + level → same answer.
+        // ------------------------------------------------------------
+        const cacheKey = [
+            'perf',
+            schoolId,
+            term,
+            year,
+            scope,
+            className || 'all',
+            level || 'all',
+        ].join(':');
+
+        const cached = await cacheGet(cacheKey);
+        if (cached) {
+            return json(200, cached);
+        }
+
         const admin = initAdmin();
         const db = admin.firestore();
 
         // ------------------------------------------------------------
         // 1. Query scores for this term (and optionally level/class).
-        //
-        // NOTE: student_scores documents — as written by Results.jsx —
-        // do NOT carry a `year` field. They carry `recordedAt` (a
-        // Firestore Timestamp) and `createdAt`. To honour the caller's
-        // `year` we filter by date range on `recordedAt` when possible.
-        //
-        // If older scores lack `recordedAt`, the where clause silently
-        // excludes them. That's a deliberate trade-off — a wrong answer
-        // is worse than a missing one for a chatbot.
         // ------------------------------------------------------------
         const yearStart = new Date(Date.UTC(year, 0, 1, 0, 0, 0));
         const yearEnd   = new Date(Date.UTC(year + 1, 0, 1, 0, 0, 0));
@@ -76,9 +102,6 @@ exports.handler = async (event) => {
         try {
             scoresSnap = await scoresQuery.get();
         } catch (queryErr) {
-            // Missing composite index, or old docs without recordedAt.
-            // Retry once without the date range so the chatbot still
-            // produces *something* useful, and flag it in the response.
             console.warn('[chatbot-performance] year-filtered query failed, retrying without year:', queryErr.message);
             let fallback = db.collection('student_scores')
                 .where('schoolId', '==', schoolId)
@@ -90,11 +113,15 @@ exports.handler = async (event) => {
         }
 
         if (scoresSnap.empty) {
-            return json(200, {
+            const empty = {
                 success: true,
                 summary: `No scores recorded yet for ${term} ${year}${className ? ` in ${className}` : ''}.`,
                 data: { term, year, scope, className, level, studentsCount: 0, warnings: [] },
-            });
+            };
+            // Cache even the "no data" answer — but for a shorter window,
+            // so a teacher who just entered scores sees them sooner.
+            await cacheSet(cacheKey, empty, 60);
+            return json(200, empty);
         }
 
         // ------------------------------------------------------------
@@ -110,7 +137,7 @@ exports.handler = async (event) => {
             if (!byStudent.has(s.studentId)) {
                 byStudent.set(s.studentId, {
                     studentId: s.studentId,
-                    studentName: s.studentName || s.name || null, // may be null
+                    studentName: s.studentName || s.name || null,
                     className: s.class || s.className || 'N/A',
                     level: s.level || 'N/A',
                     totalScore: 0,
@@ -125,19 +152,17 @@ exports.handler = async (event) => {
         });
 
         if (byStudent.size === 0) {
-            return json(200, {
+            const empty = {
                 success: true,
                 summary: `No usable scores found for ${term} ${year}.`,
                 data: { term, year, scope, className, level, studentsCount: 0, warnings: [] },
-            });
+            };
+            await cacheSet(cacheKey, empty, 60);
+            return json(200, empty);
         }
 
         // ------------------------------------------------------------
-        // 3. Resolve student names from the `students` collection for
-        //    any studentId whose score record doesn't carry a name.
-        //
-        //    Firestore's `in` operator allows at most 10 values per
-        //    query, so chunk the IDs.
+        // 3. Resolve student names from the `students` collection.
         // ------------------------------------------------------------
         const warnings = [];
         const needNames = [...byStudent.values()]
@@ -195,7 +220,6 @@ exports.handler = async (event) => {
             level: s.level,
             totalScore: s.totalScore,
             subjectCount: s.subjectCount,
-            subjectCount2: s.subjectCount,
             subjects: [...s.subjects],
             average: s.subjectCount > 0
                 ? Math.round((s.totalScore / s.subjectCount) * 100) / 100
@@ -221,7 +245,7 @@ exports.handler = async (event) => {
             const lines = topN.map((s, i) =>
                 `${i + 1}. ${s.studentName} (${s.className}) — ${s.average}%`
             );
-            return json(200, {
+            const payload = {
                 success: true,
                 summary: `Top performers for ${term} ${year} (${scopeLabel}):\n${lines.join('\n')}`,
                 data: {
@@ -234,7 +258,9 @@ exports.handler = async (event) => {
                     level,
                     warnings,
                 },
-            });
+            };
+            await cacheSet(cacheKey, payload, resolveTtl('top'));
+            return json(200, payload);
         }
 
         // ------------------------------------------------------------
@@ -252,7 +278,7 @@ exports.handler = async (event) => {
                 ? `• Lowest: ${worst.studentName} (${worst.className}) — ${worst.average}%`
                 : '');
 
-        return json(200, {
+        const payload = {
             success: true,
             summary,
             data: {
@@ -267,7 +293,11 @@ exports.handler = async (event) => {
                 level,
                 warnings,
             },
-        });
+        };
+
+        await cacheSet(cacheKey, payload, resolveTtl(scope));
+
+        return json(200, payload);
     } catch (err) {
         console.error('[chatbot-performance]', err);
         return errorResponse(err);
