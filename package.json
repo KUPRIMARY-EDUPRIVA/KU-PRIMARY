@@ -7,6 +7,7 @@
     "@capacitor/core": "^7.6.9",
     "@cloudinary/react": "^1.11.0",
     "@cloudinary/url-gen": "^1.10.0",
+    "@netlify/blobs": "^8.1.0",
     "axios": "^1.4.0",
     "csv-parse": "^5.4.0",
     "fast-uri": "^4.1.5",
