@@ -6,9 +6,18 @@
 //   topic = 'overview' | 'classes' | 'subjects' | 'teachers' | 'contact' | 'levels' | 'all'
 //
 // Response: { success, topic, summary, data }
+//
+// CACHE: 12-hour TTL. School name, motto, classes, subjects, and
+// contacts change rarely; a 12-hour cache slashes Firestore reads
+// with no noticeable staleness for teachers.
 
 const { requireAuth, json, errorResponse } = require('./_lib/chatbotAuth');
 const { initAdmin } = require('./_lib/firebaseAdmin');
+const { cacheGet, cacheSet } = require('./_lib/blobCache');
+
+// 12 hours. Bump down if admin edits need to reach teachers faster
+// without an explicit invalidation call.
+const CACHE_TTL_SECONDS = 12 * 60 * 60;
 
 const LEVEL_LABELS = {
     'pre-primary': 'Pre-Primary',
@@ -44,7 +53,6 @@ function buildSubjectsByLevel(school) {
             return acc;
         }, {});
     }
-    // No custom subjects → use the built-in defaults per level.
     return { ...DEFAULT_SUBJECTS };
 }
 
@@ -57,7 +65,6 @@ function buildSubjectsByLevel(school) {
 function resolveLevels(highestLevel) {
     let highestIdx = LEVEL_ORDER.indexOf(highestLevel);
     if (highestIdx === -1) {
-        // Legacy or unknown value → assume the school runs every level.
         highestIdx = LEVEL_ORDER.length - 1;
     }
     return LEVEL_ORDER.slice(0, highestIdx + 1);
@@ -79,6 +86,17 @@ exports.handler = async (event) => {
             return json(405, { success: false, error: 'Method not allowed' });
         }
 
+        // ------------------------------------------------------------
+        // CACHE: one entry per (school, topic) pair. Caching per topic
+        // keeps the payload small and lets us hit the cache even for
+        // narrower queries like "school name" without doing a full read.
+        // ------------------------------------------------------------
+        const cacheKey = `school_info:${schoolId}:${topic}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) {
+            return json(200, cached);
+        }
+
         const admin = initAdmin();
         const db = admin.firestore();
 
@@ -97,7 +115,6 @@ exports.handler = async (event) => {
         const studentCount = studentsCountSnap ? studentsCountSnap.data().count : null;
 
         // Classes: prefer custom classes saved on the school doc.
-        // SchoolProfile writes `customClasses: [{ id, level, baseClass, label, className }]`.
         const customClasses = Array.isArray(school.customClasses)
             ? school.customClasses
                 .map((c) => ({ level: c.level, className: c.className }))
@@ -124,8 +141,10 @@ exports.handler = async (event) => {
             levels: `The school runs these levels: ${levels.map((l) => LEVEL_LABELS[l]).join(', ')}.`,
         };
 
+        let payload;
+
         if (topic === 'all') {
-            return json(200, {
+            payload = {
                 success: true,
                 topic,
                 summary: summary.overview,
@@ -138,26 +157,30 @@ exports.handler = async (event) => {
                     subjects: subjectsByLevel,
                 },
                 summaries: summary,
-            });
-        }
-
-        if (!summary[topic]) {
+            };
+        } else if (!summary[topic]) {
+            // Unknown topic — do not cache, it's a client bug.
             return json(400, { success: false, error: `Unknown topic "${topic}"` });
+        } else {
+            payload = {
+                success: true,
+                topic,
+                summary: summary[topic],
+                data: {
+                    school,
+                    teacherCount,
+                    studentCount,
+                    levels,
+                    classes: useCustomClasses ? customClasses : null,
+                    subjects: subjectsByLevel,
+                },
+            };
         }
 
-        return json(200, {
-            success: true,
-            topic,
-            summary: summary[topic],
-            data: {
-                school,
-                teacherCount,
-                studentCount,
-                levels,
-                classes: useCustomClasses ? customClasses : null,
-                subjects: subjectsByLevel,
-            },
-        });
+        // Cache for 12 hours. Write failures are non-fatal.
+        await cacheSet(cacheKey, payload, CACHE_TTL_SECONDS);
+
+        return json(200, payload);
     } catch (err) {
         console.error('[chatbot-school-info]', err);
         return errorResponse(err);
@@ -199,7 +222,6 @@ function buildClassesSummary(useCustomClasses, customClasses, levels) {
         );
         return `Here are the classes in use:\n${lines.join('\n')}`;
     }
-    // Fallback to default class names per level.
     const DEFAULTS = {
         'pre-primary': ['PP1', 'PP2'],
         'lower-primary': ['Grade 1', 'Grade 2', 'Grade 3'],
