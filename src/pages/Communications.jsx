@@ -728,9 +728,7 @@ export default function Communication() {
 
         const outcomes = [];
         try {
-            if (transport === TRANSMIT_PERMISSION_REQUEST) { /* not reachable */ }
-
-            if (transport === TRANSPORT.NATIVE) {
+          if (transport === TRANSPORT.NATIVE) {
                 // Native path sends one at a time (as the Android bridge requires).
                 for (const r of recipients) {
                     const [result] = await sendBatchViaNative([{
