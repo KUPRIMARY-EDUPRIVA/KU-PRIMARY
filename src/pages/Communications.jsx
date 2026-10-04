@@ -1,4 +1,4 @@
-// src/pages/Communication.jsx
+// src/pages/Communications.jsx
 //
 // Merged Communications page:
 //   • Parent / student messages  (personalized with {{studentName}}, {{feeBalance}}, …)
