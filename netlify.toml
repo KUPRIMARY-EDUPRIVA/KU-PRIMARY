@@ -72,7 +72,7 @@
 #   at runtime.
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = ["firebase-admin", "nodemailer"]
+  external_node_modules = ["firebase-admin", "nodemailer", "pdfkit"]
 
 # ============================================================
 # Redirects
