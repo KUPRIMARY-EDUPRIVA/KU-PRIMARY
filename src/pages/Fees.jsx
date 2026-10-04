@@ -6,7 +6,7 @@ import { useSchool } from '../context/SchoolContext';
 import { useSync } from '../context/SyncContext';
 import { useFee } from '../context/FeeContext';
 import { db } from '../firebase';
-import { doc, updateDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { doc, updateDoc } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import ReceiptModal from '../components/Fees/ReceiptModal';
@@ -28,6 +28,12 @@ import { AuditLogService } from '../services/auditService';
 const MAX_IMPORT_SIZE = 5 * 1024 * 1024;
 const OVERDUE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const LEVEL_ORDER = ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school'];
+
+// Roster paging guards
+const ROSTER_PAGE_SIZE = 500;
+const ROSTER_MAX_PAGES = 200;
+const ROSTER_CACHE_TTL_MS = 60 * 1000; // 60s — bulk ops reuse within a minute
 
 const generateStatementHash = (data) => {
     const content = JSON.stringify(data.slice(0, 10));
@@ -41,10 +47,28 @@ const generateStatementHash = (data) => {
     return `stmt_${Math.abs(hash)}_${timestamp}`;
 };
 
+const escapeCsv = (v) => {
+    const s = String(v ?? '');
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+// ---------- Static style helpers (pure — safe to hoist) ----------
+const smallBtn = (bg) => ({
+    padding: '4px 12px', fontSize: '11px', background: bg, color: 'white',
+    border: 'none', borderRadius: '6px', cursor: 'pointer'
+});
+
+const pageBtnStyle = (disabled) => ({
+    padding: '8px 14px', border: '1px solid var(--border)', borderRadius: '6px',
+    background: 'white', color: 'var(--secondary)',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    fontWeight: '500', opacity: disabled ? 0.5 : 1
+});
+
 export default function Fees() {
     const navigate = useNavigate();
     const { currentUser, userData, userRole } = useAuth();
-    const { getLevelClasses } = useSchool();
+    const { getLevelClasses, schoolData: schoolCtxData } = useSchool();
     const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
     const {
         feeBalances, feeTransactions, loading,
@@ -88,6 +112,9 @@ export default function Fees() {
     const [searchByAdmission, setSearchByAdmission] = useState('');
     const [searchType, setSearchType] = useState('name');
 
+    // ---- School highest level (for filtering level dropdowns) ----
+    const [schoolHighestLevel, setSchoolHighestLevel] = useState('senior-school');
+
     // ---- Selected entities ----
     const [selectedInvoice, setSelectedInvoice] = useState(null);
     const [receiptData, setReceiptData] = useState(null);
@@ -123,6 +150,10 @@ export default function Fees() {
 
     const fileInputRef = useRef(null);
 
+    // ---- Full-roster cache (for bulk ops that need all students, not just current page) ----
+    const allStudentsCacheRef = useRef({ data: null, at: 0, key: '' });
+    const [loadingAllStudents, setLoadingAllStudents] = useState(false);
+
     // ---- Notifications ----
     const showNotification = useCallback((message, type = 'info') => {
         const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
@@ -133,7 +164,58 @@ export default function Fees() {
         setTimeout(() => n.remove(), 3500);
     }, []);
 
-    // ---- Bootstrap ----
+    /* =========================================================
+       Full-roster loader (walks pages)
+       ========================================================= */
+
+    const rosterCacheKey = `${selectedLevel || '*'}|${selectedClass || '*'}`;
+
+    const ensureAllStudents = useCallback(async () => {
+        const now = Date.now();
+        const cached = allStudentsCacheRef.current;
+        if (
+            cached.data
+            && cached.key === rosterCacheKey
+            && (now - cached.at) < ROSTER_CACHE_TTL_MS
+        ) {
+            return cached.data;
+        }
+
+        setLoadingAllStudents(true);
+        try {
+            const schoolId = requireSchoolId(userData);
+            const acc = [];
+            for (let page = 0; page < ROSTER_MAX_PAGES; page++) {
+                // Accept both `{ items, total }` and plain array returns.
+                const res = await fetchStudentsPage({
+                    schoolId,
+                    level: selectedLevel,
+                    cls: selectedClass,
+                    sortField: 'firstName',
+                    sortDirection: 'asc',
+                    pageIndex: page,
+                    pageSize: ROSTER_PAGE_SIZE
+                });
+                const rows = Array.isArray(res) ? res : (res?.items || []);
+                if (!rows.length) break;
+                acc.push(...rows);
+                if (rows.length < ROSTER_PAGE_SIZE) break;
+            }
+            allStudentsCacheRef.current = { data: acc, at: Date.now(), key: rosterCacheKey };
+            return acc;
+        } finally {
+            setLoadingAllStudents(false);
+        }
+    }, [userData, selectedLevel, selectedClass, fetchStudentsPage, rosterCacheKey]);
+
+    const invalidateRosterCache = () => {
+        allStudentsCacheRef.current = { data: null, at: 0, key: '' };
+    };
+
+    /* =========================================================
+       Bootstrap
+       ========================================================= */
+
     useEffect(() => {
         (async () => {
             try {
@@ -147,6 +229,7 @@ export default function Fees() {
                         schoolPhone: data.phone || '',
                         schoolEmail: data.email || ''
                     });
+                    if (data.highestLevel) setSchoolHighestLevel(data.highestLevel);
                 }
             } catch (e) { console.warn('school data:', e.message); }
         })();
@@ -157,12 +240,22 @@ export default function Fees() {
                 if (cached) setUploadedStatements(cached);
             } catch (e) { console.warn('uploaded statements:', e); }
         })();
+    }, [userData, getFromIndexedDB]);
 
+    // Prefer context school data if present (avoids an extra fetch)
+    useEffect(() => {
+        if (schoolCtxData?.highestLevel) setSchoolHighestLevel(schoolCtxData.highestLevel);
+    }, [schoolCtxData]);
+
+    // Overdue-check interval — guarded via ref so it isn't torn down each render
+    const overdueRef = useRef(checkOverdueInvoices);
+    useEffect(() => { overdueRef.current = checkOverdueInvoices; }, [checkOverdueInvoices]);
+    useEffect(() => {
         const interval = setInterval(() => {
-            if (isOnline) checkOverdueInvoices();
+            if (isOnline) overdueRef.current?.();
         }, OVERDUE_CHECK_INTERVAL_MS);
         return () => clearInterval(interval);
-    }, [userData, isOnline, getFromIndexedDB, checkOverdueInvoices]);
+    }, [isOnline]);
 
     // ---- Server-side filter: level/class change ----
     useEffect(() => {
@@ -178,6 +271,8 @@ export default function Fees() {
             term: scope.term,
             year: scope.year
         });
+        // The roster cache is scoped by level/class — drop it when they change.
+        allStudentsCacheRef.current = { data: null, at: 0, key: '' };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedLevel, selectedClass]);
 
@@ -199,18 +294,27 @@ export default function Fees() {
     }, [students, searchTerm, searchByAdmission, searchType]);
 
     // ---- Unique option helpers ----
+    const schoolLevels = useMemo(() => {
+        const idx = LEVEL_ORDER.indexOf(schoolHighestLevel);
+        return idx === -1 ? [...LEVEL_ORDER] : LEVEL_ORDER.slice(0, idx + 1);
+    }, [schoolHighestLevel]);
+
     const uniqueLevels = useMemo(() => {
-        const set = new Set();
-        SCHOOL_LEVELS.forEach(lvl => set.add(lvl.value));
-        students.forEach(s => { if (s.level) set.add(s.level); });
-        return [...set];
-    }, [students]);
+        const allowed = new Set(schoolLevels);
+        // Preserve order from LEVEL_ORDER for stability
+        const ordered = LEVEL_ORDER.filter(l => allowed.has(l));
+        // Any levels seen on students but not in order — append
+        const extras = new Set();
+        students.forEach(s => {
+            if (s.level && allowed.has(s.level) && !ordered.includes(s.level)) extras.add(s.level);
+        });
+        return [...ordered, ...extras];
+    }, [students, schoolLevels]);
 
     const getClassesForLevel = useCallback((lvl) => {
         if (lvl) return getLevelClasses ? getLevelClasses(lvl) : (LEVEL_CLASSES[lvl] || []);
         const all = [];
-        const levels = ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school'];
-        levels.forEach(l => {
+        LEVEL_ORDER.forEach(l => {
             const cls = getLevelClasses ? getLevelClasses(l) : (LEVEL_CLASSES[l] || []);
             all.push(...cls);
         });
@@ -241,7 +345,11 @@ export default function Fees() {
         return [...set].sort();
     }, [students, bulkFeeForm.level, getClassesForLevel]);
 
-    const generateReceiptNumber = () => {
+    /* =========================================================
+       Receipt helpers
+       ========================================================= */
+
+    const generateReceiptNumber = useCallback(() => {
         const prefix = 'RCP';
         const d = new Date();
         const year = d.getFullYear().toString().slice(-2);
@@ -249,7 +357,7 @@ export default function Fees() {
         const day = d.getDate().toString().padStart(2, '0');
         const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
         return `${prefix}-${year}${month}${day}-${random}`;
-    };
+    }, []);
 
     const generateReceipt = useCallback(async (transaction) => {
         try {
@@ -257,7 +365,7 @@ export default function Fees() {
                 || students.find(s => s.id === transaction.studentId);
             if (!student) { console.error('Student not found for receipt'); return; }
             const balance = getStudentBalance(transaction.studentId);
-            const studentInvoices = getStudentInvoices(transaction.studentId)
+            const studentInvoices = (getStudentInvoices(transaction.studentId) || [])
                 .filter(inv => inv.status !== 'paid' || inv.paidAmount > 0);
 
             const receipt = {
@@ -294,9 +402,12 @@ export default function Fees() {
             console.error('Error generating receipt:', error);
             showNotification('Failed to generate receipt', 'error');
         }
-    }, [students, getStudentBalance, getStudentInvoices, isOnline, showNotification]);
+    }, [students, getStudentBalance, getStudentInvoices, isOnline, showNotification, generateReceiptNumber]);
 
-    // ---- Form handlers ----
+    /* =========================================================
+       Form handlers
+       ========================================================= */
+
     const handleFeeFormChange = (e) => {
         const { name, value } = e.target;
         setFeeForm(prev => ({ ...prev, [name]: value }));
@@ -308,9 +419,11 @@ export default function Fees() {
     };
 
     const handleInvoiceItemChange = (index, field, value) => {
-        const newItems = [...invoiceForm.items];
-        newItems[index][field] = value;
-        setInvoiceForm(prev => ({ ...prev, items: newItems }));
+        setInvoiceForm(prev => {
+            const newItems = [...prev.items];
+            newItems[index] = { ...newItems[index], [field]: value };
+            return { ...prev, items: newItems };
+        });
     };
 
     const addInvoiceItem = () => {
@@ -339,7 +452,10 @@ export default function Fees() {
         setMpesaForm(prev => ({ ...prev, [name]: value }));
     };
 
-    // ---- Reconstruct a student object from a balance hint ----
+    /* =========================================================
+       Student reconstruction + modal openers
+       ========================================================= */
+
     const studentFromBalance = (balance) => {
         if (!balance) return null;
         const fullName = (balance.studentName || '').trim();
@@ -354,7 +470,6 @@ export default function Fees() {
         };
     };
 
-    // ---- Modal openers ----
     const openFeeModal = (studentId = null, balanceHint = null) => {
         if (balanceHint) {
             const student = studentFromBalance(balanceHint);
@@ -378,7 +493,6 @@ export default function Fees() {
                     level: local.level || ''
                 }));
             } else {
-                // Not on current page — try one-shot fetch
                 (async () => {
                     try {
                         const schoolId = requireSchoolId(userData);
@@ -434,7 +548,10 @@ export default function Fees() {
         setShowMpesaModal(true);
     };
 
-    // ---- Fee submit ----
+    /* =========================================================
+       Fee submit
+       ========================================================= */
+
     const handleFeeSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
@@ -442,7 +559,23 @@ export default function Fees() {
             const student = feeForm.student;
             if (!student) {
                 showNotification('Please search and select a student', 'warning');
-                setIsProcessing(false); return;
+                return;
+            }
+
+            const amountNum = parseFloat(feeForm.amount);
+            if (!Number.isFinite(amountNum) || amountNum <= 0) {
+                showNotification('Amount must be greater than zero.', 'warning');
+                return;
+            }
+
+            // Warn if payment exceeds outstanding balance
+            const stBal = feeBalances[student.id];
+            if (stBal && stBal.balance > 0 && amountNum > stBal.balance) {
+                const ok = window.confirm(
+                    `Payment (KES ${amountNum.toLocaleString()}) exceeds outstanding balance ` +
+                    `(KES ${stBal.balance.toLocaleString()}). Record anyway?`
+                );
+                if (!ok) return;
             }
 
             const receiptNumber = generateReceiptNumber();
@@ -450,7 +583,7 @@ export default function Fees() {
                 studentId: student.id,
                 studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
                 admissionNumber: student.admissionNumber || student.studentId || '',
-                amount: parseFloat(feeForm.amount),
+                amount: amountNum,
                 description: feeForm.description || 'Fee payment',
                 paymentMethod: feeForm.paymentMethod,
                 paymentDate: feeForm.paymentDate,
@@ -461,7 +594,7 @@ export default function Fees() {
                 recordedBy: currentUser?.uid,
                 recordedByName: userData?.fullName || userData?.firstName || 'System',
                 receiptNumber,
-                _student: student  // for receipt enrichment
+                _student: student
             };
 
             const result = await addFeeTransaction(transaction);
@@ -475,8 +608,9 @@ export default function Fees() {
                 showNotification('Fee payment recorded', 'success');
                 setShowFeeModal(false);
                 resetFeeForm();
+                invalidateRosterCache();
                 refreshData();
-                await generateReceipt(transaction);
+                await generateReceipt({ ...transaction, id: result.id });
             } else {
                 showNotification('Failed to record payment: ' + result.error, 'error');
             }
@@ -494,25 +628,40 @@ export default function Fees() {
         });
     };
 
-    // ---- Invoice submit ----
+    /* =========================================================
+       Invoice submit
+       ========================================================= */
+
     const handleInvoiceSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
         try {
             let selectedStudents = [];
+
             if (invoiceForm.invoiceAll) {
-                selectedStudents = students;
+                selectedStudents = await ensureAllStudents();
             } else if (invoiceForm.invoiceLevel) {
-                selectedStudents = students.filter(s => s.level === invoiceForm.invoiceLevel);
+                const roster = await ensureAllStudents();
+                selectedStudents = roster.filter(s => s.level === invoiceForm.invoiceLevel);
             } else if (invoiceForm.invoiceClass) {
-                selectedStudents = students.filter(s => s.class === invoiceForm.invoiceClass);
+                const roster = await ensureAllStudents();
+                selectedStudents = roster.filter(s => s.class === invoiceForm.invoiceClass);
             } else {
-                selectedStudents = students.filter(s => invoiceForm.studentIds.includes(s.id));
+                // Explicit selection — resolve any IDs not on the current page.
+                const onPage = new Map(students.map(s => [s.id, s]));
+                const missing = invoiceForm.studentIds.some(id => !onPage.has(id));
+                if (missing) {
+                    const roster = await ensureAllStudents();
+                    roster.forEach(s => {
+                        if (invoiceForm.studentIds.includes(s.id)) onPage.set(s.id, s);
+                    });
+                }
+                selectedStudents = invoiceForm.studentIds.map(id => onPage.get(id)).filter(Boolean);
             }
 
             if (selectedStudents.length === 0) {
                 showNotification('No students found matching the criteria', 'warning');
-                setIsProcessing(false); return;
+                return;
             }
 
             const invoiceItems = invoiceForm.items
@@ -521,7 +670,7 @@ export default function Fees() {
 
             if (invoiceItems.length === 0) {
                 showNotification('Please add at least one invoice item', 'warning');
-                setIsProcessing(false); return;
+                return;
             }
 
             const entries = selectedStudents.map((student, idx) => {
@@ -544,6 +693,8 @@ export default function Fees() {
                 };
             });
 
+            const totalBilled = entries.reduce((sum, e) => sum + e.total, 0);
+
             const result = await createBulkInvoices(entries, {
                 term: invoiceForm.term, year: invoiceForm.year,
                 createdBy: currentUser?.uid,
@@ -554,11 +705,22 @@ export default function Fees() {
                 userData?.schoolId,
                 { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
                 'INVOICES_CREATED',
-                { count: result.count, term: invoiceForm.term }
+                {
+                    count: result.count,
+                    term: invoiceForm.term,
+                    year: invoiceForm.year,
+                    totalBilled,
+                    scope: invoiceForm.invoiceAll ? 'all'
+                        : invoiceForm.invoiceLevel ? `level:${invoiceForm.invoiceLevel}`
+                        : invoiceForm.invoiceClass ? `class:${invoiceForm.invoiceClass}`
+                        : 'selected'
+                }
             );
+
             showNotification(`Invoices created for ${result.count} of ${selectedStudents.length} students`, 'success');
             setShowInvoiceModal(false);
             resetInvoiceForm();
+            invalidateRosterCache();
             refreshData();
         } catch (error) {
             console.error('Error creating invoices:', error);
@@ -595,11 +757,22 @@ export default function Fees() {
         }
     };
 
+    /* =========================================================
+       Bulk fee entry
+       ========================================================= */
+
     const handleBulkFeeSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
         try {
-            const targetStudents = students.filter(s => {
+            const amountNum = parseFloat(bulkFeeForm.amount);
+            if (!Number.isFinite(amountNum) || amountNum <= 0) {
+                showNotification('Amount must be greater than zero.', 'warning');
+                return;
+            }
+
+            const roster = await ensureAllStudents();
+            const targetStudents = roster.filter(s => {
                 const matchLevel = !bulkFeeForm.level || s.level === bulkFeeForm.level;
                 const matchClass = !bulkFeeForm.class || s.class === bulkFeeForm.class;
                 return matchLevel && matchClass;
@@ -607,7 +780,7 @@ export default function Fees() {
 
             if (targetStudents.length === 0) {
                 showNotification('No students found matching the criteria', 'warning');
-                setIsProcessing(false); return;
+                return;
             }
 
             const CHUNK = 100;
@@ -621,7 +794,7 @@ export default function Fees() {
                         studentId: student.id,
                         studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
                         admissionNumber: student.admissionNumber || student.studentId || '',
-                        amount: parseFloat(bulkFeeForm.amount),
+                        amount: amountNum,
                         description: bulkFeeForm.description || 'Bulk fee payment',
                         paymentMethod: 'bulk',
                         paymentDate: new Date().toISOString().split('T')[0],
@@ -636,9 +809,23 @@ export default function Fees() {
                 successCount += results.filter(r => r.success).length;
             }
 
+            await AuditLogService.logAction(
+                userData?.schoolId,
+                { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+                'BULK_FEE_PAYMENT',
+                {
+                    count: successCount,
+                    amount: amountNum,
+                    level: bulkFeeForm.level || '*',
+                    cls: bulkFeeForm.class || '*',
+                    term: bulkFeeForm.term
+                }
+            );
+
             showNotification(`Bulk fees recorded for ${successCount} of ${targetStudents.length} students`, 'success');
             setShowBulkFeeModal(false);
             setBulkFeeForm({ level: '', class: '', amount: '', description: '', term: 'Term 1', year: new Date().getFullYear() });
+            invalidateRosterCache();
             refreshData();
         } catch (error) {
             console.error('Error recording bulk fees:', error);
@@ -646,7 +833,10 @@ export default function Fees() {
         } finally { setIsProcessing(false); }
     };
 
-    // ---- M-Pesa submit ----
+    /* =========================================================
+       M-Pesa submit
+       ========================================================= */
+
     const handleMpesaPayment = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
@@ -654,14 +844,19 @@ export default function Fees() {
             const student = mpesaForm.student;
             if (!student) {
                 showNotification('Please search and select a student', 'warning');
-                setIsProcessing(false); return;
+                return;
+            }
+
+            const amountNum = parseFloat(mpesaForm.amount);
+            if (!Number.isFinite(amountNum) || amountNum <= 0) {
+                showNotification('Amount must be greater than zero.', 'warning');
+                return;
             }
 
             let phone = mpesaForm.phoneNumber.replace(/\D/g, '');
             if (phone.startsWith('0')) phone = '254' + phone.substring(1);
             else if (!phone.startsWith('254')) phone = '254' + phone;
 
-            // Attach Firebase ID token so the function can authenticate the caller
             let token = '';
             try {
                 if (currentUser?.getIdToken) token = await currentUser.getIdToken();
@@ -675,7 +870,7 @@ export default function Fees() {
                 },
                 body: JSON.stringify({
                     phoneNumber: phone,
-                    amount: parseFloat(mpesaForm.amount),
+                    amount: amountNum,
                     studentId: student.id,
                     studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
                     admissionNumber: student.admissionNumber || student.studentId || '',
@@ -691,7 +886,7 @@ export default function Fees() {
                     studentId: student.id,
                     studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
                     admissionNumber: student.admissionNumber || student.studentId || '',
-                    amount: parseFloat(mpesaForm.amount),
+                    amount: amountNum,
                     description: mpesaForm.description || 'M-Pesa payment',
                     paymentMethod: 'mpesa',
                     paymentDate: new Date().toISOString().split('T')[0],
@@ -707,8 +902,9 @@ export default function Fees() {
                 showNotification('M-Pesa STK push sent! Check the phone to complete payment.', 'success');
                 setShowMpesaModal(false);
                 setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
+                invalidateRosterCache();
             } else {
-                showNotification('Failed to send M-Pesa STK push: ' + result.message, 'error');
+                showNotification('Failed to send M-Pesa STK push: ' + (result.message || 'unknown error'), 'error');
             }
         } catch (error) {
             console.error('Error processing M-Pesa payment:', error);
@@ -716,7 +912,10 @@ export default function Fees() {
         } finally { setIsProcessing(false); }
     };
 
-    // ---- Bank statement import ----
+    /* =========================================================
+       Bank statement import
+       ========================================================= */
+
     const handleFileImport = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -817,6 +1016,10 @@ export default function Fees() {
         }
     };
 
+    /* =========================================================
+       Reconciliation
+       ========================================================= */
+
     const performReconciliation = async () => {
         setIsProcessing(true);
         setShowReconcileModal(false);
@@ -824,13 +1027,22 @@ export default function Fees() {
             const matched = [];
             const unmatched = [];
             const studentMap = {};
-            students.forEach(s => {
+
+            // Walk the FULL roster — critical: bank statements include students
+            // who may not be on the current page.
+            const roster = await ensureAllStudents();
+
+            roster.forEach(s => {
                 const name = `${s.firstName || ''} ${s.lastName || ''}`.trim().toLowerCase();
                 const admission = (s.admissionNumber || s.studentId || '').toLowerCase();
                 if (name) studentMap[name] = s;
                 if (admission) studentMap[admission] = s;
                 const noSpaceName = name.replace(/\s/g, '');
                 if (noSpaceName) studentMap[noSpaceName] = s;
+                // Index individual name tokens ≥3 chars
+                name.split(/\s+/).forEach(tok => {
+                    if (tok.length >= 3 && !studentMap[tok]) studentMap[tok] = s;
+                });
             });
 
             for (const transaction of statementData) {
@@ -839,7 +1051,10 @@ export default function Fees() {
                 const transactionText = Object.values(transaction).join(' ').toLowerCase();
                 for (const [key, student] of Object.entries(studentMap)) {
                     if (typeof key === 'string' && key && transactionText.includes(key)) {
-                        matchedStudent = student; matchScore = key.length; break;
+                        if (key.length > matchScore) {
+                            matchedStudent = student;
+                            matchScore = key.length;
+                        }
                     }
                 }
                 const amount = parseFloat(transaction.Amount || transaction.amount || transaction.AMOUNT || 0);
@@ -888,7 +1103,8 @@ export default function Fees() {
                         paymentDate: transaction.Date || transaction.date || new Date().toISOString().split('T')[0],
                         reference: transaction.Reference || transaction.reference || `REC-${Date.now()}`,
                         class: student.class, level: student.level,
-                        term: 'Term 1', year: new Date().getFullYear(),
+                        term: scope.term || 'Term 1',
+                        year: scope.year || new Date().getFullYear(),
                         type: 'payment', status: 'completed',
                         recordedBy: currentUser?.uid,
                         recordedByName: userData?.fullName || userData?.firstName || 'System',
@@ -918,6 +1134,7 @@ export default function Fees() {
             setUnmatchedTransactions([]);
             setReconcileResults(null);
             setStatementFile(null);
+            invalidateRosterCache();
             refreshData();
             if (fileInputRef.current) fileInputRef.current.value = '';
         } catch (error) {
@@ -925,6 +1142,10 @@ export default function Fees() {
             showNotification('Failed to record transactions', 'error');
         } finally { setIsProcessing(false); }
     };
+
+    /* =========================================================
+       Invoice details + reminders
+       ========================================================= */
 
     const viewInvoiceDetails = (invoice) => {
         setSelectedInvoice(invoice);
@@ -943,40 +1164,63 @@ export default function Fees() {
         }
     };
 
-    const handleExportDefaulters = () => {
-        const defaulters = displayedStudents.map(s => {
-            const balance = getStudentBalance(s.id) || { balance: 0 };
-            return {
-                Name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
-                Admission: s.admissionNumber || 'N/A',
-                Class: s.class || 'N/A',
-                Balance: balance.balance,
-                ParentPhone: s.parentPhone || 'N/A',
-                ParentEmail: s.parentEmail || 'N/A'
-            };
-        }).filter(s => s.Balance > 0);
+    /* =========================================================
+       Defaulters export (full roster)
+       ========================================================= */
 
-        if (defaulters.length === 0) {
-            showNotification('No defaulters found on current page.', 'info'); return;
+    const handleExportDefaulters = async () => {
+        try {
+            const roster = await ensureAllStudents();
+            const defaulters = roster.map(s => {
+                const balance = getStudentBalance(s.id) || { balance: 0 };
+                return {
+                    Name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
+                    Admission: s.admissionNumber || 'N/A',
+                    Class: s.class || 'N/A',
+                    Balance: balance.balance,
+                    ParentPhone: s.parentPhone || 'N/A',
+                    ParentEmail: s.parentEmail || 'N/A'
+                };
+            }).filter(s => s.Balance > 0);
+
+            if (defaulters.length === 0) {
+                showNotification('No defaulters found.', 'info');
+                return;
+            }
+
+            const headers = ['Name', 'Admission', 'Class', 'Balance', 'ParentPhone', 'ParentEmail'];
+            const csvContent = '\uFEFF' + headers.join(',') + '\n' +
+                defaulters.map(row => headers.map(f => escapeCsv(row[f])).join(',')).join('\n');
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `Defaulters_${scope.term || 'Term1'}_${scope.year || new Date().getFullYear()}.csv`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            showNotification(`Exported ${defaulters.length} defaulters`, 'success');
+        } catch (err) {
+            console.error('Defaulters export failed:', err);
+            showNotification('Export failed: ' + err.message, 'error');
         }
-
-        const headers = ['Name', 'Admission', 'Class', 'Balance', 'ParentPhone', 'ParentEmail'];
-        const csvContent = "data:text/csv;charset=utf-8," +
-            headers.join(',') + '\n' +
-            defaulters.map(row => headers.map(f => JSON.stringify(row[f] || '')).join(',')).join('\n');
-        const link = document.createElement("a");
-        link.setAttribute("href", encodeURI(csvContent));
-        link.setAttribute("download", `Defaulters_${scope.term}_${scope.year}.csv`);
-        document.body.appendChild(link); link.click(); document.body.removeChild(link);
     };
+
+    /* =========================================================
+       Bulk reminders (full roster)
+       ========================================================= */
 
     const handleSendBulkReminders = async () => {
         if (!window.confirm('This will send reminders for all unpaid invoices to parents. Proceed?')) return;
         setIsProcessing(true);
         let sentCount = 0;
         try {
+            const roster = await ensureAllStudents();
             const allUnpaid = [];
-            displayedStudents.forEach(s => {
+            roster.forEach(s => {
                 const invoices = getStudentInvoices(s.id) || [];
                 invoices.forEach(inv => {
                     if (['pending', 'partial', 'overdue'].includes(inv.status)) allUnpaid.push(inv.id);
@@ -984,14 +1228,21 @@ export default function Fees() {
             });
             if (allUnpaid.length === 0) {
                 showNotification('No unpaid invoices found.', 'info');
-                setIsProcessing(false); return;
+                return;
             }
-            for (const invId of allUnpaid) { await sendInvoiceReminder(invId); sentCount++; }
+            for (const invId of allUnpaid) {
+                await sendInvoiceReminder(invId);
+                sentCount++;
+            }
             showNotification(`Successfully sent ${sentCount} reminders.`, 'success');
         } catch (error) {
             showNotification(`Error sending reminders: ${error.message}`, 'error');
         } finally { setIsProcessing(false); }
     };
+
+    /* =========================================================
+       Receipt handlers
+       ========================================================= */
 
     const handleGenerateReceipt = async (studentId) => {
         const studentTransactions = feeTransactions
@@ -1009,16 +1260,27 @@ export default function Fees() {
         if (!receiptData) return;
         try {
             const result = await downloadReceiptPDF(receiptData, schoolData);
-            showNotification(`Receipt saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+            showNotification(
+                `Receipt saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`,
+                'success'
+            );
         } catch (e) {
             console.error(e);
             showNotification('PDF generation failed', 'error');
         }
     }, [receiptData, schoolData, showNotification]);
 
-    const invoiceStats = useMemo(() => getInvoiceStats(), [getInvoiceStats]);
+    /* =========================================================
+       Derived stats
+       ========================================================= */
+
+    const invoiceStats = useMemo(() => {
+        try { return getInvoiceStats(); } catch { return null; }
+    }, [getInvoiceStats]);
+
     const totalCollected = useMemo(() =>
-        feeTransactions.filter(t => t.type === 'payment' && (t.status === 'completed' || t.status === 'success'))
+        feeTransactions
+            .filter(t => t.type === 'payment' && ['completed', 'success', 'paid'].includes(t.status))
             .reduce((sum, t) => sum + (t.amount || 0), 0),
         [feeTransactions]);
 
@@ -1032,7 +1294,37 @@ export default function Fees() {
     const partialPaid = useMemo(() =>
         Object.values(feeBalances).filter(b => b.status === 'partial').length, [feeBalances]);
 
-    // ---- Render balance card ----
+    // Memoized balance enrichment — avoids calling getStudentInvoices in the render loop.
+    const enrichedBalances = useMemo(() => {
+        return paginatedBalances.map(studentBalance => {
+            const enriched = {
+                ...studentBalance,
+                studentName: studentBalance.studentName || 'Unnamed Student',
+                studentClass: studentBalance.studentClass || 'N/A',
+                admissionNumber: studentBalance.admissionNumber || 'N/A',
+                totalInvoiced: studentBalance.totalInvoiced || 0,
+                totalPaid: studentBalance.totalPaid || 0,
+                totalDiscount: studentBalance.totalDiscount || 0,
+                totalWaived: studentBalance.totalWaived || 0,
+                balance: studentBalance.balance || 0,
+                status: studentBalance.status || 'no_invoice'
+            };
+            const studentInvoices = getStudentInvoices(enriched.studentId) || [];
+            if (studentInvoices.length > 0) {
+                enriched.invoiceSummary = {
+                    total: studentInvoices.length,
+                    unpaid: studentInvoices.filter(i => ['pending', 'overdue', 'partial'].includes(i.status)).length,
+                    overdue: studentInvoices.filter(i => i.status === 'overdue').length
+                };
+            }
+            return enriched;
+        });
+    }, [paginatedBalances, getStudentInvoices]);
+
+    /* =========================================================
+       Render helpers
+       ========================================================= */
+
     const renderBalanceCard = (balance) => {
         const statusColor = balance.status === 'paid' ? '#27ae60' :
             balance.status === 'partial' ? '#f39c12' :
@@ -1072,19 +1364,19 @@ export default function Fees() {
                     </div>
                 </div>
                 <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button className="btn btn-sm btn-primary" onClick={() => openFeeModal(balance.studentId, balance)} style={smallBtn('var(--primary)')}>
+                    <button type="button" className="btn btn-sm btn-primary" onClick={() => openFeeModal(balance.studentId, balance)} style={smallBtn('var(--primary)')}>
                         <i className="fas fa-plus"></i> Pay
                     </button>
-                    <button className="btn btn-sm btn-success" onClick={() => openMpesaModal(balance.studentId, balance)} style={smallBtn('#25D366')}>
+                    <button type="button" className="btn btn-sm btn-success" onClick={() => openMpesaModal(balance.studentId, balance)} style={smallBtn('#25D366')}>
                         <i className="fas fa-mobile-alt"></i> M-Pesa
                     </button>
-                    <button className="btn btn-sm btn-info" onClick={() => navigate(`/student-fees/${balance.studentId}`)} style={smallBtn('var(--info)')}>
+                    <button type="button" className="btn btn-sm btn-info" onClick={() => navigate(`/student-fees/${balance.studentId}`)} style={smallBtn('var(--info)')}>
                         <i className="fas fa-history"></i> History
                     </button>
-                    <button className="btn btn-sm btn-secondary" onClick={() => handleGenerateReceipt(balance.studentId)} style={smallBtn('#6c757d')}>
+                    <button type="button" className="btn btn-sm btn-secondary" onClick={() => handleGenerateReceipt(balance.studentId)} style={smallBtn('#6c757d')}>
                         <i className="fas fa-receipt"></i> Receipt
                     </button>
-                    <button className="btn btn-sm btn-outline" title="Reconcile Student Balance"
+                    <button type="button" className="btn btn-sm btn-outline" title="Reconcile Student Balance"
                         onClick={async () => {
                             try {
                                 await reconcileBalance(balance.studentId, scope.term, scope.year);
@@ -1100,7 +1392,6 @@ export default function Fees() {
         );
     };
 
-    // ---- Pagination footer ----
     const renderPagination = () => {
         const totalPages = balancesPage.total !== null
             ? Math.ceil(balancesPage.total / balancesPage.pageSize)
@@ -1132,14 +1423,16 @@ export default function Fees() {
                 </div>
                 <div style={{ display: 'flex', gap: '5px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <button
-                        style={pageBtn(balancesPage.pageIndex === 0 || balancesPage.loading)}
+                        type="button"
+                        style={pageBtnStyle(balancesPage.pageIndex === 0 || balancesPage.loading)}
                         onClick={() => goToPrevPage('balances')}
                         disabled={balancesPage.pageIndex === 0 || balancesPage.loading}
                     >
                         <i className="fas fa-chevron-left"></i> Prev
                     </button>
                     <button
-                        style={pageBtn(!balancesPage.hasMore || balancesPage.loading)}
+                        type="button"
+                        style={pageBtnStyle(!balancesPage.hasMore || balancesPage.loading)}
                         onClick={() => goToNextPage('balances')}
                         disabled={!balancesPage.hasMore || balancesPage.loading}
                     >
@@ -1168,7 +1461,7 @@ export default function Fees() {
                         <StatBox label="Paid" value={invoiceStats.paid} color="var(--success)" />
                         <StatBox label="Pending" value={invoiceStats.pending} color="var(--warning)" />
                         <StatBox label="Overdue" value={invoiceStats.overdue} color="var(--danger)" />
-                        <StatBox label="Outstanding" value={`KES ${invoiceStats.outstandingAmount.toLocaleString()}`} color="var(--danger)" />
+                        <StatBox label="Outstanding" value={`KES ${(invoiceStats.outstandingAmount || 0).toLocaleString()}`} color="var(--danger)" />
                     </div>
                 )}
 
@@ -1195,25 +1488,29 @@ export default function Fees() {
 
                 {/* Action Buttons */}
                 <div className="fee-actions">
-                    <button className="btn btn-primary" onClick={() => openFeeModal()}><i className="fas fa-plus"></i> Record Payment</button>
-                    <button className="btn btn-success" onClick={() => setShowInvoiceModal(true)}><i className="fas fa-file-invoice"></i> Create Invoice</button>
-                    <button className="btn btn-info" onClick={() => navigate('/fee-structure')} style={{ background: '#4f46e5', color: '#fff' }}><i className="fas fa-layer-group"></i> Fee Schedules</button>
-                    <button className="btn btn-warning" onClick={() => setShowBulkFeeModal(true)}><i className="fas fa-users"></i> Bulk Fee Entry</button>
-                    <button className="btn btn-whatsapp" onClick={() => setShowMpesaModal(true)}><i className="fas fa-mobile-alt"></i> M-Pesa STK Push</button>
-                    <button className="btn btn-danger" onClick={() => setShowReconcileModal(true)}><i className="fas fa-credit-card"></i> Reconcile Statement</button>
-                    <button className="btn btn-outline" onClick={() => navigate('/fee-reports')}><i className="fas fa-chart-bar"></i> Reports</button>
-                    <button className="btn btn-outline" onClick={handleExportDefaulters} style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}><i className="fas fa-file-csv"></i> Export Defaulters (Page)</button>
-                    <button className="btn btn-outline" onClick={handleSendBulkReminders} disabled={isProcessing} style={{ borderColor: '#f39c12', color: '#f39c12' }}><i className="fas fa-bell"></i> {isProcessing ? 'Sending...' : 'Send Reminders (Page)'}</button>
+                    <button type="button" className="btn btn-primary" onClick={() => openFeeModal()}><i className="fas fa-plus"></i> Record Payment</button>
+                    <button type="button" className="btn btn-success" onClick={() => setShowInvoiceModal(true)}><i className="fas fa-file-invoice"></i> Create Invoice</button>
+                    <button type="button" className="btn btn-info" onClick={() => navigate('/fee-structure')} style={{ background: '#4f46e5', color: '#fff' }}><i className="fas fa-layer-group"></i> Fee Schedules</button>
+                    <button type="button" className="btn btn-warning" onClick={() => setShowBulkFeeModal(true)}><i className="fas fa-users"></i> Bulk Fee Entry</button>
+                    <button type="button" className="btn btn-whatsapp" onClick={() => setShowMpesaModal(true)}><i className="fas fa-mobile-alt"></i> M-Pesa STK Push</button>
+                    <button type="button" className="btn btn-danger" onClick={() => setShowReconcileModal(true)}><i className="fas fa-credit-card"></i> Reconcile Statement</button>
+                    <button type="button" className="btn btn-outline" onClick={() => navigate('/fee-reports')}><i className="fas fa-chart-bar"></i> Reports</button>
+                    <button type="button" className="btn btn-outline" onClick={handleExportDefaulters} style={{ borderColor: 'var(--danger)', color: 'var(--danger)' }}>
+                        <i className="fas fa-file-csv"></i> Export Defaulters
+                    </button>
+                    <button type="button" className="btn btn-outline" onClick={handleSendBulkReminders} disabled={isProcessing} style={{ borderColor: '#f39c12', color: '#f39c12' }}>
+                        <i className="fas fa-bell"></i> {isProcessing ? 'Sending...' : 'Send All Reminders'}
+                    </button>
                 </div>
 
                 {/* Filters */}
                 <div className="filters-section">
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', width: '100%' }}>
                         <div className="search-toggle">
-                            <button className={searchType === 'name' ? 'active' : ''} onClick={() => { setSearchType('name'); setSearchByAdmission(''); setSearchTerm(''); }}>
+                            <button type="button" className={searchType === 'name' ? 'active' : ''} onClick={() => { setSearchType('name'); setSearchByAdmission(''); setSearchTerm(''); }}>
                                 <i className="fas fa-user"></i> Name
                             </button>
-                            <button className={searchType === 'admission' ? 'active' : ''} onClick={() => { setSearchType('admission'); setSearchTerm(''); }}>
+                            <button type="button" className={searchType === 'admission' ? 'active' : ''} onClick={() => { setSearchType('admission'); setSearchTerm(''); }}>
                                 <i className="fas fa-id-card"></i> Admission No
                             </button>
                         </div>
@@ -1238,11 +1535,18 @@ export default function Fees() {
                         <option value="">All Classes</option>
                         {uniqueClasses.map(cls => <option key={cls} value={cls}>{cls}</option>)}
                     </select>
-                    <button className="btn btn-outline" onClick={() => {
+                    <button type="button" className="btn btn-outline" onClick={() => {
                         setSearchTerm(''); setSearchByAdmission('');
                         setSelectedLevel(''); setSelectedClass('');
                     }}><i className="fas fa-times"></i> Clear</button>
                 </div>
+
+                {loadingAllStudents && (
+                    <div style={{ padding: '10px 16px', background: '#eef2ff', color: '#3730a3', borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
+                        <i className="fas fa-spinner fa-spin" style={{ marginRight: 8 }}></i>
+                        Loading full roster for bulk operation…
+                    </div>
+                )}
 
                 {/* Balance List */}
                 {balancesPage.loading && paginatedBalances.length === 0 ? (
@@ -1252,29 +1556,7 @@ export default function Fees() {
                     </div>
                 ) : (
                     <div className="balance-list">
-                        {paginatedBalances.map(studentBalance => {
-                            const enriched = {
-                                ...studentBalance,
-                                studentName: studentBalance.studentName || 'Unnamed Student',
-                                studentClass: studentBalance.studentClass || 'N/A',
-                                admissionNumber: studentBalance.admissionNumber || 'N/A',
-                                totalInvoiced: studentBalance.totalInvoiced || 0,
-                                totalPaid: studentBalance.totalPaid || 0,
-                                totalDiscount: studentBalance.totalDiscount || 0,
-                                totalWaived: studentBalance.totalWaived || 0,
-                                balance: studentBalance.balance || 0,
-                                status: studentBalance.status || 'no_invoice'
-                            };
-                            const studentInvoices = getStudentInvoices(enriched.studentId) || [];
-                            if (studentInvoices.length > 0) {
-                                enriched.invoiceSummary = {
-                                    total: studentInvoices.length,
-                                    unpaid: studentInvoices.filter(i => ['pending', 'overdue', 'partial'].includes(i.status)).length,
-                                    overdue: studentInvoices.filter(i => i.status === 'overdue').length
-                                };
-                            }
-                            return renderBalanceCard(enriched);
-                        })}
+                        {enrichedBalances.map(enriched => renderBalanceCard(enriched))}
 
                         {paginatedBalances.length === 0 && !balancesPage.loading && (
                             <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '60px 20px', color: 'var(--gray)' }}>
@@ -1333,7 +1615,7 @@ export default function Fees() {
                             <div className="form-row">
                                 <div className="form-group">
                                     <label>Amount (KES) <span className="required">*</span></label>
-                                    <input type="number" name="amount" value={feeForm.amount} onChange={handleFeeFormChange} min="0" step="1" required />
+                                    <input type="number" name="amount" value={feeForm.amount} onChange={handleFeeFormChange} min="1" step="1" required />
                                 </div>
                                 <div className="form-group">
                                     <label>Payment Method <span className="required">*</span></label>
@@ -1375,7 +1657,7 @@ export default function Fees() {
                                 </div>
                                 <div className="form-group">
                                     <label>Year</label>
-                                    <input type="number" name="year" value={feeForm.year} onChange={handleFeeFormChange} min="2020" max="2030" />
+                                    <input type="number" name="year" value={feeForm.year} onChange={handleFeeFormChange} min="2020" max="2035" />
                                 </div>
                             </div>
 
@@ -1389,7 +1671,7 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* Invoice Modal — unchanged from your version */}
+                {/* Invoice Modal */}
                 {showInvoiceModal && (
                     <Modal onClose={() => setShowInvoiceModal(false)} title="Create Invoice">
                         <form onSubmit={handleInvoiceSubmit}>
@@ -1397,11 +1679,11 @@ export default function Fees() {
                                 <label><input type="radio" name="invoiceScope" checked={!invoiceForm.invoiceAll && !invoiceForm.invoiceLevel && !invoiceForm.invoiceClass}
                                     onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: '', studentIds: [] }))} /> Selected Students</label>
                                 <label><input type="radio" name="invoiceScope" checked={invoiceForm.invoiceAll}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: true, invoiceLevel: '', invoiceClass: '', studentIds: [] }))} /> All (Current Page)</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: true, invoiceLevel: '', invoiceClass: '', studentIds: [] }))} /> All Students</label>
                                 <label><input type="radio" name="invoiceScope" checked={!!invoiceForm.invoiceLevel}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: prev.invoiceLevel || 'pre-primary', invoiceClass: '', studentIds: [] }))} /> By Level</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: prev.invoiceLevel || schoolLevels[0] || 'pre-primary', invoiceClass: '', studentIds: [] }))} /> By Level</label>
                                 <label><input type="radio" name="invoiceScope" checked={!!invoiceForm.invoiceClass}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: prev.invoiceClass || 'Grade 1', studentIds: [] }))} /> By Class</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: prev.invoiceClass || '', studentIds: [] }))} /> By Class</label>
                             </div>
 
                             {invoiceForm.invoiceLevel && (
@@ -1440,7 +1722,9 @@ export default function Fees() {
                                             </label>
                                         ))}
                                     </div>
-                                    <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>Selected: {invoiceForm.studentIds.length} students</div>
+                                    <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
+                                        Selected: {invoiceForm.studentIds.length} student(s) on this page.
+                                    </div>
                                 </div>
                             )}
 
@@ -1475,8 +1759,8 @@ export default function Fees() {
                                 </div>
                                 <div style={{ fontSize: '13px', fontWeight: '600', marginTop: '10px' }}>
                                     Subtotal: KES {invoiceForm.items.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0).toLocaleString()}
-                                    {invoiceForm.tax > 0 && ` | Tax: KES ${parseFloat(invoiceForm.tax).toLocaleString()}`}
-                                    {invoiceForm.discount > 0 && ` | Discount: KES ${parseFloat(invoiceForm.discount).toLocaleString()}`}
+                                    {Number(invoiceForm.tax) > 0 && ` | Tax: KES ${parseFloat(invoiceForm.tax).toLocaleString()}`}
+                                    {Number(invoiceForm.discount) > 0 && ` | Discount: KES ${parseFloat(invoiceForm.discount).toLocaleString()}`}
                                     <span style={{ color: 'var(--primary)' }}> | Total: KES {calculateInvoiceTotal().toLocaleString()}</span>
                                 </div>
                             </div>
@@ -1518,6 +1802,10 @@ export default function Fees() {
                 {showBulkFeeModal && (
                     <Modal onClose={() => setShowBulkFeeModal(false)} title="Bulk Fee Entry">
                         <form onSubmit={handleBulkFeeSubmit}>
+                            <div style={{ padding: 12, background: '#eef2ff', color: '#3730a3', borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
+                                <i className="fas fa-info-circle" style={{ marginRight: 8 }}></i>
+                                Bulk entry applies to the <strong>entire roster</strong> (all pages), filtered by level/class below.
+                            </div>
                             <div className="form-row">
                                 <div className="form-group"><label>Level</label>
                                     <select name="level" value={bulkFeeForm.level} onChange={handleBulkFeeFormChange}>
@@ -1532,7 +1820,7 @@ export default function Fees() {
                             </div>
                             <div className="form-row">
                                 <div className="form-group"><label>Amount (KES) <span className="required">*</span></label>
-                                    <input type="number" name="amount" value={bulkFeeForm.amount} onChange={handleBulkFeeFormChange} min="0" step="1" required /></div>
+                                    <input type="number" name="amount" value={bulkFeeForm.amount} onChange={handleBulkFeeFormChange} min="1" step="1" required /></div>
                                 <div className="form-group"><label>Term</label>
                                     <select name="term" value={bulkFeeForm.term} onChange={handleBulkFeeFormChange}>
                                         <option value="Term 1">Term 1</option>
@@ -1620,13 +1908,13 @@ export default function Fees() {
                             <div style={{ marginTop: '15px', padding: '15px', background: 'var(--light)', borderRadius: '8px' }}>
                                 <p><strong>File:</strong> {statementFile.name}</p>
                                 <p style={{ fontSize: '13px', color: 'var(--gray)' }}>{statementFile.size} bytes</p>
-                                <button className="btn btn-primary" onClick={performReconciliation} disabled={isProcessing} style={{ marginTop: '10px' }}>
+                                <button type="button" className="btn btn-primary" onClick={performReconciliation} disabled={isProcessing} style={{ marginTop: '10px' }}>
                                     {isProcessing ? 'Processing...' : 'Reconcile Now'}
                                 </button>
                             </div>
                         )}
                         <div className="modal-footer">
-                            <button className="btn btn-outline" onClick={() => setShowReconcileModal(false)}>Cancel</button>
+                            <button type="button" className="btn btn-outline" onClick={() => setShowReconcileModal(false)}>Cancel</button>
                         </div>
                     </Modal>
                 )}
@@ -1682,9 +1970,9 @@ export default function Fees() {
                         )}
 
                         <div className="modal-footer">
-                            <button className="btn btn-outline" onClick={() => setShowStatementModal(false)}>Close</button>
+                            <button type="button" className="btn btn-outline" onClick={() => setShowStatementModal(false)}>Close</button>
                             {matchedTransactions.length > 0 && (
-                                <button className="btn btn-success" onClick={recordReconciledTransactions} disabled={isProcessing}>
+                                <button type="button" className="btn btn-success" onClick={recordReconciledTransactions} disabled={isProcessing}>
                                     {isProcessing ? 'Recording...' : `Record ${matchedTransactions.length} Payments`}
                                 </button>
                             )}
@@ -1701,10 +1989,10 @@ export default function Fees() {
                             <DetailRow label="Admission Number" value={selectedInvoice.admissionNumber || 'N/A'} />
                             <DetailRow label="Class" value={selectedInvoice.studentClass || 'N/A'} />
                             <DetailRow label="Term" value={selectedInvoice.term} />
-                            <DetailRow label="Due Date" value={new Date(selectedInvoice.dueDate).toLocaleDateString()} />
+                            <DetailRow label="Due Date" value={selectedInvoice.dueDate ? new Date(selectedInvoice.dueDate).toLocaleDateString() : 'N/A'} />
                             <DetailRow label="Status" value={
                                 <span className={`status-badge ${selectedInvoice.status}`}>
-                                    {selectedInvoice.status.charAt(0).toUpperCase() + selectedInvoice.status.slice(1)}
+                                    {String(selectedInvoice.status || '').charAt(0).toUpperCase() + String(selectedInvoice.status || '').slice(1)}
                                 </span>
                             } />
                         </div>
@@ -1712,15 +2000,15 @@ export default function Fees() {
                         <h3 style={{ fontSize: '16px', marginBottom: '10px' }}>Items</h3>
                         <div style={{ marginBottom: '15px' }}>
                             {selectedInvoice.items?.map((item, index) => (
-                                <DetailRow key={index} label={item.description} value={`KES ${item.amount.toLocaleString()}`} />
+                                <DetailRow key={index} label={item.description} value={`KES ${Number(item.amount || 0).toLocaleString()}`} />
                             ))}
-                            <DetailRow label="Subtotal" value={`KES ${selectedInvoice.subtotal.toLocaleString()}`} bold />
-                            {selectedInvoice.tax > 0 && <DetailRow label="Tax" value={`KES ${selectedInvoice.tax.toLocaleString()}`} />}
-                            {selectedInvoice.discount > 0 && <DetailRow label="Discount" value={`-KES ${selectedInvoice.discount.toLocaleString()}`} />}
-                            <DetailRow label="Total" value={`KES ${selectedInvoice.total.toLocaleString()}`} bold highlight />
-                            <DetailRow label="Paid" value={`KES ${selectedInvoice.paidAmount.toLocaleString()}`} color="var(--success)" />
-                            <DetailRow label="Remaining Balance" value={`KES ${selectedInvoice.remainingBalance.toLocaleString()}`} bold
-                                color={selectedInvoice.remainingBalance > 0 ? 'var(--danger)' : 'var(--success)'} />
+                            <DetailRow label="Subtotal" value={`KES ${Number(selectedInvoice.subtotal || 0).toLocaleString()}`} bold />
+                            {Number(selectedInvoice.tax) > 0 && <DetailRow label="Tax" value={`KES ${Number(selectedInvoice.tax).toLocaleString()}`} />}
+                            {Number(selectedInvoice.discount) > 0 && <DetailRow label="Discount" value={`-KES ${Number(selectedInvoice.discount).toLocaleString()}`} />}
+                            <DetailRow label="Total" value={`KES ${Number(selectedInvoice.total || 0).toLocaleString()}`} bold highlight />
+                            <DetailRow label="Paid" value={`KES ${Number(selectedInvoice.paidAmount || 0).toLocaleString()}`} color="var(--success)" />
+                            <DetailRow label="Remaining Balance" value={`KES ${Number(selectedInvoice.remainingBalance || 0).toLocaleString()}`} bold
+                                color={(selectedInvoice.remainingBalance || 0) > 0 ? 'var(--danger)' : 'var(--success)'} />
                         </div>
 
                         {selectedInvoice.notes && (
@@ -1731,11 +2019,11 @@ export default function Fees() {
 
                         <div className="modal-footer">
                             {selectedInvoice.status !== 'paid' && (
-                                <button className="btn btn-warning" onClick={() => handleSendReminder(selectedInvoice)}>
+                                <button type="button" className="btn btn-warning" onClick={() => handleSendReminder(selectedInvoice)}>
                                     <i className="fas fa-bell"></i> Send Reminder
                                 </button>
                             )}
-                            <button className="btn btn-outline" onClick={() => setShowInvoiceDetailsModal(false)}>Close</button>
+                            <button type="button" className="btn btn-outline" onClick={() => setShowInvoiceDetailsModal(false)}>Close</button>
                         </div>
                     </Modal>
                 )}
@@ -1761,7 +2049,7 @@ function Modal({ children, onClose, title, maxWidth = 700 }) {
             <div className="modal" style={{ maxWidth }}>
                 <div className="modal-header">
                     <h2>{title}</h2>
-                    <button className="modal-close" onClick={onClose}><i className="fas fa-times"></i></button>
+                    <button type="button" className="modal-close" onClick={onClose}><i className="fas fa-times"></i></button>
                 </div>
                 {children}
             </div>
@@ -1789,18 +2077,6 @@ function DetailRow({ label, value, bold, highlight, color }) {
         </div>
     );
 }
-
-const smallBtn = (bg) => ({
-    padding: '4px 12px', fontSize: '11px', background: bg, color: 'white',
-    border: 'none', borderRadius: '6px', cursor: 'pointer'
-});
-
-const pageBtn = (disabled) => ({
-    padding: '8px 14px', border: '1px solid var(--border)', borderRadius: '6px',
-    background: 'white', color: 'var(--secondary)',
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontWeight: '500', opacity: disabled ? 0.5 : 1
-});
 
 const feesStyles = `
     .fees-container { padding: 0; }
