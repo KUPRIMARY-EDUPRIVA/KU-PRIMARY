@@ -72,17 +72,36 @@ const DARAJA_FIELDS = [
 ];
 
 // ---------------------------------------------------------------------------
+// Chatbot cache invalidation
+//
+// Called after a successful school save so the chatbot reflects the change
+// immediately instead of waiting out the 12-hour Blobs cache TTL.
+// Fire-and-forget: never throws, never blocks the UI.
+// ---------------------------------------------------------------------------
+async function invalidateChatbotCache({ currentUser, schoolId, prefixes = [] }) {
+    try {
+        if (!currentUser) return;
+        const token = await currentUser.getIdToken();
+        await fetch('/api/chatbot-cache-invalidate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ prefixes })
+        });
+    } catch (e) {
+        // Non-fatal. The 12-hour TTL will self-heal.
+        console.warn('Chatbot cache invalidation failed:', e);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cloudinary unsigned upload
 // ---------------------------------------------------------------------------
 const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET;
 
-/**
- * Upload a File to Cloudinary using an unsigned upload preset.
- * @param {File} file
- * @param {string} folder   e.g. `schools/${schoolId}/branding`
- * @returns {Promise<string>} secure_url
- */
 async function uploadToCloudinary(file, folder) {
     if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
         throw new Error(
@@ -128,14 +147,12 @@ export default function SchoolProfile() {
     const [activeTab, setActiveTab] = useState('general');
     const [usingCachedData, setUsingCachedData] = useState(false);
 
-    // Daraja configuration status (fetched from parent doc, NOT from the private subcollection)
     const [darajaConfigured, setDarajaConfigured] = useState(false);
     const [darajaShortcode, setDarajaShortcode] = useState('');
     const [darajaEnvironment, setDarajaEnvironment] = useState('sandbox');
     const [darajaUpdatedAt, setDarajaUpdatedAt] = useState(null);
     const [showResetConfirm, setShowResetConfirm] = useState(false);
 
-    // Form state — prefilled from environment variables when available
     const [darajaForm, setDarajaForm] = useState({
         consumerKey: process.env.REACT_APP_MPESA_CONSUMER_KEY || '',
         consumerSecret: process.env.REACT_APP_MPESA_CONSUMER_SECRET || process.env.REACT_APP_MPESA_SECRET_KEY || '',
@@ -169,7 +186,7 @@ export default function SchoolProfile() {
         gradingSystem: 'competency',
         coreSubjects: '',
         optionalSubjects: '',
-        termStart: '',       // <-- ADDED
+        termStart: '',
         nextTermStart: '',
         currentTermEnd: '',
         language: 'en',
@@ -204,10 +221,6 @@ export default function SchoolProfile() {
         { value: 'senior-school', label: 'Senior School' }
     ];
 
-    // -----------------------------------------------------------------------
-    // Resolve the list of classes the school actually uses.
-    // Custom classes win; LEVEL_CLASSES is the fallback.
-    // -----------------------------------------------------------------------
     const resolveClassesForDisplay = () => {
         if (useCustomClasses && customClasses.length > 0) {
             return customClasses.map((c) => ({
@@ -217,7 +230,6 @@ export default function SchoolProfile() {
                 isCustom: true
             }));
         }
-        // Fallback to built-in classes across every level
         const rows = [];
         Object.keys(LEVEL_CLASSES).forEach((level) => {
             (LEVEL_CLASSES[level] || []).forEach((className) => {
@@ -232,7 +244,6 @@ export default function SchoolProfile() {
         return rows;
     };
 
-    // ---- Load school data ----
     useEffect(() => {
         if (currentUser && userData) {
             loadSchoolData();
@@ -306,7 +317,7 @@ export default function SchoolProfile() {
             gradingSystem: data.gradingSystem || 'competency',
             coreSubjects: data.coreSubjects ? data.coreSubjects.join(', ') : '',
             optionalSubjects: data.optionalSubjects ? data.optionalSubjects.join(', ') : '',
-            termStart: data.termStart || '',              // <-- ADDED
+            termStart: data.termStart || '',
             nextTermStart: data.nextTermStart || '',
             currentTermEnd: data.currentTermEnd || '',
             language: data.language || 'en',
@@ -350,7 +361,6 @@ export default function SchoolProfile() {
         }
     };
 
-    // ---- Form handlers ----
     const handleInputChange = (e) => {
         const { id, value, type, checked } = e.target;
         setFormData((prev) => ({
@@ -392,7 +402,7 @@ export default function SchoolProfile() {
                 gradingSystem: formData.gradingSystem,
                 coreSubjects: formData.coreSubjects.split(',').map((s) => s.trim()).filter(Boolean),
                 optionalSubjects: formData.optionalSubjects.split(',').map((s) => s.trim()).filter(Boolean),
-                termStart: formData.termStart,                // <-- ADDED
+                termStart: formData.termStart,
                 nextTermStart: formData.nextTermStart,
                 currentTermEnd: formData.currentTermEnd,
                 language: formData.language,
@@ -411,6 +421,16 @@ export default function SchoolProfile() {
 
             if (isOnline) {
                 await updateDoc(doc(db, 'schools', schoolId), updatedData);
+
+                // Fire-and-forget: clear the chatbot cache for this school so
+                // the next chat query picks up the new name, motto, contact,
+                // classes, and subjects immediately.
+                invalidateChatbotCache({
+                    currentUser,
+                    schoolId,
+                    prefixes: [`school_info:${schoolId}:`]
+                });
+
                 showNotification('School profile saved successfully!', 'success');
             } else {
                 await addToSyncQueue('schools', 'update', { id: schoolId, ...updatedData });
@@ -472,6 +492,13 @@ export default function SchoolProfile() {
                 paybillNumber: darajaForm.shortcode.trim(),
                 darajaUpdatedAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
+            });
+
+            // Paybill is surfaced in the chatbot's contact topic — invalidate.
+            invalidateChatbotCache({
+                currentUser,
+                schoolId,
+                prefixes: [`school_info:${schoolId}:`]
             });
 
             setDarajaConfigured(true);
@@ -941,7 +968,6 @@ export default function SchoolProfile() {
                 </div>
             )}
 
-            {/* Hidden file inputs — all three */}
             <input
                 type="file"
                 ref={fileInputRef}
@@ -965,7 +991,6 @@ export default function SchoolProfile() {
             />
 
             <div className="profile-card">
-                {/* Profile header */}
                 <div className="profile-header">
                     <div className="profile-avatar">
                         <img
@@ -987,7 +1012,6 @@ export default function SchoolProfile() {
                     </div>
                 </div>
 
-                {/* Tabs */}
                 <div className="tabs">
                     {[
                         { key: 'general', icon: 'fa-info-circle', label: 'General' },
@@ -1008,7 +1032,6 @@ export default function SchoolProfile() {
                     ))}
                 </div>
 
-                {/* ----- Tab: General ----- */}
                 {activeTab === 'general' && (
                     <div className="form-section active">
                         <div className="form-row">
@@ -1056,7 +1079,6 @@ export default function SchoolProfile() {
                             <textarea id="about" rows="3" value={formData.about} onChange={handleInputChange} placeholder="Describe your school…" />
                         </div>
 
-                        {/* Stamp + Signature uploads */}
                         <div className="form-row">
                             <div className="form-group">
                                 <label>Official School Stamp</label>
@@ -1133,7 +1155,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ----- Tab: Address ----- */}
                 {activeTab === 'address' && (
                     <div className="form-section active">
                         <div className="form-row">
@@ -1161,7 +1182,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ----- Tab: Class Teachers ----- */}
                 {activeTab === 'class-teachers' && (
                     <div className="form-section active">
                         <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 20 }}>Assign Class Teachers</h3>
@@ -1230,7 +1250,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ----- Tab: Academic ----- */}
                 {activeTab === 'academic' && (
                     <div className="form-section active">
                         <div className="form-row">
@@ -1280,7 +1299,7 @@ export default function SchoolProfile() {
                             <p style={{ fontSize: '13px', color: 'var(--gray)', marginBottom: '15px' }}>
                                 Toggle to use customised class names (e.g. Grade 3 Hope, Grade 3 East) in place of default system classes across all pages.
                             </p>
-                            
+
                             <div className="form-group" style={{ marginBottom: '20px' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '600' }}>
                                     <input
@@ -1406,7 +1425,7 @@ export default function SchoolProfile() {
                             <p style={{ fontSize: '13px', color: 'var(--gray)', marginBottom: '15px' }}>
                                 Toggle to add customised or elective subjects per level in addition to standard KICD subjects.
                             </p>
-                            
+
                             <div className="form-group" style={{ marginBottom: '20px' }}>
                                 <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '600' }}>
                                     <input
@@ -1507,10 +1526,8 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ----- Tab: Finance ----- */}
                 {activeTab === 'finance' && renderFinanceTab()}
 
-                {/* ----- Tab: Admins ----- */}
                 {activeTab === 'admins' && (
                     <div className="form-section active">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
@@ -1523,7 +1540,6 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ----- Tab: Settings ----- */}
                 {activeTab === 'settings' && (
                     <div className="form-section active">
                         <div className="form-group">
@@ -1601,7 +1617,6 @@ export default function SchoolProfile() {
                 )}
             </div>
 
-            {/* Add Admin Modal */}
             <div className="modal-overlay" id="adminModal">
                 <div className="modal">
                     <div className="modal-header">
@@ -1651,7 +1666,6 @@ export default function SchoolProfile() {
     );
 }
 
-// ---- Inline style constants ----
 const disabledFieldStyle = {
     background: '#f0f0f0',
     color: '#888',
@@ -1677,7 +1691,6 @@ const cachedBannerStyle = {
     alignItems: 'center', gap: 10, fontSize: 13, border: '1px solid #bee5eb'
 };
 
-// ---- Styles (unchanged) ----
 const styles = `
     .profile-card { background:white; border-radius:16px; padding:30px; box-shadow:var(--shadow); margin-bottom:30px; max-width:1000px; margin:0 auto; }
     .profile-header { display:flex; align-items:center; gap:30px; margin-bottom:30px; padding:20px; background:var(--light); border-radius:12px; }
