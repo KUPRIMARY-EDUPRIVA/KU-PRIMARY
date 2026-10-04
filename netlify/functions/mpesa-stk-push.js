@@ -221,6 +221,7 @@ exports.handler = async (event) => {
         }
 
         // ---- 7. Persist pending transaction (used by the callback) ----
+        // Written BEFORE we respond, so the chatbot's poll never misses it.
         const transactionData = {
             studentId,
             studentName: verifiedStudentName || studentName || '',
@@ -260,6 +261,10 @@ exports.handler = async (event) => {
         return json(200, {
             success: true,
             message: 'STK push sent successfully',
+            // camelCase keys for the client; the old PascalCase versions
+            // are kept so any existing callers still work.
+            checkoutRequestID: checkoutRequestId,
+            merchantRequestID: merchantRequestId,
             CheckoutRequestID: checkoutRequestId,
             MerchantRequestID: merchantRequestId,
             ResponseCode: stkRes.data?.ResponseCode,
