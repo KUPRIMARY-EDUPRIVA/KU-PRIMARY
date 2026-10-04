@@ -197,3 +197,111 @@ export const getYearOptions = () => {
   return [currentYear, currentYear - 1, currentYear - 2, currentYear - 3];
 };
 
+// ============================================================
+// Multi-paper assessment helpers
+// ============================================================
+
+/**
+ * Compute a single paper's percentage contribution.
+ * paper = { score, max, weight }
+ *   - raw       = (score / max) * 100
+ *   - weighted  = raw * (weight / 100)
+ * Returns { raw, weighted } or null if invalid.
+ */
+export function paperPercentage(paper) {
+  if (!paper) return null;
+  const score = Number(paper.score);
+  const max = Number(paper.max ?? paper.maxScore);
+  if (!Number.isFinite(score) || !Number.isFinite(max) || max <= 0) return null;
+  const raw = (score / max) * 100;
+  const weight = Number(paper.weight) || 0;
+  return { raw, weighted: (raw * weight) / 100 };
+}
+
+/**
+ * Compute the final subject percentage from a papers object/array.
+ * Auto-normalises if weights don't sum to 100.
+ */
+export function computePapersPercentage(papers) {
+  if (!papers) return null;
+  const list = Array.isArray(papers)
+    ? papers
+    : Object.entries(papers).map(([name, p]) => ({ name, ...p }));
+  if (list.length === 0) return null;
+
+  let weightedTotal = 0;
+  let weightSum = 0;
+  let valid = 0;
+
+  for (const p of list) {
+    const r = paperPercentage(p);
+    if (!r) continue;
+    weightedTotal += r.weighted;
+    weightSum += Number(p.weight) || 0;
+    valid++;
+  }
+  if (valid === 0) return null;
+  if (weightSum > 0 && Math.abs(weightSum - 100) > 0.01) {
+    return Math.round((weightedTotal / weightSum) * 100);
+  }
+  return Math.round(weightedTotal);
+}
+
+/**
+ * Compute the final percentage for any score record.
+ * Supports both single-score and multi-paper records.
+ */
+export function computeScorePercentage(record) {
+  if (!record) return null;
+
+  // Multi-paper record
+  if (record.papers && typeof record.papers === 'object') {
+    const pct = computePapersPercentage(record.papers);
+    if (pct !== null) return pct;
+  }
+
+  // Prefer an explicit stored value
+  if (Number.isFinite(Number(record.computedPercentage))) {
+    return Math.round(Number(record.computedPercentage));
+  }
+
+  // Fall back to score/maxScore
+  const score = Number(record.score);
+  const max = Number(record.maxScore) || 100;
+  if (!Number.isFinite(score) || max <= 0) return null;
+  return Math.round((score / max) * 100);
+}
+
+/**
+ * Validate a paper configuration.
+ * Returns { valid, errors }.
+ */
+export function validatePaperConfig(papers) {
+  const errors = [];
+  if (!Array.isArray(papers) || papers.length === 0) {
+    return { valid: true, errors }; // empty = single-paper subject
+  }
+  const names = new Set();
+  let sum = 0;
+  papers.forEach((p, i) => {
+    const max = Number(p.maxScore ?? p.max);
+    const weight = Number(p.weight);
+    const name = String(p.name || '').trim();
+
+    if (!name) errors.push(`Paper ${i + 1} needs a name`);
+    else if (names.has(name)) errors.push(`Duplicate paper name "${name}"`);
+    else names.add(name);
+
+    if (!Number.isFinite(max) || max <= 0) {
+      errors.push(`${name || `Paper ${i + 1}`}: max must be > 0`);
+    }
+    if (!Number.isFinite(weight) || weight < 0) {
+      errors.push(`${name || `Paper ${i + 1}`}: weight must be ≥ 0`);
+    }
+    sum += Number.isFinite(weight) ? weight : 0;
+  });
+  if (Math.abs(sum - 100) > 0.01) {
+    errors.push(`Weights must sum to 100 (currently ${sum})`);
+  }
+  return { valid: errors.length === 0, errors };
+}
