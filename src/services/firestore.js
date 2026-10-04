@@ -5,11 +5,17 @@ import {
     serverTimestamp, onSnapshot
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { makeScoreId, makeAssessmentConfigId } from '../utils/scoreId';
-import { withMemoryCache, getMemory, setMemory, idbGet, idbSet } from './cache';
+import {
+    makeScoreId, makeAssessmentConfigId,
+    makePaperConfigId
+} from '../utils/scoreId';
+import {
+    withMemoryCache, getMemory, setMemory, idbGet, idbSet
+} from './cache';
+import { computeScorePercentage } from '../utils/constants';
 
 // ============================================================
-// TENANT GUARD — Fix #11: never default schoolId
+// TENANT GUARD
 // ============================================================
 export function requireSchoolId(userData) {
     const schoolId = userData?.schoolId;
@@ -20,7 +26,7 @@ export function requireSchoolId(userData) {
 }
 
 // ============================================================
-// ASSESSMENT CONFIGS — Fix #5, #16: cached, filtered
+// ASSESSMENT CONFIGS
 // ============================================================
 export async function getAssessmentConfigs(schoolId, { level, cls, subject } = {}) {
     const cacheKey = `configs_${schoolId}_${level || 'all'}_${cls || 'all'}_${subject || 'all'}`;
@@ -49,13 +55,102 @@ export async function saveAssessmentConfig(schoolId, { level, cls, subject, asse
         createdAt: serverTimestamp(),
         isActive: true
     }, { merge: true });
-    // Invalidate cache
     setMemory(`configs_${schoolId}_${level}_${cls}_${subject}`, null, 0);
     return id;
 }
 
 // ============================================================
-// STUDENTS — Fix #6: one-time fetch, no persistent listener
+// PAPER CONFIGS — multi-paper subject support
+// ============================================================
+
+/**
+ * Fetch the paper configuration for a single (school, level, subject).
+ * Returns { papers: [{ name, maxScore, weight }] } or { papers: [] }
+ * if the subject is single-paper (default).
+ */
+export async function getPaperConfig(schoolId, level, subject) {
+    if (!schoolId || !level || !subject) return { papers: [] };
+
+    const cacheKey = `papercfg_${schoolId}_${level}_${subject}`;
+    const cached = getMemory(cacheKey);
+    if (cached) return cached;
+
+    const id = makePaperConfigId(schoolId, level, subject);
+    const snap = await getDoc(doc(db, 'subject_paper_configs', id));
+    if (!snap.exists()) {
+        const empty = { papers: [] };
+        setMemory(cacheKey, empty, 10 * 60 * 1000);
+        return empty;
+    }
+    const data = snap.data();
+    const result = {
+        papers: Array.isArray(data.papers) ? data.papers : []
+    };
+    setMemory(cacheKey, result, 10 * 60 * 1000);
+    return result;
+}
+
+/**
+ * Fetch all paper configs for a level in one query.
+ * Returns a map: { subjectName: [papers] }
+ */
+export async function getAllPaperConfigsForLevel(schoolId, level) {
+    if (!schoolId || !level) return {};
+
+    const cacheKey = `papercfgs_${schoolId}_${level}`;
+    const cached = getMemory(cacheKey);
+    if (cached) return cached;
+
+    const q = query(
+        collection(db, 'subject_paper_configs'),
+        where('schoolId', '==', schoolId),
+        where('level', '==', level)
+    );
+    const snap = await getDocs(q);
+    const out = {};
+    snap.docs.forEach(d => {
+        const data = d.data();
+        if (data.subject) {
+            out[data.subject] = Array.isArray(data.papers) ? data.papers : [];
+        }
+    });
+    setMemory(cacheKey, out, 10 * 60 * 1000);
+    return out;
+}
+
+/**
+ * Persist a subject's paper configuration.
+ * papers: [{ name, maxScore, weight }, ...]  (empty array = single-paper subject)
+ */
+export async function savePaperConfig(schoolId, level, subject, papers, userId) {
+    if (!schoolId || !level || !subject) {
+        throw new Error('savePaperConfig: schoolId, level and subject are required');
+    }
+    const id = makePaperConfigId(schoolId, level, subject);
+    const clean = Array.isArray(papers)
+        ? papers.map(p => ({
+            name: String(p.name || '').trim(),
+            maxScore: Number(p.maxScore ?? p.max) || 100,
+            weight: Number(p.weight) || 0
+        }))
+        : [];
+
+    await setDoc(doc(db, 'subject_paper_configs', id), {
+        schoolId, level, subject,
+        papers: clean,
+        updatedAt: serverTimestamp(),
+        updatedBy: userId || 'system'
+    }, { merge: true });
+
+    // Invalidate caches
+    setMemory(`papercfg_${schoolId}_${level}_${subject}`, null, 0);
+    setMemory(`papercfgs_${schoolId}_${level}`, null, 0);
+
+    return id;
+}
+
+// ============================================================
+// STUDENTS
 // ============================================================
 export async function getStudents(schoolId, level, cls, { maxResults = 500 } = {}) {
     const q = query(
@@ -70,10 +165,6 @@ export async function getStudents(schoolId, level, cls, { maxResults = 500 } = {
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-/**
- * Optional: subscribe only to a *small* page of students (10).
- * Use this for the visible page, not the whole class.
- */
 export function subscribeStudentsPage(schoolId, level, cls, pageSize = 10, callback) {
     const q = query(
         collection(db, 'students'),
@@ -89,8 +180,9 @@ export function subscribeStudentsPage(schoolId, level, cls, pageSize = 10, callb
 }
 
 // ============================================================
-// SCORES — Fix #2, #13: filtered by assessmentType, deterministic IDs
+// SCORES
 // ============================================================
+
 export async function getScores(schoolId, level, cls, subject, term, assessmentType) {
     const cacheKey = `scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`;
     const cached = getMemory(cacheKey);
@@ -109,54 +201,131 @@ export async function getScores(schoolId, level, cls, subject, term, assessmentT
     const scores = {};
     snap.forEach(d => {
         const data = d.data();
+        // Backfill computedPercentage for legacy records
+        const enriched = {
+            id: d.id,
+            ...data,
+            computedPercentage:
+                data.computedPercentage != null
+                    ? data.computedPercentage
+                    : computeScorePercentage(data)
+        };
         if (!scores[data.studentId]) scores[data.studentId] = [];
-        scores[data.studentId].push({ id: d.id, ...data });
+        scores[data.studentId].push(enriched);
     });
-    setMemory(cacheKey, scores, 2 * 60 * 1000); // 2 min TTL for scores
+    setMemory(cacheKey, scores, 2 * 60 * 1000);
     return scores;
 }
 
 /**
- * Fix #3 + #4: batch write with deterministic IDs — no existence queries.
+ * Normalise a raw entry into the storage payload.
+ * Accepts either:
+ *   { studentId, score, maxScore? }                -> single score
+ *   { studentId, papers: { 'P1': {...}, ... } }    -> multi-paper
  */
-export async function saveScoresBatch(schoolId, level, cls, subject, term, assessmentType, entries, teacherMeta) {
+function normalizeScoreEntry(entry) {
+    const { studentId } = entry;
+
+    // ---- Multi-paper ----
+    if (entry.papers && typeof entry.papers === 'object' && Object.keys(entry.papers).length > 0) {
+        const cleaned = {};
+        let weighted = 0;
+        let weightSum = 0;
+        let valid = 0;
+
+        Object.entries(entry.papers).forEach(([name, p]) => {
+            const score = Number(p?.score);
+            const max = Number(p?.max ?? p?.maxScore);
+            const weight = Number(p?.weight) || 0;
+            const hasValue = Number.isFinite(score);
+            cleaned[name] = {
+                score: hasValue ? score : null,
+                max: Number.isFinite(max) && max > 0 ? max : 100,
+                weight
+            };
+            if (hasValue && cleaned[name].max > 0) {
+                const raw = (score / cleaned[name].max) * 100;
+                weighted += raw * (weight / 100);
+                weightSum += weight;
+                valid++;
+            }
+        });
+
+        let computed = null;
+        if (valid > 0) {
+            computed = weightSum > 0 && Math.abs(weightSum - 100) > 0.01
+                ? Math.round((weighted / weightSum) * 100)
+                : Math.round(weighted);
+        }
+
+        return {
+            studentId,
+            papers: cleaned,
+            // convenience: store score = computed so legacy readers still work
+            score: computed,
+            maxScore: 100,
+            computedPercentage: computed
+        };
+    }
+
+    // ---- Single score ----
+    const score = Number(entry.score);
+    const maxScore = Number(entry.maxScore) > 0 ? Number(entry.maxScore) : 100;
+    if (!Number.isFinite(score)) {
+        return { studentId, score: null, maxScore, computedPercentage: null };
+    }
+    const computed = Math.round((score / maxScore) * 100);
+    return { studentId, score, maxScore, computedPercentage: computed };
+}
+
+export async function saveScoresBatch(
+    schoolId, level, cls, subject, term, assessmentType,
+    entries, teacherMeta = {}
+) {
     if (!entries || entries.length === 0) return { count: 0 };
     if (entries.length > 500) throw new Error('Batch exceeds 500 operations');
 
     const batch = writeBatch(db);
-    const now = new Date();
 
-    for (const { studentId, score } of entries) {
-        const id = makeScoreId(studentId, subject, term, assessmentType);
+    for (const raw of entries) {
+        const norm = normalizeScoreEntry(raw);
+        if (norm.score == null && !norm.papers) continue; // skip fully-empty
+
+        const id = makeScoreId(norm.studentId, subject, term, assessmentType);
         const ref = doc(db, 'student_scores', id);
-        batch.set(ref, {
-            studentId,
+
+        const payload = {
+            studentId: norm.studentId,
             schoolId,
             level,
             class: cls,
             subject,
             term,
             assessmentType,
-            score,
+            score: norm.score,
+            maxScore: norm.maxScore,
+            computedPercentage: norm.computedPercentage,
             teacherId: teacherMeta.teacherId || '',
             teacherName: teacherMeta.teacherName || '',
             status: 'pending',
             recordedAt: serverTimestamp(),
             updatedAt: serverTimestamp()
-        }, { merge: true });
+        };
+
+        // Only add `papers` when multi-paper; otherwise ensure it's cleared.
+        payload.papers = norm.papers || null;
+
+        batch.set(ref, payload, { merge: true });
     }
 
     await batch.commit();
 
-    // Invalidate score cache
+    // Invalidate caches
     setMemory(`scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`, null, 0);
 
     return { count: entries.length };
 }
 
-/**
- * Publish all scores for a given (class, subject, term, assessmentType).
- */
 export async function publishScoresBatch(schoolId, level, cls, subject, term, assessmentType, studentIds) {
     const batch = writeBatch(db);
     for (const studentId of studentIds) {
@@ -171,7 +340,7 @@ export async function publishScoresBatch(schoolId, level, cls, subject, term, as
 }
 
 // ============================================================
-// CLASS SUMMARIES — Fix #14: precomputed aggregates
+// CLASS SUMMARIES
 // ============================================================
 export async function getClassSummary(schoolId, level, cls, subject, term) {
     const cacheKey = `summary_${schoolId}_${level}_${cls}_${subject}_${term}`;
@@ -187,7 +356,7 @@ export async function getClassSummary(schoolId, level, cls, subject, term) {
 }
 
 // ============================================================
-// TENANT-SAFE STUDENT FETCH — used by CSV import
+// TENANT-SAFE STUDENT FETCH
 // ============================================================
 export async function findStudentByAdmission(schoolId, level, cls, admissionNumber) {
     const q = query(
