@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { db } from '../firebase';
+import './Communication.css';
 import {
     collection, query, where, getDocs, onSnapshot, doc, getDoc,
     updateDoc, deleteDoc, addDoc, orderBy, serverTimestamp,
