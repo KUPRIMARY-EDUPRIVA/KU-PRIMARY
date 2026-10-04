@@ -41,7 +41,6 @@ export const LEVEL_SUBJECTS = {
     'Science and Technology',
     'Social Studies',
     'CRE/IRE/HRE',
-    'Art and Craft',
     'Music',
     'Environmental',
     'Creative Activities',
@@ -54,7 +53,7 @@ export const LEVEL_SUBJECTS = {
     'Science and Technology',
     'Social Studies',
     'CRE/IRE/HRE',
-    'Art and Craft',
+    'Creative Arts',
     'Agriculture',
     'Music',
     'Physical Education'
