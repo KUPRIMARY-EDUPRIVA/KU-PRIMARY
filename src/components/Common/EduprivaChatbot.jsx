@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import {
     findStudentByAdmissionNumber,
     triggerSTKPush,
+    checkMpesaStatus,
     fetchFeeBalance,
     fetchDailyCollections,
     fetchSchoolInfo,
@@ -49,54 +50,34 @@ function normalise(raw) {
     return ` ${String(raw || '').toLowerCase().replace(/[^\w\s/?+.'-]/g, ' ').replace(/\s+/g, ' ').trim()} `;
 }
 
-// Best-effort extraction of a class/grade name from free text.
-// Recognises: Grade 7, Grade 8 East, PP1, PP2, Form 3, Form 4 West,
-// Grade 10 North, and custom variants like "Grade 3 Hope".
-// Also matches bare tokens like "4S" or "3 East" when preceded by
-// "class" / "in" — see extractBareClassFromQuery below.
 function extractClassFromQuery(raw) {
     const q = String(raw || '');
-    // Grade X with optional trailing word
     let m = q.match(/\b(Grade\s*\d+[A-Za-z]?(?:\s+[A-Z][a-z]+)?)/i);
     if (m) return m[1].replace(/\s+/g, ' ').trim();
-    // Form X with optional trailing word
     m = q.match(/\b(Form\s*\d+[A-Za-z]?(?:\s+[A-Z][a-z]+)?)/i);
     if (m) return m[1].replace(/\s+/g, ' ').trim();
-    // PP1 / PP2
     m = q.match(/\b(PP\s*\d+)\b/i);
     if (m) return m[1].replace(/\s+/g, '').toUpperCase();
     return null;
 }
 
-// Extracts a bare class token like "4S" or "7 East" from a free-text
-// query. This is the short form some teachers use in chat.
-//
-// Matches: "4S", "4s", "4 S", "grade 4s", "class 4S", "in 4S",
-// "Grade 7 East", "4 east", "PP1", "PP2".
 function extractBareClassFromQuery(raw) {
     const q = String(raw || '');
-    // Number + optional single letter suffix: "4S", "4 s", "7B"
     let m = q.match(/\b(\d{1,2}\s?[A-Za-z]?)(?:\s+([A-Z][a-z]+))?\b/);
-    // Only accept if it looks like a class (not a year or ID)
     if (m) {
         const num = String(m[1]).replace(/\s+/g, '');
-        // Skip 4-digit numbers (years, IDs) and pure numbers over 12 (not classes)
         if (/^\d+$/.test(num) && (num.length >= 3 || parseInt(num, 10) > 12)) {
             m = null;
         } else if (num.length >= 1) {
             const label = m[2] ? ` ${m[2]}` : '';
-            // Preserve "Grade X" style if the query already had a grade prefix
             return /grade/i.test(q) ? `Grade ${num}${label}` : `${num}${label}`;
         }
     }
-    // PP1 / PP2
     m = q.match(/\b(PP\s*\d+)\b/i);
     if (m) return m[1].replace(/\s+/g, '').toUpperCase();
     return null;
 }
 
-// Best-effort extraction of an admission number. Accepts digits,
-// hyphenated, or slash-separated tokens that look like IDs.
 function extractAdmissionNumber(raw) {
     const q = String(raw || '');
     let m = q.match(/\b([A-Za-z]{0,4}[-\/]?\d{2,10})\b/);
@@ -109,7 +90,6 @@ function extractAdmissionNumber(raw) {
 function detectIntent(raw) {
     const q = normalise(raw);
 
-    // --- Greeting / small talk (checked early) ---
     if (/^\s*(hi|hello|hey|hiya|yo|habari|jambo|mambo|sasa|niaje|good\s+(morning|afternoon|evening|day))\b/.test(q.trim())) {
         return 'greeting';
     }
@@ -119,7 +99,6 @@ function detectIntent(raw) {
     if (containsAny(q, [' my role', ' who am i', ' what am i', ' my account'])) return 'my_role';
     if (containsAny(q, [' help ', ' menu', ' what can you do', ' commands', ' options'])) return 'help';
 
-    // --- Fees ---
     if (containsAny(q, [' pay fee', ' pay school fee', ' pay the fee', ' pay fees', ' mpesa', ' m-pesa', ' send money', ' stk push', ' make payment', ' lipa '])) {
         return 'pay_fee';
     }
@@ -127,9 +106,6 @@ function detectIntent(raw) {
         return 'check_balance';
     }
 
-    // --- Class teacher (checked before generic school info) ---
-    // Any question about a class teacher routes here, whether a class
-    // was given or not.
     if (containsAny(q, [
         'class teacher', ' classteacher', ' class-teacher',
         'who teaches', 'who is the teacher of', 'teacher of grade',
@@ -138,8 +114,6 @@ function detectIntent(raw) {
         return 'class_teacher';
     }
 
-    // --- Student count (checked before generic counts) ---
-    // Phrases like "how many students", "student count", "number of students"
     if (containsAny(q, [
         'how many students', 'number of students', 'student count',
         'students count', 'count of students', 'total students',
@@ -149,7 +123,6 @@ function detectIntent(raw) {
         return 'student_count';
     }
 
-    // --- School info (specific first, generic last) ---
     if (containsAny(q, [' school name', ' name of the school', ' what is the school called', " what's the school called", ' name of school', ' jina la shule'])) {
         return 'school_name';
     }
@@ -174,7 +147,6 @@ function detectIntent(raw) {
         return 'school_overview';
     }
 
-    // --- Performance ---
     if (extractClassFromQuery(raw) && containsAny(q, [' performance', ' result', ' how is ', ' how did ', ' how are ', ' mean score', ' average', ' best in', ' top in'])) {
         return 'performance_class';
     }
@@ -185,12 +157,10 @@ function detectIntent(raw) {
         return 'performance_overview';
     }
 
-    // --- Reports (admin) ---
     if (containsAny(q, [' fee report', ' fee reports', ' daily collection', ' collections today', ' collected today', ' how much did we collect', ' revenue report', ' revenue today', ' report today'])) {
         return 'daily_report';
     }
 
-    // --- Business / meta ---
     if (containsAny(q, [' pricing', ' subscription', ' system cost', ' system fee', ' how much is edupriva', ' cost of the system', ' price'])) {
         return 'pricing';
     }
@@ -332,22 +302,105 @@ export default function EduprivaChatbot({ onClose }) {
             return;
         }
 
+        // ------------------------------------------------------------
+        // UPDATED: confirmation → STK push → wait for callback → report
+        // ------------------------------------------------------------
         if (step === 'AWAITING_PAYMENT_CONFIRMATION') {
             const confirmation = text.trim().toLowerCase();
-            if (['yes', 'y', 'confirm', 'ok', 'sawa'].includes(confirmation)) {
-                const { phone, amount, student } = botState.context;
-                pushBot(`Sending the STK push now, ${myFirst}. Please check your phone...`);
-                const res = await triggerSTKPush(phone, amount, student, schoolId);
-                pushBot(res.message || (res.success ? 'STK push sent.' : `I couldn't send the STK push, ${myFirst}.`));
-                setBotState({ step: 'IDLE', context: {} });
-                return;
-            }
+
             if (['no', 'n', 'cancel', 'hapana'].includes(confirmation)) {
                 pushBot(`Payment cancelled, ${myFirst}. Type "pay fee" anytime to start again.`);
                 setBotState({ step: 'IDLE', context: {} });
                 return;
             }
-            pushBot(`Please reply YES to confirm or NO to cancel, ${myFirst}.`);
+
+            if (!['yes', 'y', 'confirm', 'ok', 'sawa'].includes(confirmation)) {
+                pushBot(`Please reply YES to confirm or NO to cancel, ${myFirst}.`);
+                return;
+            }
+
+            const { phone, amount, student } = botState.context;
+            const studentLabel = `${student.firstName || ''} ${student.lastName || ''}`.trim()
+                || student.fullName || student.name || 'the student';
+
+            // Step 1 — initiate the push.
+            pushBot(`Sending the STK push now, ${myFirst}. Please check your phone...`);
+            const res = await triggerSTKPush(phone, amount, student, schoolId);
+
+            if (!res.success || !res.checkoutRequestID) {
+                pushBot(res.message || `I couldn't send the STK push, ${myFirst}.`);
+                setBotState({ step: 'IDLE', context: {} });
+                return;
+            }
+
+            // Step 2 — guide the user and tell them we're waiting.
+            pushBot(
+                `📲 STK push sent to ${phone}.\n\n` +
+                `Please enter your M-Pesa PIN on your phone to complete the payment of KES ${amount} for ${studentLabel}.\n\n` +
+                `I'll update you as soon as I hear back from M-Pesa — this usually takes 10–30 seconds.`
+            );
+
+            // Step 3 — wait for the callback by polling the pending doc.
+            const outcome = await checkMpesaStatus(res.checkoutRequestID, {
+                timeoutMs: 90_000,
+                intervalMs: 3_000,
+            });
+
+            // Step 4 — report the final outcome.
+            if (outcome.status === 'completed') {
+                const receipt = outcome.receipt || '(receipt pending)';
+                const paid = outcome.amountPaid
+                    ? `KES ${Number(outcome.amountPaid).toLocaleString()}`
+                    : `KES ${amount}`;
+                pushBot(
+                    `✅ Payment confirmed!\n\n` +
+                    `Receipt: ${receipt}\n` +
+                    `Amount: ${paid}\n` +
+                    `Student: ${studentLabel}\n\n` +
+                    `The fee record has been updated. Thank you, ${myFirst}.`
+                );
+            } else if (outcome.status === 'cancelled' || outcome.isUserCancelled) {
+                pushBot(
+                    `❌ The payment was cancelled on the phone.\n\n` +
+                    `No money was taken from your account. ` +
+                    `Type "pay fee" if you'd like to try again.`
+                );
+            } else if (outcome.status === 'insufficient_funds') {
+                pushBot(
+                    `❌ Insufficient M-Pesa balance.\n\n` +
+                    `Please top up the M-Pesa wallet on ${phone} and try again by typing "pay fee".`
+                );
+            } else if (outcome.status === 'wrong_pin') {
+                pushBot(
+                    `❌ Wrong M-Pesa PIN.\n\n` +
+                    `Please try again with the correct PIN by typing "pay fee".`
+                );
+            } else if (outcome.status === 'timeout') {
+                pushBot(
+                    `⏱️ The payment request expired.\n\n` +
+                    `This usually means the PIN wasn't entered in time, or the phone was unreachable. ` +
+                    `Type "pay fee" to send a fresh request.`
+                );
+            } else if (
+                outcome.status === 'failed'
+                || outcome.status === 'system_error'
+                || outcome.status === 'invalid_account'
+            ) {
+                pushBot(
+                    `❌ The payment didn't go through.\n\n` +
+                    (outcome.mpesaResultDesc ? `${outcome.mpesaResultDesc}\n\n` : '') +
+                    `No money was taken. Type "pay fee" to try again, or contact support if it keeps failing.`
+                );
+            } else {
+                // status === 'pending' — we exhausted the 90 s budget.
+                pushBot(
+                    `⏳ I haven't heard back from M-Pesa yet.\n\n` +
+                    `Your payment may still be processing. If you've entered your PIN, the record will update automatically once the callback arrives. ` +
+                    `You can also type "check balance for ${student.admissionNumber || student.studentId || ''}" in a moment to confirm.`
+                );
+            }
+
+            setBotState({ step: 'IDLE', context: {} });
             return;
         }
 
@@ -366,9 +419,6 @@ export default function EduprivaChatbot({ onClose }) {
             return;
         }
 
-        // ------------------------------------------------------------
-        // NEW: waiting for a class so we can count students in it
-        // ------------------------------------------------------------
         if (step === 'AWAITING_CLASS_FOR_COUNT') {
             const cls = extractBareClassFromQuery(text) || text.trim();
             if (!cls) {
@@ -386,9 +436,6 @@ export default function EduprivaChatbot({ onClose }) {
             );
         }
 
-        // ------------------------------------------------------------
-        // NEW: waiting for a class so we can look up the class teacher
-        // ------------------------------------------------------------
         if (step === 'AWAITING_CLASS_FOR_TEACHER') {
             const cls = extractBareClassFromQuery(text) || text.trim();
             if (!cls) {
@@ -471,9 +518,6 @@ export default function EduprivaChatbot({ onClose }) {
                 return pushBot(`Happy to check that, ${myFirst}. Please enter the student's admission number:`);
             }
 
-            // ------------------------------------------------------------
-            // NEW: student count
-            // ------------------------------------------------------------
             case 'student_count': {
                 const cls = extractBareClassFromQuery(text) || extractClassFromQuery(text);
                 if (cls) {
@@ -486,14 +530,10 @@ export default function EduprivaChatbot({ onClose }) {
                         `There ${res.count === 1 ? 'is' : 'are'} **${res.count}** student${res.count === 1 ? '' : 's'} in ${res.displayClass || cls}.`
                     );
                 }
-                // No class mentioned → ask which class
                 setBotState({ step: 'AWAITING_CLASS_FOR_COUNT', context: {} });
                 return pushBot(`Which class, ${myFirst}? Type something like 4S, Grade 4S, or PP1.`);
             }
 
-            // ------------------------------------------------------------
-            // NEW: class teacher
-            // ------------------------------------------------------------
             case 'class_teacher': {
                 const cls = extractBareClassFromQuery(text) || extractClassFromQuery(text);
                 if (cls) {
@@ -512,7 +552,6 @@ export default function EduprivaChatbot({ onClose }) {
                         (t.phone ? `\n📞 ${t.phone}` : '')
                     );
                 }
-                // No class mentioned → ask which class
                 setBotState({ step: 'AWAITING_CLASS_FOR_TEACHER', context: {} });
                 return pushBot(`Which class, ${myFirst}? Type something like 4S, Grade 4S, or PP1.`);
             }
