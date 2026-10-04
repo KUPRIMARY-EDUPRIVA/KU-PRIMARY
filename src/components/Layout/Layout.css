@@ -11,11 +11,12 @@
 }
 
 /* ============================================
-   HEADER STYLES (White Doves Ministry Style)
+   HEADER STYLES
    ============================================ */
 .header {
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    /* FIX: minmax(0, 1fr) so side columns can shrink below content width */
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
     height: 70px;
     padding: 0 20px;
@@ -28,6 +29,8 @@
     z-index: 1000;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     box-sizing: border-box;
+    /* FIX: hard-clip anything that would escape the header bar */
+    overflow: hidden;
 }
 
 /* Left - Menu Button */
@@ -62,7 +65,9 @@
     justify-content: center;
     padding: 0 10px;
     height: 100%;
+    /* FIX: hard ceiling on the middle column so it can never push the sides */
     min-width: 0;
+    max-width: 100%;
     overflow: hidden;
 }
 
@@ -73,7 +78,7 @@
     flex-shrink: 0;
 }
 
-/* Full school name — visible by default, hidden on mobile */
+/* Full school name — visible by default, hidden on smaller viewports */
 .school-name-header {
     font-size: 22px;
     font-weight: 700;
@@ -90,7 +95,7 @@
     display: block;
 }
 
-/* Short school name — hidden by default, shown on mobile */
+/* Short school name — hidden by default, shown on smaller viewports */
 .school-name-short {
     display: none;
     font-size: 18px;
@@ -99,13 +104,14 @@
     letter-spacing: 0.5px;
     text-align: left;
     flex: 1 1 auto;
+    /* FIX: clamp width so a very long first word can't push the avatar */
     min-width: 0;
+    max-width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     align-self: center;
 }
-
 
 /* Right - User Menu */
 .user-menu {
@@ -125,25 +131,10 @@
     text-transform: uppercase;
 }
 
-.admin-badge.platform {
-    background: #1a237e;
-    color: white;
-}
-
-.admin-badge.admin {
-    background: #1a237e;
-    color: white;
-}
-
-.admin-badge.teacher {
-    background: #28a745;
-    color: white;
-}
-
-.admin-badge.student {
-    background: #17a2b8;
-    color: white;
-}
+.admin-badge.platform { background: #1a237e; color: white; }
+.admin-badge.admin    { background: #1a237e; color: white; }
+.admin-badge.teacher  { background: #28a745; color: white; }
+.admin-badge.student  { background: #17a2b8; color: white; }
 
 /* User Avatar */
 .user-avatar {
@@ -176,9 +167,7 @@
 }
 
 /* Notification Button */
-.notification-wrapper {
-    position: relative;
-}
+.notification-wrapper { position: relative; }
 
 .notification-btn {
     position: relative;
@@ -196,9 +185,7 @@
     justify-content: center;
 }
 
-.notification-btn:hover {
-    background: #f0f0f0;
-}
+.notification-btn:hover { background: #f0f0f0; }
 
 .notification-badge {
     position: absolute;
@@ -235,14 +222,8 @@
 }
 
 @keyframes slideDown {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 
 .notification-header {
@@ -272,9 +253,7 @@
     transition: all 0.2s;
 }
 
-.mark-all-read:hover {
-    background: #e8eaf6;
-}
+.mark-all-read:hover { background: #e8eaf6; }
 
 .notification-list {
     flex: 1;
@@ -282,14 +261,8 @@
     max-height: 400px;
 }
 
-.notification-list::-webkit-scrollbar {
-    width: 4px;
-}
-
-.notification-list::-webkit-scrollbar-thumb {
-    background: #d0d0d0;
-    border-radius: 4px;
-}
+.notification-list::-webkit-scrollbar { width: 4px; }
+.notification-list::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 4px; }
 
 .notification-empty {
     text-align: center;
@@ -304,10 +277,7 @@
     color: #ddd;
 }
 
-.notification-empty p {
-    margin: 0;
-    font-size: 14px;
-}
+.notification-empty p { margin: 0; font-size: 14px; }
 
 .notification-item {
     display: flex;
@@ -320,17 +290,9 @@
     position: relative;
 }
 
-.notification-item:hover {
-    background: #f8f9fa;
-}
-
-.notification-item.unread {
-    background: #f0f4ff;
-}
-
-.notification-item.unread:hover {
-    background: #e8edf5;
-}
+.notification-item:hover { background: #f8f9fa; }
+.notification-item.unread { background: #f0f4ff; }
+.notification-item.unread:hover { background: #e8edf5; }
 
 .notification-icon {
     width: 36px;
@@ -344,10 +306,7 @@
     flex-shrink: 0;
 }
 
-.notification-content {
-    flex: 1;
-    min-width: 0;
-}
+.notification-content { flex: 1; min-width: 0; }
 
 .notification-title {
     font-size: 13px;
@@ -366,11 +325,7 @@
     overflow: hidden;
 }
 
-.notification-time {
-    font-size: 10px;
-    color: #999;
-    margin-top: 4px;
-}
+.notification-time { font-size: 10px; color: #999; margin-top: 4px; }
 
 .notification-unread-dot {
     width: 8px;
@@ -399,12 +354,10 @@
     transition: all 0.2s;
 }
 
-.view-all-btn:hover {
-    background: #e8eaf6;
-}
+.view-all-btn:hover { background: #e8eaf6; }
 
 /* ============================================
-   SIDEBAR STYLES (White Doves Ministry Style)
+   SIDEBAR STYLES
    ============================================ */
 .side-nav {
     position: fixed;
@@ -422,11 +375,8 @@
     flex-direction: column;
 }
 
-.side-nav.open {
-    transform: translateX(0);
-}
+.side-nav.open { transform: translateX(0); }
 
-/* Sidebar Brand */
 .side-nav-brand {
     display: flex;
     align-items: center;
@@ -446,11 +396,7 @@
     background: #1a237e;
 }
 
-.brand-logo img {
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-}
+.brand-logo img { width: 100%; height: 100%; object-fit: contain; }
 
 .brand-name {
     font-size: 20px;
@@ -459,7 +405,6 @@
     letter-spacing: 1px;
 }
 
-/* Super Admin Badge */
 .side-nav-super-admin {
     padding: 12px 20px;
     border-bottom: 2px solid #c62828;
@@ -475,11 +420,8 @@
     gap: 10px;
 }
 
-.super-admin-text i {
-    font-size: 16px;
-}
+.super-admin-text i { font-size: 16px; }
 
-/* Navigation Menu */
 .side-nav-menu {
     flex: 1;
     padding: 10px 0;
@@ -498,10 +440,7 @@
     position: relative;
 }
 
-.nav-item:hover {
-    background: #f5f5f5;
-    color: #1a237e;
-}
+.nav-item:hover { background: #f5f5f5; color: #1a237e; }
 
 .nav-item.active {
     background: #e8eaf6;
@@ -520,19 +459,11 @@
     border-radius: 0 4px 4px 0;
 }
 
-.nav-item i {
-    width: 20px;
-    font-size: 16px;
-    text-align: center;
-    flex-shrink: 0;
-}
-
-.nav-item span {
-    flex: 1;
-}
+.nav-item i { width: 20px; font-size: 16px; text-align: center; flex-shrink: 0; }
+.nav-item span { flex: 1; }
 
 /* ============================================
-   NAVIGATION BADGES (Perfect Circle - Fixed Size)
+   NAVIGATION BADGES
    ============================================ */
 .nav-badge {
     padding: 0;
@@ -555,7 +486,6 @@
     position: relative;
 }
 
-/* Slightly larger for 4-digit numbers */
 .nav-badge.has-four-digits {
     min-width: 28px;
     min-height: 28px;
@@ -564,76 +494,21 @@
     font-size: 9px;
 }
 
-.nav-badge.default {
-    background: #1a237e;
-    color: white;
-}
+.nav-badge.default    { background: #1a237e; color: white; }
+.nav-badge.danger     { background: #dc3545; color: white; }
+.nav-badge.success    { background: #28a745; color: white; }
+.nav-badge.warning    { background: #ffc107; color: #333; }
+.nav-badge.info       { background: #17a2b8; color: white; }
 
-.nav-badge.danger {
-    background: #dc3545;
-    color: white;
-}
-
-.nav-badge.success {
-    background: #28a745;
-    color: white;
-}
-
-.nav-badge.warning {
-    background: #ffc107;
-    color: #333;
-}
-
-.nav-badge.info {
-    background: #17a2b8;
-    color: white;
-}
-
-/* Gradient Badges - Like Stats Cards */
-.nav-badge.students {
-    background: #4f46e5;
-    color: white;
-}
-
-.nav-badge.teachers {
-    background: #0284c7;
-    color: white;
-}
-
-.nav-badge.exams {
-    background: #0891b2;
-    color: white;
-}
-
-.nav-badge.results {
-    background: #16a34a;
-    color: white;
-}
-
-.nav-badge.submissions {
-    background: #10b981;
-    color: white;
-}
-
-.nav-badge.fees {
-    background: #d97706;
-    color: white;
-}
-
-.nav-badge.subscription {
-    background: #7c3aed;
-    color: white;
-}
-
-.nav-badge.storage {
-    background: #64748b;
-    color: white;
-}
-
-.nav-badge.sync {
-    background: #2563eb;
-    color: white;
-}
+.nav-badge.students     { background: #4f46e5; color: white; }
+.nav-badge.teachers     { background: #0284c7; color: white; }
+.nav-badge.exams        { background: #0891b2; color: white; }
+.nav-badge.results      { background: #16a34a; color: white; }
+.nav-badge.submissions  { background: #10b981; color: white; }
+.nav-badge.fees         { background: #d97706; color: white; }
+.nav-badge.subscription { background: #7c3aed; color: white; }
+.nav-badge.storage      { background: #64748b; color: white; }
+.nav-badge.sync         { background: #2563eb; color: white; }
 
 /* Footer with User Profile */
 .side-nav-footer {
@@ -663,16 +538,9 @@
     flex-shrink: 0;
 }
 
-.user-avatar-mini img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
+.user-avatar-mini img { width: 100%; height: 100%; object-fit: cover; }
 
-.user-info-mini {
-    flex: 1;
-    min-width: 0;
-}
+.user-info-mini { flex: 1; min-width: 0; }
 
 .user-name {
     font-size: 14px;
@@ -705,13 +573,8 @@
     font-weight: 500;
 }
 
-.logout-btn:hover {
-    background: #f8d7da;
-}
-
-.logout-btn i {
-    width: 20px;
-}
+.logout-btn:hover { background: #f8d7da; }
+.logout-btn i { width: 20px; }
 
 /* Overlay */
 .overlay {
@@ -727,68 +590,7 @@
     transition: all 0.3s ease;
 }
 
-.overlay.show {
-    opacity: 1;
-    visibility: visible;
-}
-
-/* Dark mode support for sidebar */
-@media (prefers-color-scheme: dark) {
-    .side-nav {
-        background: #1a1a2e;
-    }
-
-    .side-nav-brand {
-        border-bottom-color: #2d2d44;
-    }
-
-    .brand-name {
-        color: #e0e0e0;
-    }
-
-    .side-nav-super-admin {
-        background: #2d1a1a;
-        border-bottom-color: #c62828;
-    }
-
-    .super-admin-text {
-        color: #ef5350;
-    }
-
-    .nav-item {
-        color: #aaa;
-    }
-
-    .nav-item:hover {
-        background: #2d2d44;
-        color: #e0e0e0;
-    }
-
-    .nav-item.active {
-        background: #283593;
-        color: white;
-    }
-
-    .side-nav-footer {
-        border-top-color: #2d2d44;
-    }
-
-    .user-name {
-        color: #e0e0e0;
-    }
-
-    .user-email {
-        color: #888;
-    }
-
-    .logout-btn:hover {
-        background: #3d1a1a;
-    }
-
-    .overlay {
-        background: rgba(0, 0, 0, 0.7);
-    }
-}
+.overlay.show { opacity: 1; visibility: visible; }
 
 /* ============================================
    LAYOUT MAIN CONTENT
@@ -853,17 +655,9 @@
     flex-shrink: 0;
 }
 
-.sync-status {
-    flex-shrink: 0;
-}
-
-.chatbot-widget {
-    max-width: calc(100vw - 24px);
-}
-
-.subheader-notification-wrapper {
-    position: relative;
-}
+.sync-status { flex-shrink: 0; }
+.chatbot-widget { max-width: calc(100vw - 24px); }
+.subheader-notification-wrapper { position: relative; }
 
 .subheader-notification-btn {
     position: relative;
@@ -881,9 +675,7 @@
     justify-content: center;
 }
 
-.subheader-notification-btn:hover {
-    background: #f0f0f0;
-}
+.subheader-notification-btn:hover { background: #f0f0f0; }
 
 .subheader-notification-badge {
     position: absolute;
@@ -917,35 +709,34 @@
    ============================================ */
 
 /* Tablets and smaller laptops */
-
-
-   @media (max-width: 992px) {
+@media (max-width: 992px) {
     .header {
         height: 60px;
         padding: 0 15px;
     }
 
-    /* NEW: swap to short name at this breakpoint too */
+    /* FIX: hide full name entirely, show short name */
     .school-name-header {
-        display: none;
+        display: none !important;
+        visibility: hidden;
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+        pointer-events: none;
     }
 
     .school-name-short {
-        display: block;
+        display: block !important;
+        visibility: visible;
+        position: static;
         font-size: 17px;
     }
 
-    .logo-img {
-        height: 35px;
-    }
+    .logo-img { height: 35px; }
+    .side-nav { width: 260px; }
 
-    .side-nav {
-        width: 260px;
-    }
-
-    .layout-main {
-        margin-top: 60px;
-    }
+    .layout-main { margin-top: 60px; }
 
     .page-subheader-wrapper {
         top: 60px;
@@ -953,39 +744,36 @@
         padding: 0 16px;
     }
 
-    .subheader-title {
-        font-size: 16px;
-    }
-
-    .content-area {
-        padding: 20px;
-    }
+    .subheader-title { font-size: 16px; }
+    .content-area { padding: 20px; }
 }
 
-/* Mobile devices - EXACT White Doves approach */
+/* Mobile devices */
 @media (max-width: 768px) {
     .header {
         height: 56px;
         padding: 0 12px;
     }
 
-    /* Hide full school name on mobile, show short version instead */
     .school-name-header {
-        display: none;
+        display: none !important;
+        visibility: hidden;
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+        pointer-events: none;
     }
 
-   .school-name-short {
-    display: block;
-    font-size: 17px;
-}
-
-    .logo-img {
-        height: 30px;
+    .school-name-short {
+        display: block !important;
+        visibility: visible;
+        position: static;
+        font-size: 17px;
     }
 
-    .logo-container {
-        gap: 8px;
-    }
+    .logo-img { height: 30px; }
+    .logo-container { gap: 8px; }
 
     .menu-btn {
         width: 36px;
@@ -1004,9 +792,7 @@
         font-size: 14px;
     }
 
-    .user-menu {
-        gap: 8px;
-    }
+    .user-menu { gap: 8px; }
 
     .notification-btn {
         width: 34px;
@@ -1025,32 +811,12 @@
         right: -60px;
     }
 
-    .side-nav {
-        width: 280px;
-        max-width: 85vw;
-    }
-
-    .side-nav-brand {
-        padding: 15px 16px;
-    }
-
-    .brand-logo {
-        width: 36px;
-        height: 36px;
-    }
-
-    .brand-name {
-        font-size: 17px;
-    }
-
-    .nav-item {
-        padding: 10px 16px;
-        font-size: 13px;
-    }
-
-    .nav-item i {
-        font-size: 14px;
-    }
+    .side-nav { width: 280px; max-width: 85vw; }
+    .side-nav-brand { padding: 15px 16px; }
+    .brand-logo { width: 36px; height: 36px; }
+    .brand-name { font-size: 17px; }
+    .nav-item { padding: 10px 16px; font-size: 13px; }
+    .nav-item i { font-size: 14px; }
 
     .nav-badge {
         font-size: 10px;
@@ -1068,21 +834,11 @@
         font-size: 8px;
     }
 
-    .side-nav-footer {
-        padding: 12px 16px;
-    }
+    .side-nav-footer { padding: 12px 16px; }
+    .user-name { font-size: 13px; }
+    .logout-btn { font-size: 13px; }
 
-    .user-name {
-        font-size: 13px;
-    }
-
-    .logout-btn {
-        font-size: 13px;
-    }
-
-    .layout-main {
-        margin-top: 56px;
-    }
+    .layout-main { margin-top: 56px; }
 
     .page-subheader-wrapper {
         top: 56px;
@@ -1096,21 +852,14 @@
     }
 
     @media (max-width: 600px) {
-        .sync-status {
-            padding: 4px 8px !important;
-            gap: 0 !important;
-        }
+        .sync-status { padding: 4px 8px !important; gap: 0 !important; }
 
         .sync-status-label,
         .sync-status-pending,
         .sync-status-time,
-        .sync-status button {
-            display: none !important;
-        }
+        .sync-status button { display: none !important; }
 
-        .subheader-right {
-            gap: 6px;
-        }
+        .subheader-right { gap: 6px; }
 
         .chatbot-widget {
             right: 12px !important;
@@ -1118,10 +867,7 @@
         }
     }
 
-    .subheader-icon {
-        font-size: 14px;
-        width: 16px;
-    }
+    .subheader-icon { font-size: 14px; width: 16px; }
 
     .subheader-notification-btn {
         width: 32px;
@@ -1135,9 +881,7 @@
         height: 16px;
     }
 
-    .content-area {
-        padding: 16px;
-    }
+    .content-area { padding: 16px; }
 }
 
 /* Small phones */
@@ -1148,21 +892,24 @@
     }
 
     .school-name-header {
-        display: none;
+        display: none !important;
+        visibility: hidden;
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+        pointer-events: none;
     }
 
     .school-name-short {
-        display: block;
+        display: block !important;
+        visibility: visible;
+        position: static;
         font-size: 16px;
     }
 
-    .logo-img {
-        height: 26px;
-    }
-
-    .logo-container {
-        gap: 6px;
-    }
+    .logo-img { height: 26px; }
+    .logo-container { gap: 6px; }
 
     .menu-btn {
         width: 32px;
@@ -1173,7 +920,7 @@
     .admin-badge {
         font-size: 7px;
         padding: 1px 6px;
-        display: none;  /* White Doves hides badge on very small screens */
+        display: none;
     }
 
     .user-avatar {
@@ -1182,9 +929,7 @@
         font-size: 12px;
     }
 
-    .user-menu {
-        gap: 6px;
-    }
+    .user-menu { gap: 6px; }
 
     .notification-btn {
         width: 30px;
@@ -1203,34 +948,12 @@
         right: -70px;
     }
 
-    .side-nav {
-        width: 260px;
-        max-width: 80vw;
-    }
-
-    .side-nav-brand {
-        padding: 12px 14px;
-    }
-
-    .brand-logo {
-        width: 32px;
-        height: 32px;
-    }
-
-    .brand-name {
-        font-size: 15px;
-    }
-
-    .nav-item {
-        padding: 8px 14px;
-        font-size: 12px;
-        gap: 10px;
-    }
-
-    .nav-item i {
-        font-size: 13px;
-        width: 18px;
-    }
+    .side-nav { width: 260px; max-width: 80vw; }
+    .side-nav-brand { padding: 12px 14px; }
+    .brand-logo { width: 32px; height: 32px; }
+    .brand-name { font-size: 15px; }
+    .nav-item { padding: 8px 14px; font-size: 12px; gap: 10px; }
+    .nav-item i { font-size: 13px; width: 18px; }
 
     .nav-badge {
         font-size: 9px;
@@ -1248,32 +971,13 @@
         font-size: 8px;
     }
 
-    .side-nav-footer {
-        padding: 10px 14px;
-    }
+    .side-nav-footer { padding: 10px 14px; }
+    .user-avatar-mini { width: 30px; height: 30px; font-size: 12px; }
+    .user-name { font-size: 12px; }
+    .user-email { font-size: 10px; }
+    .logout-btn { font-size: 12px; padding: 8px 10px; }
 
-    .user-avatar-mini {
-        width: 30px;
-        height: 30px;
-        font-size: 12px;
-    }
-
-    .user-name {
-        font-size: 12px;
-    }
-
-    .user-email {
-        font-size: 10px;
-    }
-
-    .logout-btn {
-        font-size: 12px;
-        padding: 8px 10px;
-    }
-
-    .layout-main {
-        margin-top: 50px;
-    }
+    .layout-main { margin-top: 50px; }
 
     .page-subheader-wrapper {
         top: 50px;
@@ -1281,14 +985,8 @@
         padding: 0 10px;
     }
 
-    .subheader-title {
-        font-size: 12px;
-    }
-
-    .subheader-icon {
-        font-size: 12px;
-        width: 14px;
-    }
+    .subheader-title { font-size: 12px; }
+    .subheader-icon { font-size: 12px; width: 14px; }
 
     .subheader-notification-btn {
         width: 28px;
@@ -1302,9 +1000,7 @@
         height: 14px;
     }
 
-    .content-area {
-        padding: 12px;
-    }
+    .content-area { padding: 12px; }
 }
 
 /* Very small phones */
@@ -1315,17 +1011,23 @@
     }
 
     .school-name-header {
-        display: none;
+        display: none !important;
+        visibility: hidden;
+        position: absolute;
+        width: 0;
+        height: 0;
+        overflow: hidden;
+        pointer-events: none;
     }
 
     .school-name-short {
-        display: block;
+        display: block !important;
+        visibility: visible;
+        position: static;
         font-size: 14px;
     }
 
-    .logo-img {
-        height: 22px;
-    }
+    .logo-img { height: 22px; }
 
     .menu-btn {
         width: 28px;
@@ -1350,23 +1052,11 @@
         right: -80px;
     }
 
-    .side-nav {
-        width: 240px;
-        max-width: 75vw;
-    }
+    .side-nav { width: 240px; max-width: 75vw; }
+    .brand-name { font-size: 13px; }
+    .nav-item { font-size: 11px; padding: 6px 12px; }
 
-    .brand-name {
-        font-size: 13px;
-    }
-
-    .nav-item {
-        font-size: 11px;
-        padding: 6px 12px;
-    }
-
-    .layout-main {
-        margin-top: 45px;
-    }
+    .layout-main { margin-top: 45px; }
 
     .page-subheader-wrapper {
         top: 45px;
@@ -1374,34 +1064,17 @@
         padding: 0 8px;
     }
 
-    .subheader-title {
-        font-size: 11px;
-    }
-
-    .content-area {
-        padding: 10px;
-    }
+    .subheader-title { font-size: 11px; }
+    .content-area { padding: 10px; }
 }
 
 /* ============================================
    SCROLLBAR STYLING
    ============================================ */
-.side-nav::-webkit-scrollbar {
-    width: 4px;
-}
-
-.side-nav::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.side-nav::-webkit-scrollbar-thumb {
-    background: #d0d0d0;
-    border-radius: 4px;
-}
-
-.side-nav::-webkit-scrollbar-thumb:hover {
-    background: #b0b0b0;
-}
+.side-nav::-webkit-scrollbar { width: 4px; }
+.side-nav::-webkit-scrollbar-track { background: transparent; }
+.side-nav::-webkit-scrollbar-thumb { background: #d0d0d0; border-radius: 4px; }
+.side-nav::-webkit-scrollbar-thumb:hover { background: #b0b0b0; }
 
 /* ============================================
    DARK MODE SUPPORT
@@ -1412,187 +1085,75 @@
         border-bottom-color: #2d2d44;
     }
 
-    .school-name-header {
-        color: #e0e0e0;
-    }
+    .school-name-header { color: #e0e0e0; }
+    .school-name-short  { color: #e0e0e0; }
 
-    .school-name-short {
-        color: #e0e0e0;
-    }
+    .menu-btn { color: #e0e0e0; }
+    .menu-btn:hover { background: #2d2d44; }
 
-    .menu-btn {
-        color: #e0e0e0;
-    }
+    .notification-btn { color: #aaa; }
+    .notification-btn:hover { background: #2d2d44; }
 
-    .menu-btn:hover {
-        background: #2d2d44;
-    }
+    .notification-dropdown { background: #1a1a2e; }
+    .notification-header { border-bottom-color: #2d2d44; }
+    .notification-header h3 { color: #e0e0e0; }
 
-    .notification-btn {
-        color: #aaa;
-    }
+    .mark-all-read { color: #5c6bc0; }
+    .mark-all-read:hover { background: #2d2d44; }
 
-    .notification-btn:hover {
-        background: #2d2d44;
-    }
+    .notification-item { border-bottom-color: #2d2d44; }
+    .notification-item:hover { background: #2d2d44; }
+    .notification-item.unread { background: #1a1a3e; }
+    .notification-item.unread:hover { background: #252545; }
 
-    .notification-dropdown {
-        background: #1a1a2e;
-    }
+    .notification-title { color: #e0e0e0; }
+    .notification-message { color: #aaa; }
+    .notification-time { color: #666; }
 
-    .notification-header {
-        border-bottom-color: #2d2d44;
-    }
+    .notification-empty { color: #666; }
+    .notification-empty i { color: #444; }
 
-    .notification-header h3 {
-        color: #e0e0e0;
-    }
+    .notification-footer { border-top-color: #2d2d44; }
+    .view-all-btn { color: #5c6bc0; }
+    .view-all-btn:hover { background: #2d2d44; }
 
-    .mark-all-read {
-        color: #5c6bc0;
-    }
-
-    .mark-all-read:hover {
-        background: #2d2d44;
-    }
-
-    .notification-item {
-        border-bottom-color: #2d2d44;
-    }
-
-    .notification-item:hover {
-        background: #2d2d44;
-    }
-
-    .notification-item.unread {
-        background: #1a1a3e;
-    }
-
-    .notification-item.unread:hover {
-        background: #252545;
-    }
-
-    .notification-title {
-        color: #e0e0e0;
-    }
-
-    .notification-message {
-        color: #aaa;
-    }
-
-    .notification-time {
-        color: #666;
-    }
-
-    .notification-empty {
-        color: #666;
-    }
-
-    .notification-empty i {
-        color: #444;
-    }
-
-    .notification-footer {
-        border-top-color: #2d2d44;
-    }
-
-    .view-all-btn {
-        color: #5c6bc0;
-    }
-
-    .view-all-btn:hover {
-        background: #2d2d44;
-    }
-
-    .side-nav {
-        background: #1a1a2e;
-    }
-
-    .side-nav-brand {
-        border-bottom-color: #2d2d44;
-    }
-
-    .brand-name {
-        color: #e0e0e0;
-    }
+    .side-nav { background: #1a1a2e; }
+    .side-nav-brand { border-bottom-color: #2d2d44; }
+    .brand-name { color: #e0e0e0; }
 
     .side-nav-super-admin {
         background: #2d1a1a;
         border-bottom-color: #c62828;
     }
 
-    .super-admin-text {
-        color: #ef5350;
-    }
+    .super-admin-text { color: #ef5350; }
 
-    .nav-item {
-        color: #aaa;
-    }
+    .nav-item { color: #aaa; }
+    .nav-item:hover { background: #2d2d44; color: #e0e0e0; }
+    .nav-item.active { background: #283593; color: white; }
 
-    .nav-item:hover {
-        background: #2d2d44;
-        color: #e0e0e0;
-    }
+    .side-nav-footer { border-top-color: #2d2d44; }
+    .user-name { color: #e0e0e0; }
+    .user-email { color: #888; }
+    .logout-btn:hover { background: #3d1a1a; }
 
-    .nav-item.active {
-        background: #283593;
-        color: white;
-    }
+    .overlay { background: rgba(0, 0, 0, 0.7); }
 
-    .side-nav-footer {
-        border-top-color: #2d2d44;
-    }
-
-    .user-name {
-        color: #e0e0e0;
-    }
-
-    .user-email {
-        color: #888;
-    }
-
-    .logout-btn:hover {
-        background: #3d1a1a;
-    }
-
-    .overlay {
-        background: rgba(0, 0, 0, 0.7);
-    }
-
-    .layout-main {
-        background: #12121e;
-    }
+    .layout-main { background: #12121e; }
 
     .page-subheader-wrapper {
         background: #1a1a2e;
         border-bottom-color: #2d2d44;
     }
 
-    .subheader-title {
-        color: #e0e0e0;
-    }
+    .subheader-title { color: #e0e0e0; }
+    .subheader-icon { color: #5c6bc0; }
 
-    .subheader-icon {
-        color: #5c6bc0;
-    }
+    .subheader-notification-btn { color: #aaa; }
+    .subheader-notification-btn:hover { background: #2d2d44; }
 
-    .subheader-notification-btn {
-        color: #aaa;
-    }
+    .content-area { background: #12121e; }
 
-    .subheader-notification-btn:hover {
-        background: #2d2d44;
-    }
-
-    .content-area {
-        background: #12121e;
-    }
-
-    .user-avatar {
-        border-color: #2d2d44;
-    }
-
-    .user-avatar:hover {
-        border-color: #5c6bc0;
-    }
+    .user-avatar { border-color: #2d2d44; }
+    .user-avatar:hover { border-color: #5c6bc0; }
 }
