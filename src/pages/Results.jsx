@@ -25,13 +25,39 @@ import {
 
 const MAX_IMPORT_SIZE = 5 * 1024 * 1024; // 5 MB
 
+// ---------------------------------------------------------------------------
+// Chatbot cache invalidation
+//
+// Called after every successful score save so the chatbot's performance
+// summaries reflect the new data immediately, instead of waiting out the
+// short (2–5 min) Blobs cache TTL.
+//
+// Fire-and-forget: never throws, never blocks the UI.
+// ---------------------------------------------------------------------------
+async function invalidatePerformanceCache({ currentUser, schoolId }) {
+    try {
+        if (!currentUser || !schoolId) return;
+        const token = await currentUser.getIdToken();
+        await fetch('/api/chatbot-cache-invalidate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ prefixes: [`perf:${schoolId}:`] })
+        });
+    } catch (e) {
+        // Non-fatal. The short TTL will self-heal.
+        console.warn('Performance cache invalidation failed:', e);
+    }
+}
+
 export default function Results() {
     const navigate = useNavigate();
     const location = useLocation();
     const { currentUser, userData, userRole } = useAuth();
     const { isOnline, addToSyncQueue } = useSync();
 
-    // Fix #5: use SchoolContext directly, no local configs state
     const {
         configs: assessmentConfigs,
         isDeadlinePassed: checkSchoolDeadline,
@@ -39,7 +65,6 @@ export default function Results() {
         refresh: refreshConfigs
     } = useSchool();
 
-    // ---- School data ----
     const schoolData = {
         name: userData?.schoolName || userData?.school?.name || 'TOPLINK EDU',
         motto: userData?.schoolMotto || userData?.school?.motto || 'Powering Modern Education',
@@ -50,7 +75,6 @@ export default function Results() {
     const schoolName = schoolData.name;
     const schoolMotto = schoolData.motto;
 
-    // ---- State ----
     const [students, setStudents] = useState([]);
     const [studentScores, setStudentScores] = useState({});
     const [loading, setLoading] = useState(false);
@@ -67,9 +91,6 @@ export default function Results() {
     const [deadlineAssessmentType, setDeadlineAssessmentType] = useState('Assessment 1');
     const [controlAssessmentType, setControlAssessmentType] = useState('Assessment 1');
 
-    // `teacherAccess` now includes a `levels` array so multi-level teachers
-    // work correctly. `level` remains as the "primary" level for backwards
-    // compatibility with existing code paths.
     const [teacherAccess, setTeacherAccess] = useState({
         level: '',
         levels: [],
@@ -153,7 +174,6 @@ export default function Results() {
     const [selectedStudent, setSelectedStudent] = useState(null);
     const [reportStudent, setReportStudent] = useState(null);
 
-    // ---- Notifications ----
     const showNotification = useCallback((message, type = 'info') => {
         const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
         const n = document.createElement('div');
@@ -163,7 +183,6 @@ export default function Results() {
         setTimeout(() => n.remove(), 3500);
     }, []);
 
-    // ---- Role setup ----
     useEffect(() => {
         const role = userRole || userData?.role || 'teacher';
         setIsAdmin(role === 'admin' || role === 'school_admin' || role === 'super-admin');
@@ -173,26 +192,13 @@ export default function Results() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userData, userRole, currentUser]);
 
-    // Check for examId in URL params
     useEffect(() => {
         const params = new URLSearchParams(location.search);
         const examId = params.get('examId');
         if (examId) console.log('Loading results for exam:', examId);
     }, [location]);
 
-    // ------------------------------------------------------------
-    // Teacher access resolution
-    //
-    // Priority order:
-    //   1. Firebase Auth custom claims (if a Cloud Function has set them)
-    //   2. Firestore `users/{uid}` doc, exposed via AuthContext as `userData`
-    //      (this is what the Teachers page now writes to)
-    //
-    // The Teachers page has NO way to set custom claims — that requires
-    // the Admin SDK. So in practice path #2 is what makes teachers work.
-    // ------------------------------------------------------------
     const loadTeacherAccess = async () => {
-        // 1) Try custom claims first (kept for forward compatibility)
         try {
             const tokenResult = await currentUser.getIdTokenResult(true);
             const c = tokenResult.claims || {};
@@ -218,12 +224,10 @@ export default function Results() {
             console.warn('Custom claims read failed, falling back to userData:', e);
         }
 
-        // 2) Fallback: the Firestore `users/{uid}` doc via AuthContext
         if (!userData) return;
 
         const assignments = Array.isArray(userData.assignments) ? userData.assignments : [];
 
-        // Prefer the new `assignments` shape — [{ subject, classes: [...] }]
         const classesFromAssignments = [...new Set(
             assignments.flatMap(a => Array.isArray(a.classes) ? a.classes : [])
         )];
@@ -231,7 +235,6 @@ export default function Results() {
             assignments.map(a => a.subject).filter(Boolean)
         )];
 
-        // Legacy fields (kept for older teacher docs)
         const legacyClasses = Array.isArray(userData.classes)
             ? userData.classes
             : (userData.class ? [userData.class] : []);
@@ -249,7 +252,6 @@ export default function Results() {
             ? subjectsFromAssignments
             : legacySubjects;
 
-        // Derive levels from class list if we still don't have any
         let effectiveLevels = legacyLevels;
         if (effectiveLevels.length === 0 && effectiveClasses.length > 0) {
             const set = new Set();
@@ -261,7 +263,6 @@ export default function Results() {
             effectiveLevels = [...set];
         }
 
-        // Primary level: explicit `userData.level` wins, else first derived
         const primaryLevel = userData.level || effectiveLevels[0] || '';
 
         setTeacherAccess({
@@ -276,7 +277,6 @@ export default function Results() {
         if (effectiveClasses.length === 1) setSelectedClass(effectiveClasses[0]);
     };
 
-    // ---- Access checks ----
     const hasClassAccess = useCallback(
         (cls) => isAdmin || teacherAccess.classes.includes(cls),
         [isAdmin, teacherAccess]
@@ -293,7 +293,6 @@ export default function Results() {
         [isAdmin, teacherAccess]
     );
 
-    // ---- Memoized dropdown options ----
     const availableLevels = useMemo(() => (
         isAdmin
             ? ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school']
@@ -311,11 +310,9 @@ export default function Results() {
         isAdmin ? (LEVEL_SUBJECTS[selectedLevel] || []) : (teacherAccess.subjects || [])
     ), [isAdmin, selectedLevel, teacherAccess.subjects]);
 
-    // ---- Level Access / ReadOnly ----
     const isLevelOpen = selectedLevel ? (levelPermissions[selectedLevel]?.[assessmentType] !== false) : true;
     const isReadOnly = !isLevelOpen && !isAdmin;
 
-    // ---- Filter change handlers ----
     const handleLevelChange = (e) => {
         const level = e.target.value;
         setSelectedLevel(level);
@@ -351,7 +348,6 @@ export default function Results() {
     const handleAssessmentTypeChange = (e) => setAssessmentType(e.target.value);
     const handleDeadlineChange = (e) => setAssessmentDeadline(e.target.value);
 
-    // ---- Load students & scores ----
     const loadStudents = async () => {
         if (!selectedLevel || !selectedClass || !selectedSubject) {
             showNotification('Please select level, class, and subject', 'warning');
@@ -375,7 +371,6 @@ export default function Results() {
         setCurrentPage(1);
 
         try {
-            // Cache-first for offline support
             const cacheKey = `students_${schoolId}_${selectedLevel}_${selectedClass}`;
             const cached = await idbGet(cacheKey);
             if (cached && cached.length) {
@@ -417,7 +412,6 @@ export default function Results() {
         }
     };
 
-    // ---- Fix #1: saveAllScores (batch) ----
     const saveAllScores = async () => {
         if (isReadOnly) {
             showNotification('Deadline passed — read-only', 'warning');
@@ -467,10 +461,14 @@ export default function Results() {
                         message: `Saved ${entries.length} ${selectedSubject} score(s) for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
                     }
                 );
+
+                // Clear the chatbot's performance cache so the next chat
+                // query sees the new scores. Fire-and-forget.
+                invalidatePerformanceCache({ currentUser, schoolId });
+
                 showNotification(`Saved ${entries.length} scores`, 'success');
             }
 
-            // Merge into local state
             setStudentScores(prev => {
                 const updated = { ...prev };
                 for (const e of entries) {
@@ -492,7 +490,6 @@ export default function Results() {
                 return updated;
             });
 
-            // Recompute averages
             setStudents(prev => prev.map(s => {
                 const scores = [
                     ...(studentScores[s.id] || []).filter(sc =>
@@ -520,7 +517,6 @@ export default function Results() {
         }
     };
 
-    // ---- Fix #1: saveScore — direct, no state race ----
     const saveScore = async (studentId) => {
         if (isReadOnly) {
             showNotification('Deadline passed — read-only', 'warning');
@@ -565,10 +561,13 @@ export default function Results() {
                         message: `Saved ${selectedSubject} score for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
                     }
                 );
+
+                // Clear the chatbot's performance cache.
+                invalidatePerformanceCache({ currentUser, schoolId });
+
                 showNotification('Score saved', 'success');
             }
 
-            // Update local scores map
             const updated = { ...studentScores };
             const filtered = (updated[studentId] || []).filter(sc =>
                 sc.subject !== selectedSubject ||
@@ -585,7 +584,6 @@ export default function Results() {
             updated[studentId] = filtered;
             setStudentScores(updated);
 
-            // Recompute this student's average
             setStudents(prev => prev.map(s => {
                 if (s.id !== studentId) return s;
                 const scores = updated[studentId] || [];
@@ -593,7 +591,6 @@ export default function Results() {
                 return { ...s, average: scores.length ? Math.round(total / scores.length) : null };
             }));
 
-            // Remove ONLY this student from pending
             setPendingInputs(prev => {
                 const next = { ...prev };
                 delete next[studentId];
@@ -607,7 +604,6 @@ export default function Results() {
         }
     };
 
-    // ---- Publish ----
     const publishResult = async (studentId) => {
         try {
             const schoolId = requireSchoolId(userData);
@@ -632,7 +628,6 @@ export default function Results() {
         }
     };
 
-    // ---- Save deadline (admin) ----
     const handleSaveDeadline = async () => {
         if (!isAdmin) return;
         if (!assessmentDeadline) {
@@ -663,23 +658,12 @@ export default function Results() {
         }
     };
 
-    // ------------------------------------------------------------
-    // Teacher scope helpers
-    //
-    // When `isAdmin === false`, all ranking and score-sheet exports
-    // are confined to the single `selectedSubject` in the current
-    // `selectedClass`. Admin keeps the whole-class, all-subjects view.
-    // ------------------------------------------------------------
-
-    // Compute per-student subject score from the loaded `studentScores`.
     const getSubjectScoreForStudent = useCallback((studentId, subject) => {
         const scores = studentScores[studentId] || [];
         const hit = scores.find(s => s.subject === subject);
         return hit ? hit.score : null;
     }, [studentScores]);
 
-    // Class mean in the current subject (teachers) or overall
-    // (admin) across all subjects we've loaded.
     const classSubjectMean = useMemo(() => {
         if (!selectedSubject) return 0;
         const values = students
@@ -689,14 +673,10 @@ export default function Results() {
         return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
     }, [students, selectedSubject, getSubjectScoreForStudent]);
 
-    // Ranking rows the modal/PDF will render.
-    // Teacher: one row per student with the subject score + rank in that subject.
-    // Admin: one row per student, full multi-subject aggregation as before.
     const buildRankingRows = useCallback(() => {
         const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
 
         if (!isAdmin) {
-            // --- Teacher scope: single subject ranking ---
             const rows = students.map((s) => {
                 const score = getSubjectScoreForStudent(s.id, selectedSubject);
                 const grade = getCBCGrade(score ?? 0);
@@ -710,7 +690,6 @@ export default function Results() {
                 };
             });
 
-            // Rank by subject score desc, nulls last
             const sorted = [...rows].sort((a, b) => {
                 const av = a.subjectScore;
                 const bv = b.subjectScore;
@@ -722,7 +701,6 @@ export default function Results() {
             return sorted;
         }
 
-        // --- Admin scope: multi-subject ranking ---
         const rows = students.map((s) => {
             const scores = studentScores[s.id] || [];
             const subjectScores = {};
@@ -744,7 +722,6 @@ export default function Results() {
         return [...rows].sort((a, b) => (b.average || 0) - (a.average || 0));
     }, [isAdmin, students, studentScores, selectedLevel, selectedSubject, getSubjectScoreForStudent]);
 
-    // ---- Fix #3: PDF exports ----
     const handleDownloadReportPDF = async (student) => {
         if (!student) return;
         try {
@@ -775,8 +752,6 @@ export default function Results() {
             const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
             const data = buildRankingRows();
 
-            // For teachers, pass just the single subject so the PDF's
-            // header and mean column reflect the subject scope.
             const pdfSubjects = isAdmin ? allSubjects : [selectedSubject];
 
             const result = await downloadRankingPDF(data, {
@@ -788,8 +763,6 @@ export default function Results() {
                 year: new Date().getFullYear(),
                 assessmentType,
                 subjects: pdfSubjects,
-                // A marker so the PDF service can optionally show "Class Mean"
-                // for the teacher's single subject.
                 classSubjectMean: isAdmin ? undefined : classSubjectMean,
                 scope: isAdmin ? 'all-subjects' : 'single-subject',
                 scopeSubject: isAdmin ? undefined : selectedSubject
@@ -804,7 +777,6 @@ export default function Results() {
         }
     };
 
-    // ---- CSV exports ----
     const downloadCSV = (content, filename) => {
         const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
@@ -815,13 +787,6 @@ export default function Results() {
         URL.revokeObjectURL(url);
     };
 
-    // ------------------------------------------------------------
-    // Score sheet export
-    //
-    // Teacher: rows are scoped to their subject — Score, Mean,
-    //          Rank within subject, CBC Grade from that score.
-    // Admin:   rows keep the multi-subject Average view.
-    // ------------------------------------------------------------
     const exportResultsCSV = () => {
         if (students.length === 0) {
             showNotification('No data to export', 'warning');
@@ -829,7 +794,6 @@ export default function Results() {
         }
 
         if (!isAdmin) {
-            // --- Teacher score sheet (single subject) ---
             const rows = students.map((s) => {
                 const score = getSubjectScoreForStudent(s.id, selectedSubject);
                 const grade = getCBCGrade(score ?? 0);
@@ -846,7 +810,6 @@ export default function Results() {
                 };
             });
 
-            // Rank by score desc, ties keep insertion order
             const ranked = [...rows]
                 .map((r, i) => ({ ...r, _orig: i }))
                 .sort((a, b) => {
@@ -871,7 +834,6 @@ export default function Results() {
             return;
         }
 
-        // --- Admin score sheet (existing multi-subject view) ---
         const rows = students.map(s => {
             const grade = getCBCGrade(s.average || 0);
             return {
@@ -892,7 +854,6 @@ export default function Results() {
         showNotification('Results exported', 'success');
     };
 
-    // Admin-only — teachers don't get the full ranking CSV.
     const exportRankingCSV = () => {
         if (!isAdmin) return;
         if (students.length === 0) {
@@ -929,7 +890,6 @@ export default function Results() {
         showNotification('Ranking exported', 'success');
     };
 
-    // ---- Fix #7: CSV import (size guard + one read) ----
     const handleImportResults = async (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -966,7 +926,6 @@ export default function Results() {
             return;
         }
 
-        // One read: preload students into a Map
         const classStudents = students.length
             ? students
             : await getStudents(schoolId, selectedLevel, selectedClass);
@@ -1003,12 +962,14 @@ export default function Results() {
             { teacherId: currentUser?.uid, teacherName: userData?.fullName || '' }
         );
 
+        // Clear the chatbot's performance cache.
+        invalidatePerformanceCache({ currentUser, schoolId });
+
         showNotification(`Imported ${entries.length} scores, ${errors} errors`, 'success');
         await loadStudents();
         e.target.value = '';
     };
 
-    // ---- Report & Ranking generators (open modals) ----
     const generateSingleReport = (studentId) => {
         const student = students.find(s => s.id === studentId);
         if (!student) {
@@ -1031,7 +992,6 @@ export default function Results() {
         setShowRankingModal(true);
     };
 
-    // ---- Fix #2: view student score history (opens React modal) ----
     const viewStudentScores = (studentId) => {
         const student = students.find(s => s.id === studentId);
         if (!student) return;
@@ -1039,7 +999,6 @@ export default function Results() {
         setShowHistoryModal(true);
     };
 
-    // ---- Mark pending input ----
     const markScorePending = (studentId, value) => {
         if (isReadOnly) {
             showNotification('Deadline passed — read-only', 'warning');
@@ -1048,7 +1007,6 @@ export default function Results() {
         setPendingInputs(prev => ({ ...prev, [studentId]: value }));
     };
 
-    // ---- Stats (memoized) ----
     const stats = useMemo(() => {
         const scored = students.filter(s => s.average !== null && s.average !== undefined);
         const avg = scored.length ? Math.round(scored.reduce((a, s) => a + s.average, 0) / scored.length) : 0;
@@ -1068,7 +1026,6 @@ export default function Results() {
 
     return (
         <Layout title="Results (CBC)">
-            {/* Role indicator alert (auto-hides after 10s) */}
             {showRoleAlert && (
                 <div style={{
                     background: isAdmin ? '#d4edda' : '#d1ecf1',
@@ -1086,7 +1043,6 @@ export default function Results() {
                 </div>
             )}
 
-            {/* Level Closed indicator */}
             {!isLevelOpen && (
                 <div style={{
                     background: '#f8d7da', color: '#721c24',
@@ -1099,7 +1055,6 @@ export default function Results() {
                 </div>
             )}
 
-            {/* Using cached data indicator */}
             {usingCachedData && isOnline && (
                 <div style={{
                     background: '#d1ecf1', color: '#0c5460',
@@ -1112,7 +1067,6 @@ export default function Results() {
                 </div>
             )}
 
-            {/* Stats Grid */}
             <div className="stats-grid">
                 <div className="stat-card">
                     <div className="stat-label">Total Students</div>
@@ -1132,7 +1086,6 @@ export default function Results() {
                 </div>
             </div>
 
-            {/* Selection Area */}
             <div className="selection-area" style={{
                 background: 'white', borderRadius: '12px', padding: '25px',
                 boxShadow: '0 4px 6px rgba(0,0,0,0.07)', marginBottom: '25px',
@@ -1245,7 +1198,6 @@ export default function Results() {
                 </button>
             </div>
 
-            {/* Level Result Entry Controls - Admin Only */}
             {isAdmin && (
                 <div style={{
                     background: 'white', borderRadius: '12px', padding: '20px',
@@ -1275,7 +1227,7 @@ export default function Results() {
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
                         {['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school'].map(lvl => {
-                            const isOpen = levelPermissions[lvl]?.[controlAssessmentType] !== false; // default true
+                            const isOpen = levelPermissions[lvl]?.[controlAssessmentType] !== false;
                             return (
                                 <div key={lvl} style={{
                                     padding: '15px',
@@ -1322,7 +1274,6 @@ export default function Results() {
                 </div>
             )}
 
-            {/* Assessment Summary */}
             {stats.totalStudents > 0 && (
                 <div style={{
                     background: 'white', borderRadius: '12px', padding: '15px 20px',
@@ -1345,7 +1296,6 @@ export default function Results() {
                 </div>
             )}
 
-            {/* Action Buttons */}
             <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
                 <button
                     className="btn btn-success"
@@ -1361,7 +1311,6 @@ export default function Results() {
                     <i className="fas fa-save"></i> {saving ? 'Saving...' : `Save All (${Object.keys(pendingInputs).length})`}
                 </button>
 
-                {/* Ranking Report — teachers get a subject-scoped ranking; admin gets full-class */}
                 <button
                     className="btn btn-warning"
                     style={{
@@ -1380,7 +1329,6 @@ export default function Results() {
                     {isAdmin ? 'Ranking Report' : `Ranking Report (${selectedSubject || 'Subject'})`}
                 </button>
 
-                {/* Ranking PDF — same scoping as the modal */}
                 <button
                     className="btn btn-info"
                     style={{
@@ -1458,7 +1406,6 @@ export default function Results() {
                 )}
             </div>
 
-            {/* Students Table — extracted component */}
             <ResultsTable
                 students={students}
                 pendingInputs={pendingInputs}
@@ -1476,7 +1423,6 @@ export default function Results() {
                 onDownloadPDF={handleDownloadReportPDF}
             />
 
-            {/* Score History Modal — Fix #2, React-rendered */}
             {showHistoryModal && selectedStudent && (
                 <ScoreHistoryModal
                     student={selectedStudent}
@@ -1486,7 +1432,6 @@ export default function Results() {
                 />
             )}
 
-            {/* Report Modal — Fix #3, no innerHTML */}
             {showReportModal && reportStudent && (
                 <ReportModal
                     student={reportStudent}
@@ -1505,7 +1450,6 @@ export default function Results() {
                 />
             )}
 
-            {/* Ranking Modal — scoped for teachers, full-class for admins */}
             {showRankingModal && (
                 <RankingModal
                     students={buildRankingRows()}
@@ -1517,12 +1461,9 @@ export default function Results() {
                         cls: selectedClass,
                         term: selectedTerm,
                         assessmentType,
-                        // Teachers: only their selected subject so the table
-                        // shows a single column and ranks by it.
                         subjects: isAdmin
                             ? (LEVEL_SUBJECTS[selectedLevel] || [])
                             : [selectedSubject],
-                        // Extra context the modal can display
                         scope: isAdmin ? 'all-subjects' : 'single-subject',
                         scopeSubject: isAdmin ? null : selectedSubject,
                         classSubjectMean: isAdmin ? null : classSubjectMean
@@ -1532,7 +1473,6 @@ export default function Results() {
                 />
             )}
 
-            {/* Styles */}
             <style>{`
                 .stat-card { transition: all 0.3s; }
                 .stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
