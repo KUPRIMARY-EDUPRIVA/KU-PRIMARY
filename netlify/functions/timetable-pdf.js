@@ -2,11 +2,11 @@
 // A4 landscape timetable renderer (PDFKit).
 // Supports: class | teacher | master | duty.
 //
-// Layout convention (updated):
-//   - Columns = Days of the week (Monday … Friday)
-//   - Rows    = Periods, with time / duration in the left column
-//   - Breaks  span all columns
-//   - Duty roster keeps days as columns, duty areas as rows
+// Layout convention:
+//   - Rows    = Days of the week (Monday … Friday)
+//   - Columns = Periods (with time / duration in the header row)
+//   - Break columns span all rows
+//   - Duty roster keeps duty areas as rows and days as columns
 //
 // Request body:
 //   {
@@ -64,7 +64,6 @@ const FONT_BOLD = 'Times-Bold';
 const FONT_ITALIC = 'Times-Italic';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-const DAY_SHORT = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
 
 const MARGIN = 28;
 const HEADER_LOGO = 46;
@@ -132,7 +131,6 @@ function dutyTime(a) {
   return `${decimalToHHMM(a.start)} - ${decimalToHHMM(a.end)}`;
 }
 
-/** Duration in minutes between two HH:MM strings. Returns null if unknown. */
 function periodDuration(start, end) {
   if (!start || !end) return null;
   const s = String(start).split(':').map(Number);
@@ -345,86 +343,131 @@ function drawFooter(doc, school) {
 }
 
 /**
- * Draw the shared header row for a period-rows grid:
- *   [Period / Time] [Mon] [Tue] [Wed] [Thu] [Fri]
- * Returns the y-coordinate immediately after the header row.
+ * Draw the period header row:
+ *   [Day / Time] [P1 08:00-08:40] [P2 ...] [BREAK] [P3 ...] ...
+ * Each class period gets a column showing its name + time range.
+ * Each break period gets a narrow column with a rotated label.
+ * Returns { periodColWidths, nextY }.
  */
-function drawGridHeader(doc, { x, y, w, timeColW, headerH }) {
-  const dayColW = (w - timeColW) / DAYS.length;
-
+function drawPeriodHeaderRow(doc, { x, y, w, dayColW, periods, headerH }) {
+  // Header row background
   doc.rect(x, y, w, headerH).fill(COLORS.navy);
-  doc.font(FONT_BOLD).fontSize(8.5).fillColor(COLORS.white)
-    .text('Period / Time', x + 4, y + headerH / 2 - 5,
-      { width: timeColW - 8, align: 'left' });
 
-  for (let i = 0; i < DAYS.length; i += 1) {
-    const cx = x + timeColW + dayColW * i;
-    doc.text(DAYS[i].toUpperCase(), cx, y + headerH / 2 - 5,
-      { width: dayColW, align: 'center' });
+  // First cell — corner label
+  doc.font(FONT_BOLD).fontSize(8).fillColor(COLORS.white)
+    .text('Day / Time', x + 4, y + headerH / 2 - 5,
+      { width: dayColW - 8, align: 'left' });
+
+  // Per-period header cells
+  const classCount = periods.filter((p) => p.type !== 'break').length;
+  const breakCount = periods.length - classCount;
+
+  // Give breaks a fixed narrow width, class periods share the remaining space
+  const breakColW = breakCount > 0 ? 22 : 0;
+  const classColW = classCount > 0
+    ? (w - dayColW - breakColW * breakCount) / classCount
+    : 0;
+
+  const colWidths = [];
+  let cx = x + dayColW;
+
+  for (const period of periods) {
+    const colW = period.type === 'break' ? breakColW : classColW;
+    colWidths.push({ period, x: cx, w: colW });
+
+    // Vertical separator
+    doc.save();
+    doc.moveTo(cx, y).lineTo(cx, y + headerH)
+      .lineWidth(0.5).strokeColor('#2b3a72').stroke();
+    doc.restore();
+
+    if (period.type === 'break') {
+      // Rotated label for breaks (reads bottom-to-top)
+      doc.save();
+      doc.font(FONT_BOLD).fontSize(6).fillColor(COLORS.white);
+      const label = (period.label || period.name || 'BREAK').toUpperCase();
+      doc.rotate(-90, { origin: [cx + colW / 2, y + headerH / 2] });
+      doc.text(label, cx + colW / 2 - 40, y + headerH / 2 - 3,
+        { width: 80, align: 'center', lineBreak: false });
+      doc.restore();
+    } else {
+      // Name on first line, time range on second line
+      doc.font(FONT_BOLD).fontSize(6.5).fillColor(COLORS.white)
+        .text(period.name || 'Period', cx + 2, y + 4,
+          { width: colW - 4, align: 'center', ellipsis: true });
+      if (period.time) {
+        doc.font(FONT_REGULAR).fontSize(5.5).fillColor('#c7d0ea')
+          .text(period.time, cx + 2, y + 13,
+            { width: colW - 4, align: 'center', ellipsis: true });
+      }
+    }
+
+    cx += colW;
   }
 
-  return { dayColW, nextY: y + headerH };
+  // Right edge
+  doc.save();
+  doc.moveTo(x + w, y).lineTo(x + w, y + headerH)
+    .lineWidth(0.5).strokeColor('#2b3a72').stroke();
+  doc.restore();
+
+  return { periodColWidths: colWidths, nextY: y + headerH };
 }
 
 /**
- * Draw the left-hand time cell for a period row: period name, time range
- * and duration in minutes.
+ * Draw a day row (five of them, one per weekday).
+ * The left column shows the day name; each period column shows either
+ * the timetable slot for that (day, period) pair, or is empty.
+ * Break columns are tinted with the break colour.
  */
-function drawTimeCell(doc, { x, y, w, h, period }) {
-  doc.rect(x, y, w, h).fill(COLORS.light);
+function drawDayRow(doc, {
+  x, y, w, h, day, dayColW, periodColWidths, schedule,
+}) {
+  // Day cell (left)
+  doc.rect(x, y, dayColW, h).fill(COLORS.light);
   doc.strokeColor(COLORS.border).lineWidth(0.5)
-    .rect(x, y, w, h).stroke();
+    .rect(x, y, dayColW, h).stroke();
+  doc.font(FONT_BOLD).fontSize(8.5).fillColor(COLORS.slate)
+    .text(day, x + 4, y + h / 2 - 6, { width: dayColW - 8, align: 'left' });
 
-  const name = period.name || 'Period';
-  doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.slate)
-    .text(name, x + 4, y + 4, { width: w - 8, align: 'left', ellipsis: true });
+  // Period cells
+  for (const { period, x: cx, w: colW } of periodColWidths) {
+    doc.rect(cx, y, colW, h).strokeColor(COLORS.border).lineWidth(0.5).stroke();
 
-  if (period.time) {
-    doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
-      .text(period.time, x + 4, y + 15, { width: w - 8, align: 'left' });
+    if (period.type === 'break') {
+      // Tint the entire break column
+      doc.save();
+      doc.rect(cx + 0.4, y + 0.4, colW - 0.8, h - 0.8).fill(COLORS.breakBg).restore();
+      continue;
+    }
+
+    const slot = schedule?.[day]?.[period.id];
+    if (!slot) continue;
+
+    const isEvent = !!slot.isEvent;
+    if (isEvent) {
+      doc.save();
+      doc.rect(cx + 0.4, y + 0.4, colW - 0.8, h - 0.8).fill('#fffbea').restore();
+      doc.save();
+      doc.rect(cx, y, 3, h).fill(slot.eventColor || COLORS.gold).restore();
+    }
+
+    doc.font(FONT_BOLD).fontSize(6.5).fillColor(COLORS.slate)
+      .text(slot.subject || '', cx + 3, y + 3,
+        { width: colW - 6, align: 'left', ellipsis: true });
+    doc.font(FONT_BOLD).fontSize(6.5).fillColor(COLORS.navyMid)
+      .text(slot.teacherInitials || 'TBA', cx + 3, y + h - 14,
+        { width: colW - 6, align: 'left', ellipsis: true });
+    if (slot.room && h > 40) {
+      doc.font(FONT_REGULAR).fontSize(5.5).fillColor(COLORS.gray)
+        .text(slot.room, cx + 3, y + h - 22,
+          { width: colW - 6, align: 'left', ellipsis: true });
+    }
   }
-
-  if (period.duration) {
-    doc.font(FONT_REGULAR).fontSize(6).fillColor(COLORS.gray)
-      .text(`${period.duration} min`, x + 4, y + 24, { width: w - 8, align: 'left' });
-  }
-}
-
-/**
- * Draw a break row that spans all day columns.
- */
-function drawBreakRow(doc, { x, y, w, h, period }) {
-  doc.rect(x, y, w, h).fill(COLORS.breakBg);
-  doc.strokeColor(COLORS.border).lineWidth(0.5)
-    .rect(x, y, w, h).stroke();
-
-  const label = period.label || period.name || 'BREAK';
-  const timePart = period.time ? `  (${period.time})` : '';
-  doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.breakFg)
-    .text(
-      `${label}${timePart}`,
-      x, y + (h - 8) / 2,
-      { width: w, align: 'center', characterSpacing: 1 }
-    );
-}
-
-/**
- * Compute a row height so all periods fit into the available space.
- * Breaks get a fixed, shorter height.
- */
-function computeRowHeights(periods, availableH, headerH, breakRowH = 16, minClassH = 22) {
-  const breakCount = periods.filter((p) => p.type === 'break').length;
-  const classCount = periods.length - breakCount;
-  const totalBreakH = breakCount * breakRowH;
-  const classRowH = Math.max(
-    minClassH,
-    (availableH - headerH - totalBreakH) / Math.max(1, classCount)
-  );
-  return { classRowH, breakRowH };
 }
 
 /* ============================================================
-   Class timetable — periods as rows, days as columns
+   Class timetable — days as rows, periods as columns
    ============================================================ */
 
 function drawClassTimetable(doc, school, logoImg, schedule, className, term, year, periods) {
@@ -440,68 +483,33 @@ function drawClassTimetable(doc, school, logoImg, schedule, className, term, yea
   const footerTop = doc.page.height - FOOTER_H;
   const availableH = footerTop - startY - 8;
 
-  const timeColW = 110;
-  const headerH = 22;
-  const { classRowH, breakRowH } = computeRowHeights(periods, availableH, headerH);
+  const dayColW = 90;
+  const headerH = 26;
+  const dayRowH = Math.max(
+    30,
+    (availableH - headerH) / DAYS.length
+  );
 
-  const { dayColW, nextY } = drawGridHeader(doc, {
-    x: MARGIN, y: startY, w: gridW, timeColW, headerH,
+  // Header row with one column per period
+  const { periodColWidths, nextY } = drawPeriodHeaderRow(doc, {
+    x: MARGIN, y: startY, w: gridW, dayColW, periods, headerH,
   });
   let y = nextY;
 
-  for (const period of periods) {
-    if (period.type === 'break') {
-      drawBreakRow(doc, { x: MARGIN, y, w: gridW, h: breakRowH, period });
-      y += breakRowH;
-      continue;
-    }
-
-    // Time cell (left)
-    drawTimeCell(doc, { x: MARGIN, y, w: timeColW, h: classRowH, period });
-
-    // Day cells
-    for (let d = 0; d < DAYS.length; d += 1) {
-      const day = DAYS[d];
-      const cx = MARGIN + timeColW + dayColW * d;
-      const slot = schedule?.[day]?.[period.id];
-
-      doc.rect(cx, y, dayColW, classRowH)
-        .strokeColor(COLORS.border).lineWidth(0.5).stroke();
-
-      if (!slot) continue;
-
-      const isEvent = !!slot.isEvent;
-      if (isEvent) {
-        doc.save();
-        doc.rect(cx + 0.5, y + 0.5, dayColW - 1, classRowH - 1)
-          .fill('#fffbea').restore();
-        doc.strokeColor(COLORS.border).lineWidth(0.5)
-          .rect(cx, y, dayColW, classRowH).stroke();
-        doc.save();
-        doc.rect(cx, y, 3, classRowH).fill(slot.eventColor || COLORS.gold).restore();
-      }
-
-      doc.font(FONT_BOLD).fontSize(7).fillColor(COLORS.slate)
-        .text(slot.subject || '', cx + 4, y + 4,
-          { width: dayColW - 8, align: 'left', ellipsis: true });
-      doc.font(FONT_BOLD).fontSize(7.5).fillColor(COLORS.navyMid)
-        .text(slot.teacherInitials || 'TBA', cx + 4, y + 15,
-          { width: dayColW - 8, align: 'left' });
-      if (slot.room) {
-        doc.font(FONT_REGULAR).fontSize(6).fillColor(COLORS.gray)
-          .text(slot.room, cx + 4, y + 25,
-            { width: dayColW - 8, align: 'left', ellipsis: true });
-      }
-    }
-
-    y += classRowH;
+  // One row per weekday
+  for (const day of DAYS) {
+    drawDayRow(doc, {
+      x: MARGIN, y, w: gridW, h: dayRowH,
+      day, dayColW, periodColWidths, schedule,
+    });
+    y += dayRowH;
   }
 
   drawFooter(doc, school);
 }
 
 /* ============================================================
-   Teacher timetable — periods as rows, days as columns
+   Teacher timetable — days as rows, periods as columns
    ============================================================ */
 
 function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, year, periods) {
@@ -517,49 +525,55 @@ function drawTeacherTimetable(doc, school, logoImg, teacher, assignments, term, 
   const footerTop = doc.page.height - FOOTER_H;
   const availableH = footerTop - startY - 8;
 
-  const timeColW = 110;
-  const headerH = 22;
+  const dayColW = 90;
+  const headerH = 26;
+  const dayRowH = Math.max(30, (availableH - headerH) / DAYS.length);
 
-  // Teacher view: only show class periods — breaks collapse out.
-  const rows = periods.filter((p) => p.type !== 'break');
-  const rowH = Math.max(22, (availableH - headerH) / Math.max(1, rows.length));
-
-  const { dayColW, nextY } = drawGridHeader(doc, {
-    x: MARGIN, y: startY, w: gridW, timeColW, headerH,
+  const { periodColWidths, nextY } = drawPeriodHeaderRow(doc, {
+    x: MARGIN, y: startY, w: gridW, dayColW, periods, headerH,
   });
   let y = nextY;
 
-  for (const period of rows) {
-    drawTimeCell(doc, { x: MARGIN, y, w: timeColW, h: rowH, period });
+  for (const day of DAYS) {
+    // Day label cell
+    doc.rect(MARGIN, y, dayColW, dayRowH).fill(COLORS.light);
+    doc.strokeColor(COLORS.border).lineWidth(0.5)
+      .rect(MARGIN, y, dayColW, dayRowH).stroke();
+    doc.font(FONT_BOLD).fontSize(8.5).fillColor(COLORS.slate)
+      .text(day, MARGIN + 4, y + dayRowH / 2 - 6,
+        { width: dayColW - 8, align: 'left' });
 
-    for (let i = 0; i < DAYS.length; i += 1) {
-      const day = DAYS[i];
-      const cx = MARGIN + timeColW + dayColW * i;
+    // Period cells
+    for (const { period, x: cx, w: colW } of periodColWidths) {
+      doc.rect(cx, y, colW, dayRowH).strokeColor(COLORS.border).lineWidth(0.5).stroke();
+
+      if (period.type === 'break') {
+        doc.save();
+        doc.rect(cx + 0.4, y + 0.4, colW - 0.8, dayRowH - 0.8).fill(COLORS.breakBg).restore();
+        continue;
+      }
+
       const slot = assignments.find(
         (a) => a.day === day && a.period && a.period.id === period.id
       );
-
-      doc.rect(cx, y, dayColW, rowH)
-        .strokeColor(COLORS.border).lineWidth(0.5).stroke();
-
       if (!slot) continue;
 
-      doc.font(FONT_BOLD).fontSize(7).fillColor(COLORS.navy)
-        .text(slot.subject || '', cx + 4, y + 5,
-          { width: dayColW - 8, align: 'left', ellipsis: true });
-      doc.font(FONT_REGULAR).fontSize(6.5).fillColor(COLORS.gray)
-        .text(slot.className || '', cx + 4, y + 16,
-          { width: dayColW - 8, align: 'left' });
+      doc.font(FONT_BOLD).fontSize(6.5).fillColor(COLORS.navy)
+        .text(slot.subject || '', cx + 3, y + 4,
+          { width: colW - 6, align: 'left', ellipsis: true });
+      doc.font(FONT_REGULAR).fontSize(6).fillColor(COLORS.gray)
+        .text(slot.className || '', cx + 3, y + dayRowH - 13,
+          { width: colW - 6, align: 'left', ellipsis: true });
     }
 
-    y += rowH;
+    y += dayRowH;
   }
 
   drawFooter(doc, school);
 }
 
 /* ============================================================
-   Master overview — per class: periods as rows, days as columns
+   Master overview — one block per class, days as rows
    ============================================================ */
 
 function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules, term, year, periods) {
@@ -576,13 +590,9 @@ function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules,
 
   const footerTop = doc.page.height - FOOTER_H;
 
-  const timeColW = 90;
-  const headerH = 16;
-  const rowH = 16;
-  const breakRowH = 12;
-
-  // Master view: only class periods.
-  const classRows = periods.filter((p) => p.type !== 'break');
+  const dayColW = 60;
+  const headerH = 22;
+  const dayRowH = 22;
 
   const ensureSpace = (needed) => {
     if (y + needed > footerTop) {
@@ -598,54 +608,56 @@ function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules,
   for (const cls of classes) {
     const schedule = schedules[cls] || {};
 
-    // Strip with the class name
-    const stripH = 16;
-    ensureSpace(stripH + headerH + 40);
+    // Class name strip
+    const stripH = 14;
+    ensureSpace(stripH + headerH + dayRowH * DAYS.length + 12);
 
     doc.rect(MARGIN, y, gridW, stripH).fill(COLORS.navy);
-    doc.font(FONT_BOLD).fontSize(8.5).fillColor(COLORS.white)
-      .text(String(cls).toUpperCase(), MARGIN + 6, y + 4,
+    doc.font(FONT_BOLD).fontSize(8).fillColor(COLORS.white)
+      .text(String(cls).toUpperCase(), MARGIN + 6, y + 3,
         { width: gridW - 12, align: 'left' });
     y += stripH;
 
-    // Column headers (one per class block)
-    const { dayColW, nextY } = drawGridHeader(doc, {
-      x: MARGIN, y, w: gridW, timeColW, headerH,
+    // Period header row (one column per period)
+    const { periodColWidths, nextY } = drawPeriodHeaderRow(doc, {
+      x: MARGIN, y, w: gridW, dayColW, periods, headerH,
     });
     y = nextY;
 
-    // Period rows
-    for (const period of classRows) {
-      ensureSpace(rowH);
+    // Day rows
+    for (const day of DAYS) {
+      ensureSpace(dayRowH);
 
-      drawTimeCell(doc, {
-        x: MARGIN, y, w: timeColW, h: rowH,
-        period: {
-          ...period,
-          name: period.name.replace('Period ', 'P'),
-          duration: null, // keep master density low
-        },
-      });
+      // Day label cell
+      doc.rect(MARGIN, y, dayColW, dayRowH).fill(COLORS.light);
+      doc.strokeColor(COLORS.border).lineWidth(0.4)
+        .rect(MARGIN, y, dayColW, dayRowH).stroke();
+      doc.font(FONT_BOLD).fontSize(6.5).fillColor(COLORS.slate)
+        .text(day.slice(0, 3).toUpperCase(), MARGIN + 4, y + dayRowH / 2 - 4,
+          { width: dayColW - 8, align: 'left' });
 
-      for (let i = 0; i < DAYS.length; i += 1) {
-        const day = DAYS[i];
-        const cx = MARGIN + timeColW + dayColW * i;
+      // Period cells
+      for (const { period, x: cx, w: colW } of periodColWidths) {
+        doc.rect(cx, y, colW, dayRowH).strokeColor(COLORS.border).lineWidth(0.4).stroke();
+
+        if (period.type === 'break') {
+          doc.save();
+          doc.rect(cx + 0.3, y + 0.3, colW - 0.6, dayRowH - 0.6).fill(COLORS.breakBg).restore();
+          continue;
+        }
+
         const slot = schedule?.[day]?.[period.id];
-
-        doc.rect(cx, y, dayColW, rowH)
-          .strokeColor(COLORS.border).lineWidth(0.4).stroke();
-
         if (!slot) continue;
 
-        doc.font(FONT_BOLD).fontSize(6).fillColor(COLORS.slate)
+        doc.font(FONT_BOLD).fontSize(5.5).fillColor(COLORS.slate)
           .text(slot.subject || '', cx + 2, y + 2,
-            { width: dayColW - 4, align: 'center', ellipsis: true });
-        doc.font(FONT_BOLD).fontSize(6).fillColor(COLORS.navyMid)
-          .text(slot.teacherInitials || '', cx + 2, y + 9,
-            { width: dayColW - 4, align: 'center' });
+            { width: colW - 4, align: 'center', ellipsis: true });
+        doc.font(FONT_BOLD).fontSize(5.5).fillColor(COLORS.navyMid)
+          .text(slot.teacherInitials || '', cx + 2, y + 11,
+            { width: colW - 4, align: 'center' });
       }
 
-      y += rowH;
+      y += dayRowH;
     }
 
     y += 8;
@@ -655,9 +667,7 @@ function drawMasterByLevel(doc, school, logoImg, levelLabel, classes, schedules,
 }
 
 /* ============================================================
-   Duty roster — days as columns, duty areas as rows
-   (unchanged from the previous layout, which already matched
-   the new convention)
+   Duty roster — duty areas as rows, days as columns
    ============================================================ */
 
 function drawDutyRoster(doc, school, logoImg, roster, term, year, dutyAreas) {
