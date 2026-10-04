@@ -917,13 +917,21 @@
    ============================================ */
 
 /* Tablets and smaller laptops */
-@media (max-width: 992px) {
+
+
+   @media (max-width: 992px) {
     .header {
         height: 60px;
         padding: 0 15px;
     }
 
+    /* NEW: swap to short name at this breakpoint too */
     .school-name-header {
+        display: none;
+    }
+
+    .school-name-short {
+        display: block;
         font-size: 17px;
     }
 
@@ -966,10 +974,10 @@
         display: none;
     }
 
-    .school-name-short {
-        display: block;
-        font-size: 18px;
-    }
+   .school-name-short {
+    display: block;
+    font-size: 17px;
+}
 
     .logo-img {
         height: 30px;
