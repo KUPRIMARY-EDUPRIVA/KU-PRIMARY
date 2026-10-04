@@ -8,6 +8,8 @@ import {
     fetchDailyCollections,
     fetchSchoolInfo,
     fetchPerformance,
+    fetchStudentCount,
+    fetchClassTeacher,
 } from '../../utils/ChatbotActions';
 
 /* ============================================================
@@ -50,6 +52,8 @@ function normalise(raw) {
 // Best-effort extraction of a class/grade name from free text.
 // Recognises: Grade 7, Grade 8 East, PP1, PP2, Form 3, Form 4 West,
 // Grade 10 North, and custom variants like "Grade 3 Hope".
+// Also matches bare tokens like "4S" or "3 East" when preceded by
+// "class" / "in" — see extractBareClassFromQuery below.
 function extractClassFromQuery(raw) {
     const q = String(raw || '');
     // Grade X with optional trailing word
@@ -64,14 +68,39 @@ function extractClassFromQuery(raw) {
     return null;
 }
 
+// Extracts a bare class token like "4S" or "7 East" from a free-text
+// query. This is the short form some teachers use in chat.
+//
+// Matches: "4S", "4s", "4 S", "grade 4s", "class 4S", "in 4S",
+// "Grade 7 East", "4 east", "PP1", "PP2".
+function extractBareClassFromQuery(raw) {
+    const q = String(raw || '');
+    // Number + optional single letter suffix: "4S", "4 s", "7B"
+    let m = q.match(/\b(\d{1,2}\s?[A-Za-z]?)(?:\s+([A-Z][a-z]+))?\b/);
+    // Only accept if it looks like a class (not a year or ID)
+    if (m) {
+        const num = String(m[1]).replace(/\s+/g, '');
+        // Skip 4-digit numbers (years, IDs) and pure numbers over 12 (not classes)
+        if (/^\d+$/.test(num) && (num.length >= 3 || parseInt(num, 10) > 12)) {
+            m = null;
+        } else if (num.length >= 1) {
+            const label = m[2] ? ` ${m[2]}` : '';
+            // Preserve "Grade X" style if the query already had a grade prefix
+            return /grade/i.test(q) ? `Grade ${num}${label}` : `${num}${label}`;
+        }
+    }
+    // PP1 / PP2
+    m = q.match(/\b(PP\s*\d+)\b/i);
+    if (m) return m[1].replace(/\s+/g, '').toUpperCase();
+    return null;
+}
+
 // Best-effort extraction of an admission number. Accepts digits,
 // hyphenated, or slash-separated tokens that look like IDs.
 function extractAdmissionNumber(raw) {
     const q = String(raw || '');
-    // Slash or hyphen patterns first
     let m = q.match(/\b([A-Za-z]{0,4}[-\/]?\d{2,10})\b/);
     if (m && /\d/.test(m[1]) && m[1].length >= 3) return m[1];
-    // Fallback: any 3+ digit number that isn't a year
     m = q.match(/\b(\d{3,10})\b/);
     if (m && !/^(19|20)\d{2}$/.test(m[1])) return m[1];
     return null;
@@ -95,8 +124,29 @@ function detectIntent(raw) {
         return 'pay_fee';
     }
     if (containsAny(q, [' fee balance', ' check balance', ' balance for ', ' outstanding', ' arrears', ' owed', ' owing', ' how much does', ' how much is '])) {
-        // If it also asks about paying, prefer pay_fee (already handled above).
         return 'check_balance';
+    }
+
+    // --- Class teacher (checked before generic school info) ---
+    // Any question about a class teacher routes here, whether a class
+    // was given or not.
+    if (containsAny(q, [
+        'class teacher', ' classteacher', ' class-teacher',
+        'who teaches', 'who is the teacher of', 'teacher of grade',
+        'teacher for grade', 'who is in charge of', 'who handles',
+    ])) {
+        return 'class_teacher';
+    }
+
+    // --- Student count (checked before generic counts) ---
+    // Phrases like "how many students", "student count", "number of students"
+    if (containsAny(q, [
+        'how many students', 'number of students', 'student count',
+        'students count', 'count of students', 'total students',
+        'how many learners', 'number of learners', 'how many pupils',
+        'number of pupils',
+    ])) {
+        return 'student_count';
     }
 
     // --- School info (specific first, generic last) ---
@@ -125,7 +175,6 @@ function detectIntent(raw) {
     }
 
     // --- Performance ---
-    // Class-specific query must come before the generic "performance" check.
     if (extractClassFromQuery(raw) && containsAny(q, [' performance', ' result', ' how is ', ' how did ', ' how are ', ' mean score', ' average', ' best in', ' top in'])) {
         return 'performance_class';
     }
@@ -317,6 +366,52 @@ export default function EduprivaChatbot({ onClose }) {
             return;
         }
 
+        // ------------------------------------------------------------
+        // NEW: waiting for a class so we can count students in it
+        // ------------------------------------------------------------
+        if (step === 'AWAITING_CLASS_FOR_COUNT') {
+            const cls = extractBareClassFromQuery(text) || text.trim();
+            if (!cls) {
+                pushBot(`Please type the class name, e.g. 4S or Grade 4S, ${myFirst}.`);
+                return;
+            }
+            pushBot(`Counting students in ${cls}, ${myFirst}...`);
+            const res = await fetchStudentCount({ schoolId, cls });
+            setBotState({ step: 'IDLE', context: {} });
+            if (!res?.success) {
+                return pushBot(res?.error || `I couldn't get that count right now, ${myFirst}.`);
+            }
+            return pushBot(
+                `There ${res.count === 1 ? 'is' : 'are'} **${res.count}** student${res.count === 1 ? '' : 's'} in ${res.displayClass || cls}.`
+            );
+        }
+
+        // ------------------------------------------------------------
+        // NEW: waiting for a class so we can look up the class teacher
+        // ------------------------------------------------------------
+        if (step === 'AWAITING_CLASS_FOR_TEACHER') {
+            const cls = extractBareClassFromQuery(text) || text.trim();
+            if (!cls) {
+                pushBot(`Please type the class name, e.g. 4S or Grade 4S, ${myFirst}.`);
+                return;
+            }
+            pushBot(`Looking up the class teacher of ${cls}, ${myFirst}...`);
+            const res = await fetchClassTeacher({ schoolId, cls });
+            setBotState({ step: 'IDLE', context: {} });
+            if (!res?.success) {
+                return pushBot(res?.error || `I couldn't find the class teacher right now, ${myFirst}.`);
+            }
+            if (!res.teacher) {
+                return pushBot(`There is no class teacher assigned to ${res.displayClass || cls} yet, ${myFirst}. The admin can assign one under School Profile → Class Teachers.`);
+            }
+            const t = res.teacher;
+            return pushBot(
+                `The class teacher of ${res.displayClass || cls} is **${t.name}**` +
+                (t.email ? `\n📧 ${t.email}` : '') +
+                (t.phone ? `\n📞 ${t.phone}` : '')
+            );
+        }
+
         setBotState({ step: 'IDLE', context: {} });
     };
 
@@ -332,7 +427,8 @@ export default function EduprivaChatbot({ onClose }) {
                 return pushBot(
                     `Hi ${myFirst}! Good to see you. ` +
                     `Ask me about school info ("What classes do we have?"), fees ("Pay fee", "Check balance"), ` +
-                    `or performance ("Best student", "How is Grade 7 doing?").`
+                    `performance ("Best student", "How is Grade 7 doing?"), ` +
+                    `class teachers ("Who teaches 4S?"), or student counts ("How many students in Grade 7?").`
                 );
 
             case 'gratitude':
@@ -344,7 +440,8 @@ export default function EduprivaChatbot({ onClose }) {
             case 'about_bot':
                 return pushBot(
                     `I'm LABAN — EduPriva's AI assistant for ${userData?.schoolName || 'your school'}. ` +
-                    `I can look up school facts, check fee balances, initiate M-Pesa payments, and summarise performance. ` +
+                    `I can look up school facts, check fee balances, initiate M-Pesa payments, summarise performance, ` +
+                    `tell you how many students are in a class, and identify class teachers. ` +
                     `Type "help" for the full menu.`
                 );
 
@@ -372,6 +469,52 @@ export default function EduprivaChatbot({ onClose }) {
                 }
                 setBotState({ step: 'AWAITING_ADM_BALANCE', context: {} });
                 return pushBot(`Happy to check that, ${myFirst}. Please enter the student's admission number:`);
+            }
+
+            // ------------------------------------------------------------
+            // NEW: student count
+            // ------------------------------------------------------------
+            case 'student_count': {
+                const cls = extractBareClassFromQuery(text) || extractClassFromQuery(text);
+                if (cls) {
+                    pushBot(`Counting students in ${cls}, ${myFirst}...`);
+                    const res = await fetchStudentCount({ schoolId, cls });
+                    if (!res?.success) {
+                        return pushBot(res?.error || `I couldn't get that count right now, ${myFirst}.`);
+                    }
+                    return pushBot(
+                        `There ${res.count === 1 ? 'is' : 'are'} **${res.count}** student${res.count === 1 ? '' : 's'} in ${res.displayClass || cls}.`
+                    );
+                }
+                // No class mentioned → ask which class
+                setBotState({ step: 'AWAITING_CLASS_FOR_COUNT', context: {} });
+                return pushBot(`Which class, ${myFirst}? Type something like 4S, Grade 4S, or PP1.`);
+            }
+
+            // ------------------------------------------------------------
+            // NEW: class teacher
+            // ------------------------------------------------------------
+            case 'class_teacher': {
+                const cls = extractBareClassFromQuery(text) || extractClassFromQuery(text);
+                if (cls) {
+                    pushBot(`Looking up the class teacher of ${cls}, ${myFirst}...`);
+                    const res = await fetchClassTeacher({ schoolId, cls });
+                    if (!res?.success) {
+                        return pushBot(res?.error || `I couldn't find the class teacher right now, ${myFirst}.`);
+                    }
+                    if (!res.teacher) {
+                        return pushBot(`There is no class teacher assigned to ${res.displayClass || cls} yet, ${myFirst}. The admin can assign one under School Profile → Class Teachers.`);
+                    }
+                    const t = res.teacher;
+                    return pushBot(
+                        `The class teacher of ${res.displayClass || cls} is **${t.name}**` +
+                        (t.email ? `\n📧 ${t.email}` : '') +
+                        (t.phone ? `\n📞 ${t.phone}` : '')
+                    );
+                }
+                // No class mentioned → ask which class
+                setBotState({ step: 'AWAITING_CLASS_FOR_TEACHER', context: {} });
+                return pushBot(`Which class, ${myFirst}? Type something like 4S, Grade 4S, or PP1.`);
             }
 
             case 'school_name': {
@@ -429,7 +572,6 @@ export default function EduprivaChatbot({ onClose }) {
             }
 
             case 'performance_top': {
-                // Optionally scoped to a class if the user mentioned one.
                 const cls = extractClassFromQuery(text);
                 const res = await fetchPerformance({ scope: 'top', class: cls || undefined });
                 return pushBot(res.summary || `I couldn't fetch the top students right now, ${myFirst}.`);
@@ -438,8 +580,6 @@ export default function EduprivaChatbot({ onClose }) {
             case 'performance_class': {
                 const cls = extractClassFromQuery(text);
                 if (!cls) {
-                    // Shouldn't happen — detectIntent requires a class — but
-                    // fall back gracefully.
                     const res = await fetchPerformance({ scope: 'school' });
                     return pushBot(res.summary || `I couldn't fetch performance data right now.`);
                 }
@@ -620,6 +760,8 @@ export default function EduprivaChatbot({ onClose }) {
                                 : botState.step === 'AWAITING_ADM' ? 'Enter admission number…'
                                 : botState.step === 'AWAITING_ADM_BALANCE' ? 'Enter admission number…'
                                 : botState.step === 'AWAITING_PAYMENT_CONFIRMATION' ? 'Reply YES or NO…'
+                                : botState.step === 'AWAITING_CLASS_FOR_COUNT' ? 'Which class? (e.g. 4S)…'
+                                : botState.step === 'AWAITING_CLASS_FOR_TEACHER' ? 'Which class? (e.g. 4S)…'
                                 : `Ask me anything, ${myFirst}…`
                             }
                             disabled={isProcessing}
@@ -663,6 +805,13 @@ function helpMenu({ myFirst, isAdmin, isTeacher }) {
     lines.push('• "Balance for ADM-0042" — skips the admission prompt');
 
     lines.push('');
+    lines.push('Students');
+    lines.push('• "How many students?" — asks for a class');
+    lines.push('• "How many students in Grade 7?"');
+    lines.push('• "Who is the class teacher of 4S?"');
+    lines.push('• "Who is the class teacher?" — asks for a class');
+
+    lines.push('');
     lines.push('School');
     lines.push('• "What is the school name?"');
     lines.push('• "What classes do we have?"');
@@ -696,22 +845,23 @@ function helpMenu({ myFirst, isAdmin, isTeacher }) {
 
     if (isTeacher) {
         lines.push('');
-        lines.push('As a teacher you can view school info, pay fees, check balances, and see performance. Contact the admin for anything else.');
+        lines.push('As a teacher you can view school info, pay fees, check balances, see performance, check student counts, and find class teachers. Contact the admin for anything else.');
     }
 
     return lines.join('\n');
 }
 
-// Rich fallback that makes a guess at what the user wanted and offers
-// a couple of concrete next steps — instead of a generic apology.
 function fallbackMessage({ myFirst, text }) {
     const cls = extractClassFromQuery(text);
+    const bareCls = extractBareClassFromQuery(text);
     const adm = extractAdmissionNumber(text);
 
     const guesses = [];
-    if (cls) {
-        guesses.push(`• "How is ${cls} doing?" — performance for that class`);
-        guesses.push(`• "Top students in ${cls}"`);
+    if (cls || bareCls) {
+        const c = cls || bareCls;
+        guesses.push(`• "How many students in ${c}?" — student count`);
+        guesses.push(`• "Who is the class teacher of ${c}?" — class teacher`);
+        guesses.push(`• "How is ${c} doing?" — performance for that class`);
     }
     if (adm) {
         guesses.push(`• "Balance for ${adm}" — fee balance lookup`);
@@ -720,10 +870,10 @@ function fallbackMessage({ myFirst, text }) {
     const base =
         `Sorry ${myFirst}, I didn't quite catch that. Try one of these:\n` +
         `• "What classes do we have?"\n` +
-        `• "How many teachers?"\n` +
+        `• "How many students in Grade 7?"\n` +
+        `• "Who is the class teacher of 4S?"\n` +
         `• "Pay fee"\n` +
         `• "Best student"\n` +
-        `• "Check fee balance"\n` +
         `Or type "help" for the full menu.`;
 
     if (guesses.length === 0) return base;
