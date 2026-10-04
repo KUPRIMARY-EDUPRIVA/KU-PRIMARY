@@ -12,212 +12,89 @@ import {
 export const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 /**
- * Level-specific timing and lesson structure per KICD/CBE standards.
- * Each level defines:
- *   - lessonsPerDay: number of academic lessons
- *   - lessonDuration: minutes per lesson
- *   - startTime: official start of academic day (after assembly)
- *   - endTime: official dismissal
- *   - assemblyStart/assemblyEnd: morning assembly block
- *   - breaks: array of { afterLesson, duration, name, label }
- *   - allowsDoubles: whether double lessons are permitted
- *   - doubleSubjects: subjects that may have double lessons (if allowsDoubles)
- *   - ppiSlot: which period index is reserved for PPI (Pastoral Programme)
+ * Default period structures per level — aligned with the Kenyan
+ * Class-Level Time and Lesson Structures (Hard Rules).
+ *
+ * Rules encoded here:
+ *  - Pre-Primary:    5 lessons/day, 30 min each, start 08:30 (roll call 08:00)
+ *  - Lower Primary:  6 lessons/day + 1 PPI, 30 min each, start 08:20
+ *  - Upper Primary:  7 lessons/day, 35 min each, start 08:20
+ *  - Junior School:  8 lessons/day, 40 min each, start 08:20
+ *  - Senior School:  8 lessons/day, 40 min each, start 08:00
+ *
+ * Two rigid morning breaks are inserted for every level:
+ *   - Short break after the first 2 lessons (10–15 min)
+ *   - Main break after the next 2 lessons (25–30 min)
+ *
+ * An Assembly / Health-Check block (08:00–08:20) is locked for
+ * every level except Pre-Primary, where roll-call happens at 08:30.
  */
-export const LEVEL_TIMING_CONFIG = Object.freeze({
-  'pre-primary': {
-    lessonsPerDay: 5,
-    lessonDuration: 30,
-    startTime: '09:00',
-    endTime: '12:00',
-    assemblyStart: '08:30',
-    assemblyEnd: '09:00',
-    assemblyLabel: 'Roll Call / Assembly',
-    breaks: [
-      { afterLesson: 2, duration: 10, name: 'Short Break', label: 'SHORT BREAK' },
-      { afterLesson: 3, duration: 20, name: 'Lunch Break', label: 'LUNCH BREAK' },
-    ],
-    allowsDoubles: false,
-    doubleSubjects: [],
-    ppiSlot: 0, // First period on Friday is PPI
-    weeklyLessons: 25,
-    totalWithPPI: 25,
-  },
-  'lower-primary': {
-    lessonsPerDay: 6,
-    lessonDuration: 30,
-    startTime: '08:20',
-    endTime: '12:30',
-    assemblyStart: '08:00',
-    assemblyEnd: '08:20',
-    assemblyLabel: 'Assembly / Health Check',
-    breaks: [
-      { afterLesson: 2, duration: 10, name: 'Short Break', label: 'SHORT BREAK' },
-      { afterLesson: 4, duration: 30, name: 'Main Break', label: 'MAIN BREAK' },
-    ],
-    allowsDoubles: false,
-    doubleSubjects: [],
-    ppiSlot: 0, // First period on Friday is PPI
-    weeklyLessons: 30,
-    totalWithPPI: 31,
-  },
-  'upper-primary': {
-    lessonsPerDay: 7,
-    lessonDuration: 35,
-    startTime: '08:20',
-    endTime: '14:35',
-    assemblyStart: '08:00',
-    assemblyEnd: '08:20',
-    assemblyLabel: 'Assembly / Health Check',
-    breaks: [
-      { afterLesson: 2, duration: 10, name: 'Short Break', label: 'SHORT BREAK' },
-      { afterLesson: 5, duration: 30, name: 'Main Break', label: 'MAIN BREAK' },
-    ],
-    allowsDoubles: true,
-    doubleSubjects: ['Integrated Science', 'Science and Technology', 'Pre-Technical Studies', 'Agriculture and Nutrition', 'Home Science'],
-    ppiSlot: 0,
-    weeklyLessons: 35,
-    totalWithPPI: 35,
-  },
-  'junior-school': {
-    lessonsPerDay: 8,
-    lessonDuration: 40,
-    startTime: '08:20',
-    endTime: '15:20',
-    assemblyStart: '08:00',
-    assemblyEnd: '08:20',
-    assemblyLabel: 'Assembly / Health Check',
-    breaks: [
-      { afterLesson: 2, duration: 10, name: 'Short Break', label: 'SHORT BREAK' },
-      { afterLesson: 5, duration: 30, name: 'Main Break', label: 'MAIN BREAK' },
-    ],
-    allowsDoubles: true,
-    doubleSubjects: ['Integrated Science', 'Biology', 'Chemistry', 'Physics', 'Pre-Technical Studies', 'Agriculture and Nutrition', 'Home Science'],
-    ppiSlot: 0,
-    weeklyLessons: 40,
-    totalWithPPI: 41,
-  },
-  'senior-school': {
-    lessonsPerDay: 8,
-    lessonDuration: 40,
-    startTime: '08:00',
-    endTime: '15:20',
-    assemblyStart: '07:40',
-    assemblyEnd: '08:00',
-    assemblyLabel: 'Assembly / Health Check',
-    breaks: [
-      { afterLesson: 2, duration: 10, name: 'Short Break', label: 'SHORT BREAK' },
-      { afterLesson: 5, duration: 30, name: 'Main Break', label: 'MAIN BREAK' },
-    ],
-    allowsDoubles: true,
-    doubleSubjects: ['Biology', 'Chemistry', 'Physics', 'Computer Studies', 'Home Science', 'Agriculture'],
-    ppiSlot: 0,
-    weeklyLessons: 40,
-    totalWithPPI: 40,
-  },
+export const DEFAULT_PERIOD_STRUCTURES = Object.freeze({
+  'pre-primary': [
+    { id: 'assembly', name: 'Roll Call / Health Check', start: '08:00', end: '08:30', type: 'break', label: 'ROLL CALL & HEALTH CHECK' },
+    { id: 'p1', name: 'Period 1', start: '08:30', end: '09:00', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '09:00', end: '09:30', type: 'class' },
+    { id: 'break1', name: 'Short Break', start: '09:30', end: '09:40', type: 'break', label: 'SHORT BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:40', end: '10:10', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:10', end: '10:40', type: 'class' },
+    { id: 'break2', name: 'Main Break', start: '10:40', end: '11:10', type: 'break', label: 'MAIN BREAK' },
+    { id: 'p5', name: 'Period 5', start: '11:10', end: '11:40', type: 'class' },
+    { id: 'ppi', name: 'PPI / Pastoral', start: '11:40', end: '12:10', type: 'class', isPPI: true },
+  ],
+  'lower-primary': [
+    { id: 'assembly', name: 'Assembly / Health Check', start: '08:00', end: '08:20', type: 'break', label: 'ASSEMBLY & HEALTH CHECK' },
+    { id: 'p1', name: 'Period 1', start: '08:20', end: '08:50', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:50', end: '09:20', type: 'class' },
+    { id: 'break1', name: 'Short Break', start: '09:20', end: '09:30', type: 'break', label: 'SHORT BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:30', end: '10:00', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:00', end: '10:30', type: 'class' },
+    { id: 'break2', name: 'Main Break', start: '10:30', end: '11:00', type: 'break', label: 'MAIN BREAK' },
+    { id: 'p5', name: 'Period 5', start: '11:00', end: '11:30', type: 'class' },
+    { id: 'p6', name: 'Period 6', start: '11:30', end: '12:00', type: 'class' },
+    { id: 'ppi', name: 'PPI / Pastoral', start: '12:00', end: '12:30', type: 'class', isPPI: true },
+  ],
+  'upper-primary': [
+    { id: 'assembly', name: 'Assembly / Health Check', start: '08:00', end: '08:20', type: 'break', label: 'ASSEMBLY & HEALTH CHECK' },
+    { id: 'p1', name: 'Period 1', start: '08:20', end: '08:55', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '08:55', end: '09:30', type: 'class' },
+    { id: 'break1', name: 'Short Break', start: '09:30', end: '09:45', type: 'break', label: 'SHORT BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:45', end: '10:20', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:20', end: '10:55', type: 'class' },
+    { id: 'break2', name: 'Main Break', start: '10:55', end: '11:25', type: 'break', label: 'MAIN BREAK' },
+    { id: 'p5', name: 'Period 5', start: '11:25', end: '12:00', type: 'class' },
+    { id: 'p6', name: 'Period 6', start: '12:00', end: '12:35', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '12:35', end: '13:10', type: 'class' },
+    { id: 'ppi', name: 'PPI / Pastoral', start: '13:10', end: '13:45', type: 'class', isPPI: true },
+  ],
+  'junior-school': [
+    { id: 'assembly', name: 'Assembly / Health Check', start: '08:00', end: '08:20', type: 'break', label: 'ASSEMBLY & HEALTH CHECK' },
+    { id: 'p1', name: 'Period 1', start: '08:20', end: '09:00', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '09:00', end: '09:40', type: 'class' },
+    { id: 'break1', name: 'Short Break', start: '09:40', end: '09:55', type: 'break', label: 'SHORT BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:55', end: '10:35', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:35', end: '11:15', type: 'class' },
+    { id: 'break2', name: 'Main Break', start: '11:15', end: '11:45', type: 'break', label: 'MAIN BREAK' },
+    { id: 'p5', name: 'Period 5', start: '11:45', end: '12:25', type: 'class' },
+    { id: 'p6', name: 'Period 6', start: '12:25', end: '13:05', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '13:05', end: '13:45', type: 'class' },
+    { id: 'p8', name: 'Period 8', start: '13:45', end: '14:25', type: 'class' },
+    { id: 'ppi', name: 'PPI / Pastoral', start: '14:25', end: '15:05', type: 'class', isPPI: true },
+  ],
+  'senior-school': [
+    { id: 'assembly', name: 'Assembly / Health Check', start: '08:00', end: '08:20', type: 'break', label: 'ASSEMBLY & HEALTH CHECK' },
+    { id: 'p1', name: 'Period 1', start: '08:20', end: '09:00', type: 'class' },
+    { id: 'p2', name: 'Period 2', start: '09:00', end: '09:40', type: 'class' },
+    { id: 'break1', name: 'Short Break', start: '09:40', end: '09:55', type: 'break', label: 'SHORT BREAK' },
+    { id: 'p3', name: 'Period 3', start: '09:55', end: '10:35', type: 'class' },
+    { id: 'p4', name: 'Period 4', start: '10:35', end: '11:15', type: 'class' },
+    { id: 'break2', name: 'Main Break', start: '11:15', end: '11:45', type: 'break', label: 'MAIN BREAK' },
+    { id: 'p5', name: 'Period 5', start: '11:45', end: '12:25', type: 'class' },
+    { id: 'p6', name: 'Period 6', start: '12:25', end: '13:05', type: 'class' },
+    { id: 'p7', name: 'Period 7', start: '13:05', end: '13:45', type: 'class' },
+    { id: 'p8', name: 'Period 8', start: '13:45', end: '14:25', type: 'class' },
+    { id: 'ppi', name: 'PPI / Pastoral', start: '14:25', end: '15:05', type: 'class', isPPI: true },
+  ],
 });
-
-/**
- * Build the period structure for a level from timing config.
- */
-export function buildPeriodsFromConfig(level) {
-  const config = LEVEL_TIMING_CONFIG[level] || LEVEL_TIMING_CONFIG['junior-school'];
-  const periods = [];
-  
-  // Add assembly
-  periods.push({
-    id: 'assembly',
-    name: config.assemblyLabel,
-    start: config.assemblyStart,
-    end: config.assemblyEnd,
-    type: 'routine',
-    label: config.assemblyLabel,
-    isFixed: true,
-  });
-
-  let currentTime = config.startTime;
-  let lessonCount = 0;
-  let breakIndex = 0;
-
-  for (let i = 0; i < config.lessonsPerDay; i++) {
-    // Add lesson
-    const lessonEnd = addMinutes(currentTime, config.lessonDuration);
-    periods.push({
-      id: `p${i + 1}`,
-      name: `Period ${i + 1}`,
-      start: currentTime,
-      end: lessonEnd,
-      type: 'class',
-    });
-    lessonCount++;
-    currentTime = lessonEnd;
-
-    // Check if a break should follow this lesson
-    const breakConfig = config.breaks.find(b => b.afterLesson === lessonCount);
-    if (breakConfig) {
-      const breakEnd = addMinutes(currentTime, breakConfig.duration);
-      periods.push({
-        id: `break${breakIndex + 1}`,
-        name: breakConfig.name,
-        start: currentTime,
-        end: breakEnd,
-        type: 'break',
-        label: breakConfig.label,
-      });
-      currentTime = breakEnd;
-      breakIndex++;
-    }
-  }
-
-  return periods;
-}
-
-function addMinutes(timeStr, minutes) {
-  const [h, m] = timeStr.split(':').map(Number);
-  const total = h * 60 + m + minutes;
-  const nh = Math.floor(total / 60) % 24;
-  const nm = total % 60;
-  return `${String(nh).padStart(2, '0')}:${String(nm).padStart(2, '0')}`;
-}
-
-/**
- * Default period structures — now built from LEVEL_TIMING_CONFIG.
- * Schools can still override via Settings.
- */
-export const DEFAULT_PERIOD_STRUCTURES = Object.freeze(
-  Object.fromEntries(
-    Object.keys(LEVEL_TIMING_CONFIG).map(level => [
-      level,
-      buildPeriodsFromConfig(level)
-    ])
-  )
-);
-
-/**
- * Cognitive load groups — subjects in the same group should not be
- * scheduled back-to-back (Anti-Monotony Rule).
- */
-export const COGNITIVE_GROUPS = Object.freeze({
-  'mathematical': ['Mathematics', 'Pre-Technical Studies'],
-  'scientific': ['Science', 'Science and Technology', 'Integrated Science', 'Biology', 'Chemistry', 'Physics'],
-  'linguistic': ['English', 'Kiswahili', 'Literacy', 'Indigenous Languages'],
-  'humanities': ['Social Studies', 'CRE/IRE/HRE', 'Religious Education', 'Christian Religious Education', 'Islamic Religious Education', 'Hindu Religious Education'],
-  'creative': ['Art and Craft', 'Creative Arts and Sports', 'Music', 'Physical Education', 'PE', 'Games'],
-  'technical': ['Agriculture and Nutrition', 'Agriculture', 'Home Science', 'Computer Studies'],
-});
-
-/**
- * Psychomotor/creative subjects that must be placed before a break.
- */
-export const PSYCHOMOTOR_SUBJECTS = new Set([
-  'Creative Arts and Sports', 'Physical Education', 'PE', 'Games',
-  'Art and Craft', 'Music', 'Home Science',
-]);
-
-/**
- * PPI (Pastoral Programme of Instruction) subject name.
- */
-export const PPI_SUBJECT = 'PPI';
 
 export const DUTY_AREAS = Object.freeze([
   { id: 'gate_morning', label: 'Main Gate (Morning)', start: 7, end: 8 },
@@ -253,13 +130,12 @@ export const SUBJECT_CLASS = Object.freeze({
   'Pre-Technical Studies': 'tt-sub-tech',
   'Agriculture and Nutrition': 'tt-sub-agric',
   'Agriculture': 'tt-sub-agric',
-  'Home Science': 'tt-sub-agric',
-  'Computer Studies': 'tt-sub-tech',
   'Games': 'tt-sub-games',
   'PE': 'tt-sub-games',
   'Clubs': 'tt-sub-clubs',
   'Library': 'tt-sub-library',
   'PPI': 'tt-sub-ppi',
+  'Pastoral Programme': 'tt-sub-ppi',
 });
 
 export const SUBJECT_WEIGHTS = Object.freeze({
@@ -267,57 +143,69 @@ export const SUBJECT_WEIGHTS = Object.freeze({
   'Science': 4, 'Science and Technology': 4, 'Integrated Science': 4,
   'Biology': 4, 'Chemistry': 4, 'Physics': 4,
   'Social Studies': 3, 'Pre-Technical Studies': 3, 'Agriculture and Nutrition': 3,
-  'Agriculture': 3, 'Home Science': 3, 'Computer Studies': 3,
+  'Agriculture': 3,
   'CRE/IRE/HRE': 3, 'Religious Education': 3,
   'Christian Religious Education': 3, 'Islamic Religious Education': 3,
   'Hindu Religious Education': 3,
   'Art and Craft': 2, 'Creative Arts and Sports': 2, 'Music': 2, 'Physical Education': 2,
-  'Games': 2, 'PE': 2, 'Clubs': 1, 'Library': 1, 'PPI': 1,
+  'Games': 2, 'PE': 2, 'Clubs': 1, 'Library': 1,
+  'PPI': 1, 'Pastoral Programme': 1,
 });
 
 export const DEFAULT_SUBJECT_WEIGHT = 2;
 
-/* ============================================================
-   Teacher Workload Constraints (CBE Alignment)
-   ============================================================ */
+/* ------------------------------------------------------------------
+   Pedagogical constants
+   ------------------------------------------------------------------ */
 
-export const WORKLOAD_STANDARD = 27; // Standard full-time teacher
-export const WORKLOAD_MAX = 35;      // Maximum cap
+// Subjects that should never sit next to each other (Anti-Monotony).
+// Pairs are unordered; the generator checks both directions.
+export const ANTI_MONOTONY_PAIRS = Object.freeze([
+  ['Mathematics', 'Science'],
+  ['Mathematics', 'Science and Technology'],
+  ['Mathematics', 'Integrated Science'],
+  ['Mathematics', 'Biology'],
+  ['Mathematics', 'Chemistry'],
+  ['Mathematics', 'Physics'],
+  ['English', 'Kiswahili'],
+  ['Social Studies', 'Religious Education'],
+  ['Social Studies', 'CRE/IRE/HRE'],
+]);
 
-/**
- * Administrative role offsets — these reduce the max teaching load.
- * e.g. Headteacher max = 35 - 12 = 23 periods/week
- */
+// Practical / laboratory subjects eligible for double lessons in
+// Upper Primary and above.
+const DOUBLE_PERIOD_SUBJECTS = new Set([
+  'Science', 'Science and Technology', 'Integrated Science',
+  'Biology', 'Chemistry', 'Physics',
+  'Pre-Technical Studies', 'Agriculture and Nutrition', 'Agriculture',
+  'Home Science', 'Computer Studies',
+]);
+
+// Levels where doubles are strictly forbidden.
+const NO_DOUBLE_LEVELS = new Set(['pre-primary', 'lower-primary']);
+
+// Levels where doubles are permitted for practical subjects.
+const DOUBLE_PERIOD_LEVELS = new Set(['upper-primary', 'junior-school', 'senior-school']);
+
+// Creative / psychomotor subjects that must precede a break.
+export const PSYCHOMOTOR_SUBJECTS = new Set([
+  'Physical Education', 'PE', 'Creative Arts and Sports',
+  'Art and Craft', 'Music', 'Games', 'Sports',
+]);
+
+// Administrative roles and their teaching-load reductions.
+// `reduction` is the number of teaching periods removed from the
+// standard 27-period target.
 export const ADMIN_ROLE_OFFSETS = Object.freeze({
-  'headteacher': 12,
-  'principal': 12,
-  'deputy_headteacher': 8,
-  'deputy_principal': 8,
-  'senior_master': 6,
-  'senior_mistress': 6,
-  'hod': 4,
-  'head_of_department': 4,
-  'bursar': 10,
-  'accountant': 10,
-  'librarian': 10,
+  headteacher:        { label: 'Headteacher',        maxPeriods: 6  },
+  deputy_headteacher: { label: 'Deputy Headteacher', maxPeriods: 12 },
+  senior_master:      { label: 'Senior Master',      maxPeriods: 18 },
+  hod:                { label: 'Head of Department', maxPeriods: 22 },
 });
 
-/**
- * Get the effective max workload for a teacher based on their role.
- */
-export function getTeacherMaxWorkload(teacher) {
-  const role = (teacher.adminRole || teacher.role || '').toLowerCase().replace(/\s+/g, '_');
-  const offset = ADMIN_ROLE_OFFSETS[role] || 0;
-  return Math.max(1, WORKLOAD_MAX - offset);
-}
-
-/**
- * Check if a teacher is overloaded.
- */
-export function isTeacherOverloaded(teacher, currentLoad) {
-  const max = getTeacherMaxWorkload(teacher);
-  return currentLoad >= max;
-}
+// CBE alignment targets (lessons per week).
+export const TEACHER_TARGET_LOAD = 27;
+export const TEACHER_MAX_LOAD = 35;
 
 /* ============================================================
    Small utils
@@ -384,10 +272,6 @@ export function classPeriodsForLevel(level, customConfig = null) {
 
 export function breakPeriodsForLevel(level, customConfig = null) {
   return periodsForLevel(level, customConfig).filter((p) => p.type === 'break');
-}
-
-export function routinePeriodsForLevel(level, customConfig = null) {
-  return periodsForLevel(level, customConfig).filter((p) => p.type === 'routine');
 }
 
 export function calcDuration(start, end) {
@@ -562,30 +446,91 @@ export async function saveDutyRoster(schoolId, term, year, roster, userId) {
 }
 
 /* ============================================================
-   Cognitive group helpers
+   Teacher-assignment aware helpers
    ============================================================ */
 
-function getCognitiveGroup(subject) {
-  for (const [group, subjects] of Object.entries(COGNITIVE_GROUPS)) {
-    if (subjects.includes(subject)) return group;
+/**
+ * Returns the teacher's effective teaching cap, honouring any
+ * administrative-role offset stored on the teacher profile.
+ */
+export function teacherMaxLoad(teacher) {
+  if (!teacher) return TEACHER_MAX_LOAD;
+  // Explicit override wins.
+  if (Number.isFinite(teacher.maxPeriods) && teacher.maxPeriods > 0) {
+    return teacher.maxPeriods;
   }
-  return null;
+  // Admin-role offset.
+  const roleKey = (teacher.adminRole || teacher.role || '').toString().toLowerCase();
+  if (ADMIN_ROLE_OFFSETS[roleKey]) {
+    return ADMIN_ROLE_OFFSETS[roleKey].maxPeriods;
+  }
+  return TEACHER_MAX_LOAD;
 }
 
-function areSameCognitiveGroup(subjA, subjB) {
-  const groupA = getCognitiveGroup(subjA);
-  const groupB = getCognitiveGroup(subjB);
-  return groupA && groupB && groupA === groupB;
+/**
+ * Does this teacher teach `subject` at `level` (optionally for `cls`)?
+ *
+ * Priority:
+ *   1. teacher.assignments — [{ level, subject, classes: [...] }]
+ *   2. teacher.subjects    — flat list (legacy) → treated as level-agnostic
+ *   3. []                  — generalist (teaches anything)
+ */
+export function teacherTeaches(teacher, subject, level = null, cls = null) {
+  if (!teacher) return false;
+
+  // 1. New assignment-pairing model.
+  const assignments = Array.isArray(teacher.assignments) ? teacher.assignments : [];
+  if (assignments.length > 0) {
+    return assignments.some((a) => {
+      if (!a || a.subject !== subject) return false;
+      if (level && a.level && a.level !== level) return false;
+      if (cls && Array.isArray(a.classes) && a.classes.length > 0) {
+        return a.classes.includes(cls);
+      }
+      return true;
+    });
+  }
+
+  // 2. Legacy flat subjects list — level-agnostic.
+  const declared = Array.isArray(teacher.subjects) ? teacher.subjects : [];
+  if (declared.length > 0) {
+    return declared.includes(subject);
+  }
+
+  // 3. No restrictions → generalist.
+  return true;
 }
 
-function isPsychomotor(subject) {
-  return PSYCHOMOTOR_SUBJECTS.has(subject);
+/**
+ * Return the classes a teacher is explicitly assigned to at a given
+ * level. Returns [] when the teacher has no restriction (generalist)
+ * — callers should interpret [] as "any class".
+ */
+export function teacherClassesAtLevel(teacher, level) {
+  const assignments = Array.isArray(teacher?.assignments) ? teacher.assignments : [];
+  const set = new Set();
+  for (const a of assignments) {
+    if (a?.level && a.level !== level) continue;
+    (a?.classes || []).forEach((c) => { if (c) set.add(c); });
+  }
+  return [...set];
 }
 
 /* ============================================================
-   Generator with Full Standards Compliance
+   Generator
    ============================================================ */
 
+/**
+ * Generate a clash-free, pedagogically-aware class timetable.
+ *
+ * Honours:
+ *  - teacher.assignments (level/subject/classes)
+ *  - anti-monotony rule (no Maths next to Science, English next to Kiswahili…)
+ *  - psychomotor-subject-before-break rule
+ *  - double-lesson restrictions (lab subjects only, and only from Upper Primary up)
+ *  - PPI slot (locked once per week, not used for regular subjects)
+ *  - teacher workload caps (target 27, hard cap 35, admin offsets)
+ */
 export function generateClassSchedule({
   level,
   cls,
@@ -597,26 +542,24 @@ export function generateClassSchedule({
   events = [],
 }) {
   const periods = classPeriodsForLevel(level, customConfig);
-  const timingConfig = LEVEL_TIMING_CONFIG[level] || LEVEL_TIMING_CONFIG['junior-school'];
-  const allowDoubles = timingConfig.allowsDoubles;
-  const doubleSubjects = new Set(timingConfig.doubleSubjects || []);
-  const totalPeriods = periods.length;
+  const allowDoubles = DOUBLE_PERIOD_LEVELS.has(level) && !NO_DOUBLE_LEVELS.has(level);
 
-  // Build the weekly pool of subjects for this class
+  // ---- Build the weekly pool of subjects for this class ----
+  // PPI is handled separately (one locked slot per week).
+  const regularSubjects = subjects.filter((s) => s !== 'PPI' && s !== 'Pastoral Programme');
   const pool = [];
-  for (const sub of subjects) {
+  for (const sub of regularSubjects) {
     const w = weightForSubject(sub);
     for (let i = 0; i < w; i += 1) pool.push(sub);
   }
 
-  // Ensure PPI is included (one slot per week)
-  const hasPPI = subjects.includes(PPI_SUBJECT) || subjects.some(s => s.toLowerCase().includes('ppi') || s.toLowerCase().includes('pastoral'));
-  if (!hasPPI && timingConfig.ppiSlot !== undefined) {
-    // Add PPI to the pool
-    pool.push(PPI_SUBJECT);
-  }
+  // ---- Teachers available for this class at this level ----
+  const eligibleTeachers = teachers.filter((t) => {
+    if (teacherClassesAtLevel(t, level).length === 0) return true; // generalist
+    return teacherClassesAtLevel(t, level).includes(cls);
+  });
 
-  // Compute teacher busy slots from other classes
+  // ---- Teacher busy slots from other classes ----
   const teacherBusy = {};
   for (const day of DAYS) {
     for (const p of periods) teacherBusy[`${day}|${p.id}`] = new Set();
@@ -631,47 +574,42 @@ export function generateClassSchedule({
     }
   }
 
-  // Copy teacher load
   const teacherLoad = { ...existingTeacherLoad };
 
-  // Build event lookup: day|periodId -> event
+  // ---- Event overrides ----
   const eventSlots = {};
   for (const ev of events) {
     if (ev.classes && !ev.classes.includes(cls)) continue;
     if (ev.level && ev.level !== level) continue;
     for (const day of DAYS) {
       if (ev.days && !ev.days.includes(day)) continue;
-      if (ev.periodIds) {
-        for (const pid of ev.periodIds) {
-          eventSlots[`${day}|${pid}`] = ev;
-        }
-      }
+      (ev.periodIds || []).forEach((pid) => { eventSlots[`${day}|${pid}`] = ev; });
     }
   }
+
+  // ---- PPI slot: one per week, anchored to a fixed weekday/period ----
+  const ppiPeriod = periods.find((p) => p.isPPI);
+  const PPI_DAY = 'Wednesday';
+  const ppiSubject = subjects.find((s) => s === 'PPI' || s === 'Pastoral Programme');
 
   const schedule = {};
   const unassigned = [];
 
-  // Track last subject per day to enforce anti-monotony
-  const lastSubjectByDay = {};
-
   for (const day of DAYS) {
     schedule[day] = {};
-    lastSubjectByDay[day] = null;
-    
-    // Create day pool
-    let dayPool = shuffle([...pool]);
-    
-    // On Friday, reserve the PPI slot
-    const isFriday = day === 'Friday';
-    const ppiSlotIndex = isFriday ? timingConfig.ppiSlot : -1;
+    // Build today's pool by copying the weekly pool.
+    const dayPool = shuffle([...pool]);
+
+    // Track the previous subject to enforce anti-monotony.
+    let prevSubject = null;
+    // Track the period *after* which a break follows (for psychomotor rule).
+    const periodBeforeBreak = getPeriodBeforeBreak(periods);
 
     for (let i = 0; i < periods.length; i += 1) {
       const period = periods[i];
       const busyKey = `${day}|${period.id}`;
-      const isLastPeriodBeforeBreak = isPeriodBeforeBreak(periods, i);
 
-      // Check for event override
+      // 1) Event override
       const ev = eventSlots[busyKey];
       if (ev) {
         schedule[day][period.id] = {
@@ -684,47 +622,53 @@ export function generateClassSchedule({
           eventId: ev.id,
           eventColor: ev.color || '#d4a017',
         };
+        prevSubject = null;
         continue;
       }
 
-      // PPI slot on Friday
-      if (isFriday && i === ppiSlotIndex) {
-        const ppiTeacher = pickTeacher(PPI_SUBJECT, teachers, teacherBusy[busyKey], null, teacherLoad, level);
-        schedule[day][period.id] = ppiTeacher
-          ? slotFor(PPI_SUBJECT, ppiTeacher, cls)
+      // 2) PPI locked slot
+      if (ppiPeriod && ppiSubject && day === PPI_DAY && period.id === ppiPeriod.id) {
+        const teacher = pickTeacher(
+          ppiSubject, eligibleTeachers,
+          teacherBusy[busyKey], null, teacherLoad, level, cls
+        );
+        schedule[day][period.id] = teacher
+          ? slotFor(ppiSubject, teacher, cls)
           : {
-              subject: PPI_SUBJECT,
+              subject: ppiSubject,
               teacherId: '',
-              teacherInitials: 'PPI',
-              teacherFullName: 'Pastoral Programme',
-              room: 'Assembly Hall',
+              teacherInitials: 'TBA',
+              teacherFullName: '',
+              room: `${cls} Room`,
             };
-        if (ppiTeacher) {
-          teacherBusy[busyKey].add(ppiTeacher.id);
-          teacherLoad[ppiTeacher.id] = (teacherLoad[ppiTeacher.id] || 0) + 1;
+        if (teacher) {
+          teacherBusy[busyKey].add(teacher.id);
+          teacherLoad[teacher.id] = (teacherLoad[teacher.id] || 0) + 1;
         }
-        // Remove PPI from pool if present
-        const ppiIdx = dayPool.findIndex(s => s === PPI_SUBJECT);
-        if (ppiIdx >= 0) dayPool.splice(ppiIdx, 1);
-        lastSubjectByDay[day] = PPI_SUBJECT;
+        prevSubject = ppiSubject;
         continue;
       }
 
-      // Double-period logic (only for allowed levels and subjects)
+      // 3) Double-period candidate (practical subjects, upper levels only)
       if (allowDoubles && i + 1 < periods.length) {
         const next = periods[i + 1];
         const nextBusyKey = `${day}|${next.id}`;
-        const nextIsBreak = next.type === 'break';
-        
-        if (!nextIsBreak && !eventSlots[nextBusyKey]) {
-          // Find a double-eligible subject that hasn't been used recently
-          const candidate = dayPool.find((s) => 
-            doubleSubjects.has(s) && 
-            !areSameCognitiveGroup(s, lastSubjectByDay[day])
-          );
-          
+
+        // Don't double into a break, PPI, or event.
+        const nextIsBlocked =
+          next.type === 'break' ||
+          next.isPPI ||
+          eventSlots[nextBusyKey] ||
+          (ppiPeriod && day === PPI_DAY && next.id === ppiPeriod.id);
+
+        if (!nextIsBlocked) {
+          const candidate = pickDoubleCandidate(dayPool, prevSubject, periodBeforeBreak, period);
           if (candidate) {
-            const teacher = pickTeacher(candidate, teachers, teacherBusy[busyKey], teacherBusy[nextBusyKey], teacherLoad, level);
+            const teacher = pickTeacher(
+              candidate, eligibleTeachers,
+              teacherBusy[busyKey], teacherBusy[nextBusyKey],
+              teacherLoad, level, cls
+            );
             if (teacher) {
               const shared = slotFor(candidate, teacher, cls);
               schedule[day][period.id] = { ...shared, doubleWith: next.id };
@@ -734,7 +678,7 @@ export function generateClassSchedule({
               teacherLoad[teacher.id] = (teacherLoad[teacher.id] || 0) + 2;
               removeFirst(dayPool, candidate);
               removeFirst(dayPool, candidate);
-              lastSubjectByDay[day] = candidate;
+              prevSubject = candidate;
               i += 1;
               continue;
             }
@@ -742,65 +686,32 @@ export function generateClassSchedule({
         }
       }
 
-      // Single period — find best subject
-      let assigned = null;
-      let bestCandidate = null;
-      let bestScore = -Infinity;
+      // 4) Single period — pick the next subject that respects the rules.
+      const chosen = chooseSubjectForSlot({
+        dayPool,
+        prevSubject,
+        isBeforeBreak: periodBeforeBreak.has(period.id),
+        eligibleTeachers,
+        busySet: teacherBusy[busyKey],
+        teacherLoad,
+        level,
+        cls,
+      });
 
-      for (const candidateSubject of dayPool) {
-        // Anti-monotony: skip if same cognitive group as last subject
-        if (areSameCognitiveGroup(candidateSubject, lastSubjectByDay[day])) {
-          continue;
-        }
-
-        // Psychomotor placement: prefer before break
-        let score = 0;
-        if (isLastPeriodBeforeBreak && isPsychomotor(candidateSubject)) {
-          score += 10;
-        }
-        if (!isLastPeriodBeforeBreak && isPsychomotor(candidateSubject)) {
-          score -= 5;
-        }
-
-        // Check teacher availability
-        const teacher = pickTeacher(candidateSubject, teachers, teacherBusy[busyKey], null, teacherLoad, level);
-        if (!teacher) {
-          score -= 20;
-        } else {
-          score += 5;
-        }
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestCandidate = candidateSubject;
-          assigned = teacher ? slotFor(candidateSubject, teacher, cls) : null;
-        }
-      }
-
-      // Fallback: if no candidate passed anti-monotony, allow same group
-      if (!bestCandidate) {
-        for (const candidateSubject of dayPool) {
-          const teacher = pickTeacher(candidateSubject, teachers, teacherBusy[busyKey], null, teacherLoad, level);
-          if (teacher) {
-            bestCandidate = candidateSubject;
-            assigned = slotFor(candidateSubject, teacher, cls);
-            break;
-          }
-        }
-      }
-
-      if (assigned && bestCandidate) {
-        schedule[day][period.id] = assigned;
-        teacherBusy[busyKey].add(assigned.teacherId);
-        teacherLoad[assigned.teacherId] = (teacherLoad[assigned.teacherId] || 0) + 1;
-        removeFirst(dayPool, bestCandidate);
-        lastSubjectByDay[day] = bestCandidate;
+      if (chosen) {
+        const { subject, teacher } = chosen;
+        schedule[day][period.id] = slotFor(subject, teacher, cls);
+        teacherBusy[busyKey].add(teacher.id);
+        teacherLoad[teacher.id] = (teacherLoad[teacher.id] || 0) + 1;
+        removeFirst(dayPool, subject);
+        prevSubject = subject;
       } else {
-        unassigned.push({ 
-          day, 
-          periodId: period.id, 
-          reason: 'No qualified teacher available or workload cap reached' 
+        unassigned.push({
+          day,
+          periodId: period.id,
+          reason: 'No qualified teacher available or pedagogical rule blocked',
         });
+        prevSubject = null;
       }
     }
   }
@@ -809,11 +720,6 @@ export function generateClassSchedule({
 }
 
 /* ---- generator internals ---- */
-
-function isPeriodBeforeBreak(periods, index) {
-  if (index + 1 >= periods.length) return false;
-  return periods[index + 1].type === 'break';
-}
 
 function slotFor(subject, teacher, cls) {
   return {
@@ -825,17 +731,22 @@ function slotFor(subject, teacher, cls) {
   };
 }
 
-function pickTeacher(subject, teachers, busySet, extraBusySet, load, level) {
+/**
+ * Pick a teacher for `subject` who:
+ *  - actually teaches this subject at this level/class
+ *  - is free in this slot (and, optionally, in the double slot)
+ *  - is under their effective max load
+ * Prefer the least-loaded candidate, tie-broken by name.
+ */
+function pickTeacher(subject, teachers, busySet, extraBusySet, load, level = null, cls = null) {
   const candidates = teachers
-    .filter((t) => teacherTeaches(t, subject))
+    .filter((t) => teacherTeaches(t, subject, level, cls))
     .filter((t) => !busySet.has(t.id))
     .filter((t) => !extraBusySet || !extraBusySet.has(t.id))
-    .filter((t) => {
-      const currentLoad = load[t.id] || 0;
-      const maxLoad = getTeacherMaxWorkload(t);
-      return currentLoad < maxLoad;
-    });
+    .filter((t) => (load[t.id] || 0) < teacherMaxLoad(t));
+
   if (candidates.length === 0) return null;
+
   candidates.sort((a, b) => {
     const d = (load[a.id] || 0) - (load[b.id] || 0);
     if (d !== 0) return d;
@@ -844,13 +755,98 @@ function pickTeacher(subject, teachers, busySet, extraBusySet, load, level) {
   return candidates[0];
 }
 
-function teacherTeaches(teacher, subject) {
-  // PPI can be taught by any teacher
-  if (subject === PPI_SUBJECT) return true;
-  
-  const declared = Array.isArray(teacher.subjects) ? teacher.subjects : [];
-  if (declared.length === 0) return true;
-  return declared.includes(subject);
+/**
+ * Ids of periods immediately followed by a break. Used to place
+ * psychomotor subjects so they sit right before a break.
+ */
+function getPeriodBeforeBreak(periods) {
+  const set = new Set();
+  for (let i = 0; i < periods.length - 1; i += 1) {
+    if (periods[i + 1].type === 'break') set.add(periods[i].id);
+  }
+  return set;
+}
+
+function isMonotonyBlocked(prev, next) {
+  if (!prev || !next || prev === next) return false;
+  return ANTI_MONOTONY_PAIRS.some(([a, b]) => (
+    (prev === a && next === b) || (prev === b && next === a)
+  ));
+}
+
+/**
+ * Pick a double-lesson candidate: must be a practical subject, must
+ * not violate monotony, and must not be a psychomotor subject placed
+ * somewhere it doesn't belong.
+ */
+function pickDoubleCandidate(dayPool, prevSubject, periodBeforeBreak, currentPeriod) {
+  const unique = [...new Set(dayPool)];
+  return unique.find((s) => {
+    if (!DOUBLE_PERIOD_SUBJECTS.has(s)) return false;
+    if (isMonotonyBlocked(prevSubject, s)) return false;
+    // Psychomotor subjects shouldn't be doubled.
+    if (PSYCHOMOTOR_SUBJECTS.has(s)) return false;
+    // Only place doubles in a non-before-break slot; a double that
+    // straddles a break would be pedagogically wrong.
+    if (periodBeforeBreak.has(currentPeriod.id)) return false;
+    return true;
+  });
+}
+
+/**
+ * Choose the best subject for a single slot, honouring:
+ *  - psychomotor-before-break (hard requirement when possible)
+ *  - anti-monotony rule
+ *  - teacher availability
+ *  - subject still has remaining weekly allocation
+ */
+function chooseSubjectForSlot({
+  dayPool,
+  prevSubject,
+  isBeforeBreak,
+  eligibleTeachers,
+  busySet,
+  teacherLoad,
+  level,
+  cls,
+}) {
+  const unique = [...new Set(dayPool)];
+
+  // 1) Psychomotor subjects get priority if this slot precedes a break.
+  if (isBeforeBreak) {
+    for (const s of unique) {
+      if (!PSYCHOMOTOR_SUBJECTS.has(s)) continue;
+      if (isMonotonyBlocked(prevSubject, s)) continue;
+      const t = pickTeacher(s, eligibleTeachers, busySet, null, teacherLoad, level, cls);
+      if (t) return { subject: s, teacher: t };
+    }
+  }
+
+  // 2) General case — pick the least-loaded, rule-respecting subject.
+  // Build (subject, teacher) pairs and sort by teacher load ascending.
+  const candidates = [];
+  for (const s of unique) {
+    if (isMonotonyBlocked(prevSubject, s)) continue;
+    // De-prioritise psychomotor subjects outside pre-break slots.
+    if (PSYCHOMOTOR_SUBJECTS.has(s) && !isBeforeBreak) continue;
+    const t = pickTeacher(s, eligibleTeachers, busySet, null, teacherLoad, level, cls);
+    if (!t) continue;
+    candidates.push({ subject: s, teacher: t, load: teacherLoad[t.id] || 0 });
+  }
+  candidates.sort((a, b) => a.load - b.load);
+  if (candidates.length > 0) {
+    return { subject: candidates[0].subject, teacher: candidates[0].teacher };
+  }
+
+  // 3) Relax the monotony rule as a last resort, but keep the
+  //    psychomotor constraint.
+  for (const s of unique) {
+    if (PSYCHOMOTOR_SUBJECTS.has(s) && !isBeforeBreak) continue;
+    const t = pickTeacher(s, eligibleTeachers, busySet, null, teacherLoad, level, cls);
+    if (t) return { subject: s, teacher: t };
+  }
+
+  return null;
 }
 
 function shuffle(arr) {
@@ -960,70 +956,6 @@ export function summarizeTeacherLoad(allSchedules, level, customConfig = null) {
     .sort((a, b) => b.assignments.length - a.assignments.length);
 }
 
-/**
- * Get detailed workload summary with compliance status.
- */
-export function summarizeTeacherWorkload(allSchedules, teachers, level, customConfig = null) {
-  const periods = classPeriodsForLevel(level, customConfig);
-  const load = {};
-  
-  // Initialize all teachers
-  for (const t of teachers) {
-    load[t.id] = {
-      teacherId: t.id,
-      initials: teacherInitials(t),
-      fullName: teacherFullName(t),
-      adminRole: t.adminRole || t.role || '',
-      maxWorkload: getTeacherMaxWorkload(t),
-      standardWorkload: WORKLOAD_STANDARD,
-      assignments: [],
-      classes: new Set(),
-      totalPeriods: 0,
-    };
-  }
-  
-  // Count assignments
-  for (const [clsName, sched] of Object.entries(allSchedules || {})) {
-    for (const day of DAYS) {
-      for (const p of periods) {
-        const slot = sched?.[day]?.[p.id];
-        if (!slot?.teacherId) continue;
-        if (!load[slot.teacherId]) {
-          load[slot.teacherId] = {
-            teacherId: slot.teacherId,
-            initials: slot.teacherInitials,
-            fullName: slot.teacherFullName,
-            adminRole: '',
-            maxWorkload: WORKLOAD_MAX,
-            standardWorkload: WORKLOAD_STANDARD,
-            assignments: [],
-            classes: new Set(),
-            totalPeriods: 0,
-          };
-        }
-        load[slot.teacherId].assignments.push({
-          day, period: p, subject: slot.subject, className: clsName,
-        });
-        load[slot.teacherId].classes.add(clsName);
-        load[slot.teacherId].totalPeriods++;
-      }
-    }
-  }
-  
-  // Add compliance status
-  return Object.values(load).map(t => ({
-    ...t,
-    classes: [...t.classes],
-    isOverloaded: t.totalPeriods > t.maxWorkload,
-    isAtStandard: t.totalPeriods >= t.standardWorkload,
-    utilizationPercent: Math.round((t.totalPeriods / t.maxWorkload) * 100),
-    status: t.totalPeriods > t.maxWorkload ? 'overloaded' 
-           : t.totalPeriods >= t.standardWorkload ? 'optimal'
-           : t.totalPeriods > 0 ? 'underutilized'
-           : 'unassigned',
-  })).sort((a, b) => b.totalPeriods - a.totalPeriods);
-}
-
 export function summarizeClassCoverage(level, subjects, schedule, customConfig = null) {
   const periods = classPeriodsForLevel(level, customConfig);
   const counts = {};
@@ -1091,7 +1023,7 @@ export function generateDutyRoster(teachers, customAreas = DUTY_AREAS) {
 }
 
 /* ============================================================
-   Teacher scoping
+   Teacher scoping — which classes can this teacher see?
    ============================================================ */
 
 export function getTeacherClassScope(userData) {
@@ -1116,14 +1048,16 @@ export function getTeacherClassScope(userData) {
 
 export function getTeacherLevelScope(userData) {
   if (!userData) return [];
-
   if (Array.isArray(userData.levels) && userData.levels.length > 0) {
     return [...userData.levels];
   }
   if (userData.level) return [userData.level];
-
   return [];
 }
+
+/* ============================================================
+   Teacher-scoped timetable reads
+   ============================================================ */
 
 export async function loadSchedulesForTeacher(schoolId, level, term, year, allowedClasses) {
   const all = await loadAllSchedulesForLevel(schoolId, level, term, year);
@@ -1135,6 +1069,10 @@ export async function loadSchedulesForTeacher(schoolId, level, term, year, allow
   }
   return filtered;
 }
+
+/* ============================================================
+   Teacher workload summary (for the current user's own view)
+   ============================================================ */
 
 export function summarizeTeacherLoadForTeacher(allSchedules, teacherId, level, customConfig = null) {
   const periods = classPeriodsForLevel(level, customConfig);
@@ -1164,108 +1102,4 @@ export function summarizeTeacherLoadForTeacher(allSchedules, teacherId, level, c
     classes: [...classes].sort(),
     totalPeriods: assignments.length,
   };
-}
-
-/* ============================================================
-   Standards Compliance Validation
-   ============================================================ */
-
-/**
- * Validate a generated schedule against all standards.
- * Returns { valid, violations: [] }
- */
-export function validateScheduleCompliance(level, schedule, teachers, teacherLoad, customConfig = null) {
-  const violations = [];
-  const periods = classPeriodsForLevel(level, customConfig);
-  const timingConfig = LEVEL_TIMING_CONFIG[level];
-
-  // 1. Check double lesson restrictions
-  if (!timingConfig.allowsDoubles) {
-    for (const day of DAYS) {
-      for (const p of periods) {
-        const slot = schedule?.[day]?.[p.id];
-        if (slot?.doubleWith) {
-          violations.push({
-            type: 'double_lesson',
-            severity: 'error',
-            message: `Double lesson not allowed for ${level} on ${day} ${p.name}`,
-          });
-        }
-      }
-    }
-  }
-
-  // 2. Check psychomotor placement (should be before break)
-  const breakAfterIndices = new Set();
-  periods.forEach((p, i) => {
-    if (i > 0 && periods[i - 1]?.type === 'break') return;
-    if (i + 1 < periods.length && periods[i + 1]?.type === 'break') {
-      breakAfterIndices.add(i);
-    }
-  });
-
-  for (const day of DAYS) {
-    for (let i = 0; i < periods.length; i++) {
-      const p = periods[i];
-      const slot = schedule?.[day]?.[p.id];
-      if (!slot?.subject) continue;
-      
-      if (isPsychomotor(slot.subject) && !breakAfterIndices.has(i)) {
-        // Warning, not error — soft rule
-        violations.push({
-          type: 'psychomotor_placement',
-          severity: 'warning',
-          message: `Psychomotor subject "${slot.subject}" should be placed before a break (${day} ${p.name})`,
-        });
-      }
-    }
-  }
-
-  // 3. Check teacher workload caps
-  for (const [teacherId, load] of Object.entries(teacherLoad || {})) {
-    const teacher = teachers.find(t => t.id === teacherId);
-    if (!teacher) continue;
-    const maxWorkload = getTeacherMaxWorkload(teacher);
-    if (load > maxWorkload) {
-      violations.push({
-        type: 'workload_exceeded',
-        severity: 'error',
-        message: `${teacherFullName(teacher)} has ${load} periods (max: ${maxWorkload})`,
-        teacherId,
-      });
-    }
-  }
-
-  // 4. Check PPI is present (one per week)
-  const hasPPI = Object.values(schedule || {}).some(day =>
-    Object.values(day || {}).some(slot =>
-      slot?.subject === PPI_SUBJECT || slot?.subject?.toLowerCase().includes('ppi')
-    )
-  );
-  if (!hasPPI && timingConfig.ppiSlot !== undefined) {
-    violations.push({
-      type: 'missing_ppi',
-      severity: 'error',
-      message: 'PPI (Pastoral Programme of Instruction) slot is missing',
-    });
-  }
-
-  return {
-    valid: violations.filter(v => v.severity === 'error').length === 0,
-    violations,
-  };
-}
-
-/**
- * Get recommended periods per day for a level.
- */
-export function getRecommendedPeriodsPerDay(level) {
-  return LEVEL_TIMING_CONFIG[level]?.lessonsPerDay || 8;
-}
-
-/**
- * Get total weekly periods for a level.
- */
-export function getWeeklyPeriodsForLevel(level) {
-  return LEVEL_TIMING_CONFIG[level]?.totalWithPPI || 40;
 }
