@@ -8,6 +8,8 @@
 //       - Mobile web   → HTTP SMS gateway (sms_gateway config)
 //       - Desktop web  → USB / GSM modem (POST /api/send-sms-modem)
 //
+// Flow: audience toggle → recipients → compose → preview → send
+//
 // Requires:
 //   src/services/deviceSms.js
 //   src/pages/Communications.css
@@ -728,7 +730,7 @@ export default function Communication() {
 
         const outcomes = [];
         try {
-          if (transport === TRANSPORT.NATIVE) {
+            if (transport === TRANSPORT.NATIVE) {
                 // Native path sends one at a time (as the Android bridge requires).
                 for (const r of recipients) {
                     const [result] = await sendBatchViaNative([{
@@ -853,7 +855,7 @@ export default function Communication() {
     const transport = detectedTransport.current;
 
     /* ============================================================
-       Render
+       Render — new order: toggle → recipients → compose → preview → send
        ============================================================ */
 
     return (
@@ -893,280 +895,70 @@ export default function Communication() {
                 </nav>
 
                 {activeTab === 'compose' && (
-                    <div className="communications-layout">
-                        <section className="communications-card communications-compose">
-                            <h2>Compose personalized message</h2>
+                    <div className="communications-compose-stack">
 
-                            {/* Recipient audience toggle */}
-                            <div className="communications-audience-toggle" style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                        {/* ============================================================
+                            STEP 1 — Audience toggle
+                           ============================================================ */}
+                        <section className="communications-card communications-step">
+                            <div className="communications-step-head">
+                                <span className="communications-step-num">1</span>
+                                <div>
+                                    <h2>Who is this message for?</h2>
+                                    <p className="communications-step-sub">
+                                        Choose the audience. This determines which templates and recipient list are shown.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="communications-audience-toggle">
                                 <button type="button"
-                                    className={`btn ${recipientKind === 'parents' ? 'btn-primary' : 'btn-outline'}`}
+                                    className={`communications-audience-btn ${recipientKind === 'parents' ? 'active' : ''}`}
                                     onClick={() => {
                                         setRecipientKind('parents');
                                         setSelectedTeacherIds([]);
                                         setLevelFilter('');
                                         setSubjectFilter('');
                                     }}>
-                                    <i className="fas fa-users" aria-hidden="true" /> Parents / Students
+                                    <i className="fas fa-users" aria-hidden="true" />
+                                    <span>
+                                        <strong>Parents / Students</strong>
+                                        <small>Personalized per-student messages</small>
+                                    </span>
                                 </button>
                                 <button type="button"
-                                    className={`btn ${recipientKind === 'teachers' ? 'btn-primary' : 'btn-outline'}`}
+                                    className={`communications-audience-btn ${recipientKind === 'teachers' ? 'active' : ''}`}
                                     onClick={() => {
                                         setRecipientKind('teachers');
                                         setSelectedStudentIds([]);
                                         setClassFilter('');
                                     }}>
-                                    <i className="fas fa-chalkboard-user" aria-hidden="true" /> Teachers
+                                    <i className="fas fa-chalkboard-user" aria-hidden="true" />
+                                    <span>
+                                        <strong>Teachers</strong>
+                                        <small>Staff announcements and reminders</small>
+                                    </span>
                                 </button>
                             </div>
-
-                            <div className="communications-form-grid">
-                                <label>
-                                    Message template
-                                    <select value={selectedTemplateId} onChange={(e) => handleTemplateChange(e.target.value)}>
-                                        {availableTemplates.map((template) => (
-                                            <option key={template.id} value={template.id}>{template.name}</option>
-                                        ))}
-                                    </select>
-                                </label>
-                                <label>
-                                    Contact phone in footer
-                                    <input
-                                        value={adminPhone}
-                                        onChange={(e) => setAdminPhone(e.target.value)}
-                                        inputMode="tel"
-                                        placeholder="e.g. +2547..."
-                                    />
-                                </label>
-
-                                {transport === TRANSPORT.NATIVE && (
-                                    <label>
-                                        SIM card
-                                        <div className="communications-sim-select">
-                                            <select
-                                                value={selectedSimId}
-                                                onChange={(e) => setSelectedSimId(e.target.value)}
-                                                disabled={!sims.length}>
-                                                {!sims.length && <option value="">Detect SIM cards first</option>}
-                                                {sims.map((sim) => (
-                                                    <option key={sim.subscriptionId} value={sim.subscriptionId}>
-                                                        {sim.displayName}{sim.carrierName ? ` — ${sim.carrierName}` : ''}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            <button type="button" className="btn btn-outline"
-                                                onClick={refreshSims} disabled={detectingSims}>
-                                                {detectingSims ? 'Checking…' : 'Detect SIMs'}
-                                            </button>
-                                        </div>
-                                        {simMessage && <small>{simMessage}</small>}
-                                    </label>
-                                )}
-
-                                {transport === TRANSPORT.MODEM && (
-                                    <label>
-                                        Modem status
-                                        <div className="communications-sim-select">
-                                            <span className={`communications-env-badge ${modemStatus.available ? 'gateway' : 'modem'}`}>
-                                                <i className={`fas ${modemStatus.available ? 'fa-check-circle' : 'fa-times-circle'}`} aria-hidden="true" />
-                                                {modemStatus.available
-                                                    ? `Connected${modemStatus.port ? ` (${modemStatus.port})` : ''}`
-                                                    : 'Not detected'}
-                                            </span>
-                                            <button type="button" className="btn btn-outline"
-                                                onClick={checkModemStatus}>
-                                                <i className="fas fa-sync" aria-hidden="true" /> Refresh
-                                            </button>
-                                        </div>
-                                    </label>
-                                )}
-
-                                {selectedTemplateId === 'results' && (
-                                    <label>
-                                        Assessment results to include
-                                        <select value={assessmentKey} onChange={(e) => setAssessmentKey(e.target.value)}>
-                                            {!assessments.length && <option value="">No recorded assessments</option>}
-                                            {assessments.map((assessment) => (
-                                                <option key={assessment.key} value={assessment.key}>
-                                                    {assessment.term} {assessment.type}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </label>
-                                )}
-                            </div>
-
-                            {/* Template-specific extra fields */}
-                            {(recipientKind === 'parents' || recipientKind === 'teachers') && (
-                                <div className="communications-extra-fields">
-                                    {selectedTemplateId === 'attendance' && (
-                                        <label>Attendance status
-                                            <input value={extraFields.attendanceStatus}
-                                                onChange={(e) => setExtraFields({ ...extraFields, attendanceStatus: e.target.value })}
-                                                placeholder="absent / late" /></label>
-                                    )}
-                                    {['attendance', 'meeting', 'event', 'exam', 'teacher_meeting', 'teacher_deadline', 'teacher_training'].includes(selectedTemplateId) && (
-                                        <label>Date
-                                            <input type="date" value={extraFields.date}
-                                                onChange={(e) => setExtraFields({ ...extraFields, date: e.target.value })} /></label>
-                                    )}
-                                    {['meeting', 'event', 'teacher_meeting', 'teacher_training'].includes(selectedTemplateId) && (
-                                        <label>Time
-                                            <input type="time" value={extraFields.time}
-                                                onChange={(e) => setExtraFields({ ...extraFields, time: e.target.value })} /></label>
-                                    )}
-                                    {['meeting', 'teacher_meeting', 'teacher_training'].includes(selectedTemplateId) && (
-                                        <label>Venue
-                                            <input value={extraFields.venue}
-                                                onChange={(e) => setExtraFields({ ...extraFields, venue: e.target.value })} /></label>
-                                    )}
-                                    {selectedTemplateId === 'event' && (
-                                        <label>Event name
-                                            <input value={extraFields.eventName}
-                                                onChange={(e) => setExtraFields({ ...extraFields, eventName: e.target.value })} /></label>
-                                    )}
-                                    {selectedTemplateId === 'closure' && (
-                                        <label>Closure details
-                                            <input value={extraFields.closureDetails}
-                                                onChange={(e) => setExtraFields({ ...extraFields, closureDetails: e.target.value })} /></label>
-                                    )}
-                                    {selectedTemplateId === 'term' && (
-                                        <label>Term details
-                                            <input value={extraFields.termDetails}
-                                                onChange={(e) => setExtraFields({ ...extraFields, termDetails: e.target.value })} /></label>
-                                    )}
-                                    {selectedTemplateId === 'exam' && (
-                                        <label>Assessment / exam
-                                            <input value={extraFields.examName}
-                                                onChange={(e) => setExtraFields({ ...extraFields, examName: e.target.value })} /></label>
-                                    )}
-                                    {selectedTemplateId === 'congratulations' && (
-                                        <label>Achievement
-                                            <input value={extraFields.achievement}
-                                                onChange={(e) => setExtraFields({ ...extraFields, achievement: e.target.value })} /></label>
-                                    )}
-                                    {selectedTemplateId === 'teacher_deadline' && (
-                                        <label>Task description
-                                            <input value={extraFields.taskDescription}
-                                                onChange={(e) => setExtraFields({ ...extraFields, taskDescription: e.target.value })}
-                                                placeholder="e.g. Term 2 marks upload" /></label>
-                                    )}
-                                    {['announcement', 'event', 'uniform', 'transport', 'emergency',
-                                      'parent_custom', 'teacher_announcement', 'teacher_meeting',
-                                      'teacher_timetable', 'teacher_training', 'teacher_urgent',
-                                      'teacher_custom'].includes(selectedTemplateId) && (
-                                        <label className="wide">Message details
-                                            <textarea value={extraFields.message}
-                                                onChange={(e) => setExtraFields({ ...extraFields, message: e.target.value })}
-                                                rows="2" /></label>
-                                    )}
-                                </div>
-                            )}
-
-                            <label className="communications-message-label">
-                                Message body
-                                <textarea value={messageBody}
-                                    onChange={(e) => setMessageBody(e.target.value)} rows="7" />
-                            </label>
-
-                            <div className="communications-variables">
-                                <strong>Personalized fields:</strong>
-                                {recipientKind === 'teachers' ? (
-                                    <>
-                                        <span>{'{{teacherName}}'}</span>
-                                        <span>{'{{teacherSubject}}'}</span>
-                                        <span>{'{{teacherClasses}}'}</span>
-                                        <span>{'{{teacherLevel}}'}</span>
-                                        <span>{'{{teacherPhone}}'}</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <span>{'{{studentName}}'}</span>
-                                        <span>{'{{admissionNumber}}'}</span>
-                                        <span>{'{{feeBalance}}'}</span>
-                                        <span>{'{{assessmentResults}}'}</span>
-                                    </>
-                                )}
-                            </div>
-
-                            <div className="communications-preview">
-                                <strong>Preview</strong>
-                                <p>
-                                    {recipientKind === 'teachers'
-                                        ? (selectedTeachers.length
-                                            ? buildMessageForTeacher(selectedTeachers[0])
-                                            : 'Select a teacher to preview the personalized message.')
-                                        : (selectedStudents.length
-                                            ? buildMessageForStudent(selectedStudents[0])
-                                            : 'Select a student to preview the personalized message.')}
-                                </p>
-                            </div>
-
-                            {sending && (
-                                <div className="communications-progress">
-                                    <div className="communications-progress-bar">
-                                        <div className="communications-progress-fill"
-                                            style={{ width: `${(sendProgress.done / Math.max(sendProgress.total, 1)) * 100}%` }} />
-                                    </div>
-                                    <div className="communications-progress-text">
-                                        <span>
-                                            Sending {sendProgress.done} of {sendProgress.total}
-                                            {sendProgress.ok > 0 && ` • ✓ ${sendProgress.ok}`}
-                                            {sendProgress.failed > 0 && ` • ✗ ${sendProgress.failed}`}
-                                        </span>
-                                        <span>{Math.round((sendProgress.done / Math.max(sendProgress.total, 1)) * 100)}%</span>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="communications-send-row">
-                                <span>
-                                    {sending
-                                        ? `Sending ${sendProgress.done} of ${sendProgress.total}…`
-                                        : `${selectedCount}/${MAX_RECIPIENTS_PER_CAMPAIGN} ${recipientKind === 'teachers' ? 'teachers' : 'students'} selected`}
-                                </span>
-                                <div className="communications-send-actions">
-                                    <button type="button" className="btn btn-outline"
-                                        onClick={() => {
-                                            setSelectedStudentIds([]);
-                                            setSelectedTeacherIds([]);
-                                            setExtraFields({
-                                                message: '', date: '', time: '', venue: '', eventName: '',
-                                                closureDetails: '', termDetails: '', examName: '',
-                                                achievement: '', attendanceStatus: '', taskDescription: ''
-                                            });
-                                        }}>
-                                        <i className="fas fa-undo" aria-hidden="true" /> Reset
-                                    </button>
-                                    <button type="button" className="btn btn-primary"
-                                        onClick={handleSend}
-                                        disabled={sending || !selectedCount}>
-                                        <i className={`fas ${sending ? 'fa-spinner fa-spin' : 'fa-paper-plane'}`} aria-hidden="true" />
-                                        {sending ? 'Sending…' : 'Send SMS'}
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Transport readiness warnings */}
-                            {transport === TRANSPORT.MODEM && !modemStatus.available && (
-                                <div className="communications-alert warning" style={{ marginTop: 12 }}>
-                                    <i className="fas fa-plug" aria-hidden="true" />
-                                    <span>No USB / GSM modem detected on this machine. Connect the modem and refresh.</span>
-                                </div>
-                            )}
-                            {transport === TRANSPORT.GATEWAY && gatewayStatus !== 'connected' && (
-                                <div className="communications-alert warning" style={{ marginTop: 12 }}>
-                                    <i className="fas fa-exclamation-triangle" aria-hidden="true" />
-                                    <span>SMS gateway is not connected. Check the gateway settings in Firestore (<code>sms_gateway/{schoolId}</code>).</span>
-                                </div>
-                            )}
                         </section>
 
-                        {/* Recipients panel */}
-                        <section className="communications-card communications-recipients">
-                            <h2>
-                                Recipients — {recipientKind === 'teachers' ? 'Teachers' : 'Parents / Students'}
-                            </h2>
+                        {/* ============================================================
+                            STEP 2 — Recipients selection
+                           ============================================================ */}
+                        <section className="communications-card communications-step communications-recipients">
+                            <div className="communications-step-head">
+                                <span className="communications-step-num">2</span>
+                                <div>
+                                    <h2>
+                                        Select recipients — {recipientKind === 'teachers' ? 'Teachers' : 'Parents / Students'}
+                                    </h2>
+                                    <p className="communications-step-sub">
+                                        Pick individuals from the list, or use the filters to narrow down and select in bulk.
+                                        {' '}
+                                        <strong>{selectedCount}</strong> of {MAX_RECIPIENTS_PER_CAMPAIGN} selected.
+                                    </p>
+                                </div>
+                            </div>
 
                             <div className="communications-recipient-filters">
                                 <input value={search} onChange={(e) => setSearch(e.target.value)}
@@ -1263,10 +1055,285 @@ export default function Communication() {
                                 </>
                             )}
 
-                            <small>
+                            <small className="communications-help">
                                 Each recipient receives an individually personalized message.
                                 Maximum of {MAX_RECIPIENTS_PER_CAMPAIGN} per campaign.
                             </small>
+                        </section>
+
+                        {/* ============================================================
+                            STEP 3 — Compose
+                           ============================================================ */}
+                        <section className="communications-card communications-step communications-compose">
+                            <div className="communications-step-head">
+                                <span className="communications-step-num">3</span>
+                                <div>
+                                    <h2>Compose the message</h2>
+                                    <p className="communications-step-sub">
+                                        Pick a template, fill in any required details, and review the personalized preview below.
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="communications-form-grid">
+                                <label>
+                                    Message template
+                                    <select value={selectedTemplateId} onChange={(e) => handleTemplateChange(e.target.value)}>
+                                        {availableTemplates.map((template) => (
+                                            <option key={template.id} value={template.id}>{template.name}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                                <label>
+                                    Contact phone in footer
+                                    <input
+                                        value={adminPhone}
+                                        onChange={(e) => setAdminPhone(e.target.value)}
+                                        inputMode="tel"
+                                        placeholder="e.g. +2547..."
+                                    />
+                                </label>
+
+                                {transport === TRANSPORT.NATIVE && (
+                                    <label>
+                                        SIM card
+                                        <div className="communications-sim-select">
+                                            <select
+                                                value={selectedSimId}
+                                                onChange={(e) => setSelectedSimId(e.target.value)}
+                                                disabled={!sims.length}>
+                                                {!sims.length && <option value="">Detect SIM cards first</option>}
+                                                {sims.map((sim) => (
+                                                    <option key={sim.subscriptionId} value={sim.subscriptionId}>
+                                                        {sim.displayName}{sim.carrierName ? ` — ${sim.carrierName}` : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            <button type="button" className="btn btn-outline"
+                                                onClick={refreshSims} disabled={detectingSims}>
+                                                {detectingSims ? 'Checking…' : 'Detect SIMs'}
+                                            </button>
+                                        </div>
+                                        {simMessage && <small>{simMessage}</small>}
+                                    </label>
+                                )}
+
+                                {transport === TRANSPORT.MODEM && (
+                                    <label>
+                                        Modem status
+                                        <div className="communications-sim-select">
+                                            <span className={`communications-env-badge ${modemStatus.available ? 'gateway' : 'modem'}`}>
+                                                <i className={`fas ${modemStatus.available ? 'fa-check-circle' : 'fa-times-circle'}`} aria-hidden="true" />
+                                                {modemStatus.available
+                                                    ? `Connected${modemStatus.port ? ` (${modemStatus.port})` : ''}`
+                                                    : 'Not detected'}
+                                            </span>
+                                            <button type="button" className="btn btn-outline"
+                                                onClick={checkModemStatus}>
+                                                <i className="fas fa-sync" aria-hidden="true" /> Refresh
+                                            </button>
+                                        </div>
+                                    </label>
+                                )}
+
+                                {selectedTemplateId === 'results' && (
+                                    <label>
+                                        Assessment results to include
+                                        <select value={assessmentKey} onChange={(e) => setAssessmentKey(e.target.value)}>
+                                            {!assessments.length && <option value="">No recorded assessments</option>}
+                                            {assessments.map((assessment) => (
+                                                <option key={assessment.key} value={assessment.key}>
+                                                    {assessment.term} {assessment.type}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </label>
+                                )}
+                            </div>
+
+                            {/* Template-specific extra fields */}
+                            <div className="communications-extra-fields">
+                                {selectedTemplateId === 'attendance' && (
+                                    <label>Attendance status
+                                        <input value={extraFields.attendanceStatus}
+                                            onChange={(e) => setExtraFields({ ...extraFields, attendanceStatus: e.target.value })}
+                                            placeholder="absent / late" /></label>
+                                )}
+                                {['attendance', 'meeting', 'event', 'exam', 'teacher_meeting', 'teacher_deadline', 'teacher_training'].includes(selectedTemplateId) && (
+                                    <label>Date
+                                        <input type="date" value={extraFields.date}
+                                            onChange={(e) => setExtraFields({ ...extraFields, date: e.target.value })} /></label>
+                                )}
+                                {['meeting', 'event', 'teacher_meeting', 'teacher_training'].includes(selectedTemplateId) && (
+                                    <label>Time
+                                        <input type="time" value={extraFields.time}
+                                            onChange={(e) => setExtraFields({ ...extraFields, time: e.target.value })} /></label>
+                                )}
+                                {['meeting', 'teacher_meeting', 'teacher_training'].includes(selectedTemplateId) && (
+                                    <label>Venue
+                                        <input value={extraFields.venue}
+                                            onChange={(e) => setExtraFields({ ...extraFields, venue: e.target.value })} /></label>
+                                )}
+                                {selectedTemplateId === 'event' && (
+                                    <label>Event name
+                                        <input value={extraFields.eventName}
+                                            onChange={(e) => setExtraFields({ ...extraFields, eventName: e.target.value })} /></label>
+                                )}
+                                {selectedTemplateId === 'closure' && (
+                                    <label>Closure details
+                                        <input value={extraFields.closureDetails}
+                                            onChange={(e) => setExtraFields({ ...extraFields, closureDetails: e.target.value })} /></label>
+                                )}
+                                {selectedTemplateId === 'term' && (
+                                    <label>Term details
+                                        <input value={extraFields.termDetails}
+                                            onChange={(e) => setExtraFields({ ...extraFields, termDetails: e.target.value })} /></label>
+                                )}
+                                {selectedTemplateId === 'exam' && (
+                                    <label>Assessment / exam
+                                        <input value={extraFields.examName}
+                                            onChange={(e) => setExtraFields({ ...extraFields, examName: e.target.value })} /></label>
+                                )}
+                                {selectedTemplateId === 'congratulations' && (
+                                    <label>Achievement
+                                        <input value={extraFields.achievement}
+                                            onChange={(e) => setExtraFields({ ...extraFields, achievement: e.target.value })} /></label>
+                                )}
+                                {selectedTemplateId === 'teacher_deadline' && (
+                                    <label>Task description
+                                        <input value={extraFields.taskDescription}
+                                            onChange={(e) => setExtraFields({ ...extraFields, taskDescription: e.target.value })}
+                                            placeholder="e.g. Term 2 marks upload" /></label>
+                                )}
+                                {['announcement', 'event', 'uniform', 'transport', 'emergency',
+                                  'parent_custom', 'teacher_announcement', 'teacher_meeting',
+                                  'teacher_timetable', 'teacher_training', 'teacher_urgent',
+                                  'teacher_custom'].includes(selectedTemplateId) && (
+                                    <label className="wide">Message details
+                                        <textarea value={extraFields.message}
+                                            onChange={(e) => setExtraFields({ ...extraFields, message: e.target.value })}
+                                            rows="2" /></label>
+                                )}
+                            </div>
+
+                            <label className="communications-message-label">
+                                Message body
+                                <textarea value={messageBody}
+                                    onChange={(e) => setMessageBody(e.target.value)} rows="7" />
+                            </label>
+
+                            <div className="communications-variables">
+                                <strong>Personalized fields:</strong>
+                                {recipientKind === 'teachers' ? (
+                                    <>
+                                        <span>{'{{teacherName}}'}</span>
+                                        <span>{'{{teacherSubject}}'}</span>
+                                        <span>{'{{teacherClasses}}'}</span>
+                                        <span>{'{{teacherLevel}}'}</span>
+                                        <span>{'{{teacherPhone}}'}</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>{'{{studentName}}'}</span>
+                                        <span>{'{{admissionNumber}}'}</span>
+                                        <span>{'{{feeBalance}}'}</span>
+                                        <span>{'{{assessmentResults}}'}</span>
+                                    </>
+                                )}
+                            </div>
+
+                            {/* Preview — always sits immediately above Send */}
+                            <div className="communications-preview">
+                                <strong>
+                                    Preview
+                                    {selectedCount > 0 && (
+                                        <span className="communications-preview-count">
+                                            {' · '}
+                                            {selectedCount} {recipientKind === 'teachers' ? 'teacher' : 'student'}
+                                            {selectedCount === 1 ? '' : 's'} will receive a personalized copy
+                                        </span>
+                                    )}
+                                </strong>
+                                <p>
+                                    {recipientKind === 'teachers'
+                                        ? (selectedTeachers.length
+                                            ? buildMessageForTeacher(selectedTeachers[0])
+                                            : 'Select at least one teacher above to preview the personalized message.')
+                                        : (selectedStudents.length
+                                            ? buildMessageForStudent(selectedStudents[0])
+                                            : 'Select at least one student above to preview the personalized message.')}
+                                </p>
+                                {selectedCount > 1 && (
+                                    <p className="communications-preview-hint">
+                                        Showing preview for{' '}
+                                        <strong>
+                                            {recipientKind === 'teachers'
+                                                ? teacherName(selectedTeachers[0])
+                                                : studentName(selectedStudents[0])}
+                                        </strong>
+                                        . Each of the {selectedCount} selected recipients receives their own copy.
+                                    </p>
+                                )}
+                            </div>
+
+                            {sending && (
+                                <div className="communications-progress">
+                                    <div className="communications-progress-bar">
+                                        <div className="communications-progress-fill"
+                                            style={{ width: `${(sendProgress.done / Math.max(sendProgress.total, 1)) * 100}%` }} />
+                                    </div>
+                                    <div className="communications-progress-text">
+                                        <span>
+                                            Sending {sendProgress.done} of {sendProgress.total}
+                                            {sendProgress.ok > 0 && ` • ✓ ${sendProgress.ok}`}
+                                            {sendProgress.failed > 0 && ` • ✗ ${sendProgress.failed}`}
+                                        </span>
+                                        <span>{Math.round((sendProgress.done / Math.max(sendProgress.total, 1)) * 100)}%</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="communications-send-row">
+                                <span>
+                                    {sending
+                                        ? `Sending ${sendProgress.done} of ${sendProgress.total}…`
+                                        : `${selectedCount}/${MAX_RECIPIENTS_PER_CAMPAIGN} ${recipientKind === 'teachers' ? 'teachers' : 'students'} selected`}
+                                </span>
+                                <div className="communications-send-actions">
+                                    <button type="button" className="btn btn-outline"
+                                        onClick={() => {
+                                            setSelectedStudentIds([]);
+                                            setSelectedTeacherIds([]);
+                                            setExtraFields({
+                                                message: '', date: '', time: '', venue: '', eventName: '',
+                                                closureDetails: '', termDetails: '', examName: '',
+                                                achievement: '', attendanceStatus: '', taskDescription: ''
+                                            });
+                                        }}>
+                                        <i className="fas fa-undo" aria-hidden="true" /> Reset
+                                    </button>
+                                    <button type="button" className="btn btn-primary"
+                                        onClick={handleSend}
+                                        disabled={sending || !selectedCount}>
+                                        <i className={`fas ${sending ? 'fa-spinner fa-spin' : 'fa-paper-plane'}`} aria-hidden="true" />
+                                        {sending ? 'Sending…' : `Send SMS${selectedCount ? ` (${selectedCount})` : ''}`}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Transport readiness warnings */}
+                            {transport === TRANSPORT.MODEM && !modemStatus.available && (
+                                <div className="communications-alert warning" style={{ marginTop: 12 }}>
+                                    <i className="fas fa-plug" aria-hidden="true" />
+                                    <span>No USB / GSM modem detected on this machine. Connect the modem and refresh.</span>
+                                </div>
+                            )}
+                            {transport === TRANSPORT.GATEWAY && gatewayStatus !== 'connected' && (
+                                <div className="communications-alert warning" style={{ marginTop: 12 }}>
+                                    <i className="fas fa-exclamation-triangle" aria-hidden="true" />
+                                    <span>SMS gateway is not connected. Check the gateway settings in Firestore (<code>sms_gateway/{schoolId}</code>).</span>
+                                </div>
+                            )}
                         </section>
                     </div>
                 )}
