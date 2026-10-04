@@ -14,6 +14,11 @@ const Header = ({ toggleSideNav }) => {
     const [schoolLogo, setSchoolLogo] = useState('/Logo.png');
     const [logoLoaded, setLogoLoaded] = useState(true);
 
+    // Cache the resolved avatar URL so a broken Cloudinary URL doesn't
+    // cause the <img> to re-render on every keystroke.
+    const [avatarUrl, setAvatarUrl] = useState('');
+    const [avatarBroken, setAvatarBroken] = useState(false);
+
     // Load school data
     useEffect(() => {
         if (userData?.schoolId) {
@@ -21,6 +26,24 @@ const Header = ({ toggleSideNav }) => {
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userData]);
+
+    // Resolve the user's avatar URL.
+    // Priority:
+    //   1. profileImageUrl  (Cloudinary URL written by Settings.jsx)
+    //   2. photoURL         (Firebase Auth photoURL — legacy)
+    //   3. photoURL on Firebase Auth currentUser (in case userData lags)
+    useEffect(() => {
+        const fromProfile = userData?.profileImageUrl || userData?.photoURL || '';
+        const fromAuth = currentUser?.photoURL || '';
+        const next = (fromProfile || fromAuth || '').trim();
+
+        setAvatarUrl(next);
+        setAvatarBroken(false);   // reset on any change of source
+    }, [
+        userData?.profileImageUrl,
+        userData?.photoURL,
+        currentUser?.photoURL,
+    ]);
 
     const loadSchoolData = async () => {
         try {
@@ -65,7 +88,7 @@ const Header = ({ toggleSideNav }) => {
             '#ffc107', '#6f42c1', '#17a2b8', '#20c997',
             '#fd7e14', '#e83e8c',
         ];
-        const index = initials.charCodeAt(0) % colors.length;
+        const index = (initials || 'U').charCodeAt(0) % colors.length;
         return colors[index];
     };
 
@@ -98,6 +121,16 @@ const Header = ({ toggleSideNav }) => {
         setLogoLoaded(false);
     };
 
+    const handleAvatarError = () => {
+        // If the Cloudinary URL fails (deleted asset, expired account,
+        // etc.), fall back to initials.
+        setAvatarBroken(true);
+    };
+
+    const showPhoto = !!avatarUrl && !avatarBroken;
+    const initials = getInitials();
+    const avatarBg = getAvatarColor(initials);
+
     return (
         <header className="header">
             {/* Left — Menu Button */}
@@ -122,10 +155,7 @@ const Header = ({ toggleSideNav }) => {
                     />
                 )}
                 <div className="school-name-header" title={schoolName}>{schoolName}</div>
-                <div
-                    className="school-name-short"
-                    title={schoolName}
-                >
+                <div className="school-name-short" title={schoolName}>
                     {getShortSchoolName(schoolName)}
                 </div>
             </div>
@@ -141,23 +171,22 @@ const Header = ({ toggleSideNav }) => {
                     className="user-avatar"
                     title={getFullName()}
                     onClick={handleProfileClick}
-                    style={{ cursor: 'pointer' }}
+                    style={{
+                        cursor: 'pointer',
+                        backgroundColor: showPhoto ? undefined : avatarBg,
+                    }}
                 >
-                    {userData?.photoURL ? (
+                    {showPhoto ? (
                         <img
-                            src={userData.photoURL}
+                            src={avatarUrl}
                             alt="Profile"
                             className="user-avatar-img"
-                            onError={(e) => {
-                                e.target.style.display = 'none';
-                                e.target.parentElement.style.backgroundColor = getAvatarColor(getInitials());
-                                e.target.parentElement.textContent = getInitials();
-                            }}
+                            onError={handleAvatarError}
                         />
                     ) : (
                         <span
                             style={{
-                                backgroundColor: getAvatarColor(getInitials()),
+                                backgroundColor: avatarBg,
                                 width: '100%',
                                 height: '100%',
                                 display: 'flex',
@@ -168,7 +197,7 @@ const Header = ({ toggleSideNav }) => {
                                 fontSize: '18px',
                             }}
                         >
-                            {getInitials()}
+                            {initials}
                         </span>
                     )}
                 </div>
