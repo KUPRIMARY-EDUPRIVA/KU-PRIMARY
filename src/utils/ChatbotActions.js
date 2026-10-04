@@ -91,9 +91,78 @@ export const triggerSTKPush = async (phone, amount, student, schoolId) => {
             }),
         });
         const data = await response.json();
-        return { success: response.ok && data.success, message: data.message || 'STK Push sent.' };
+        return {
+            success: response.ok && data.success,
+            message: data.message || 'STK Push sent.',
+            checkoutRequestID: data.checkoutRequestID || data.CheckoutRequestID || null,
+            merchantRequestID: data.merchantRequestID || data.MerchantRequestID || null,
+        };
     } catch (err) {
         return { success: false, message: 'Failed to initiate payment: ' + err.message };
+    }
+};
+
+/**
+ * Poll the `mpesa_pending_transactions/{checkoutRequestID}` document that
+ * mpesa-callback.js updates. Resolves as soon as the status is terminal,
+ * or after `timeoutMs`.
+ *
+ * Terminal statuses:
+ *   completed | failed | cancelled | timeout | insufficient_funds |
+ *   invalid_account | wrong_pin | system_error | duplicate
+ */
+export const checkMpesaStatus = async (checkoutRequestID, {
+    timeoutMs = 90_000,
+    intervalMs = 3_000,
+} = {}) => {
+    if (!checkoutRequestID) {
+        return { success: false, status: 'unknown', message: 'Missing CheckoutRequestID.' };
+    }
+
+    const pendingRef = doc(db, 'mpesa_pending_transactions', checkoutRequestID);
+    const terminalStatuses = new Set([
+        'completed', 'failed', 'cancelled', 'timeout',
+        'insufficient_funds', 'invalid_account', 'wrong_pin',
+        'system_error', 'duplicate',
+    ]);
+
+    const startedAt = Date.now();
+
+    // Loop until terminal status or budget exhausted.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+        try {
+            const snap = await getDoc(pendingRef);
+            if (snap.exists()) {
+                const data = snap.data() || {};
+                const status = String(data.status || 'pending').toLowerCase();
+
+                if (terminalStatuses.has(status)) {
+                    return {
+                        success: status === 'completed',
+                        status,
+                        receipt: data.mpesaReceiptNumber || '',
+                        amountPaid: Number(data.amountPaid || data.amount || 0),
+                        mpesaResultCode: data.mpesaResultCode ?? null,
+                        mpesaResultDesc: data.mpesaResultDesc || '',
+                        isUserCancelled: !!data.isUserCancelled,
+                    };
+                }
+            }
+            // else: pending doc not visible yet — keep polling.
+        } catch (err) {
+            console.warn('checkMpesaStatus: poll failed', err);
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+            return {
+                success: false,
+                status: 'pending',
+                message: 'Timed out waiting for M-Pesa confirmation.',
+            };
+        }
+
+        await new Promise((r) => setTimeout(r, intervalMs));
     }
 };
 
@@ -124,10 +193,6 @@ export const fetchFeeBalance = async (admissionNumber, schoolId) => {
    School information
    ============================================================ */
 
-/**
- * Fetch a school fact sheet. topic ∈
- *   'overview' | 'classes' | 'subjects' | 'teachers' | 'contact' | 'levels' | 'all'
- */
 export const fetchSchoolInfo = async (topic = 'overview') => {
     try {
         const { ok, data } = await authedFetch('/api/chatbot-school-info', {
@@ -147,10 +212,6 @@ export const fetchSchoolInfo = async (topic = 'overview') => {
    Performance
    ============================================================ */
 
-/**
- * Fetch performance summary.
- * scope ∈ 'school' | 'class' | 'top'
- */
 export const fetchPerformance = async ({ scope = 'school', className, level, term, year } = {}) => {
     try {
         const { ok, data } = await authedFetch('/api/chatbot-performance', {
@@ -193,24 +254,9 @@ export const fetchDailyCollections = async (schoolId) => {
 };
 
 /* ============================================================
-   Student count + class teacher (new)
+   Student count + class teacher
    ============================================================ */
 
-/**
- * Count students in a class (or whole school if no class given).
- *
- * Data source: the `students` collection, filtered by schoolId,
- * optionally by class, excluding soft-deleted students.
- *
- * Uses `getCountFromServer` — Firestore's server-side aggregation —
- * so the count itself costs 1 Firestore read per 1000 docs and
- * transfers no document payload.
- *
- * @param {Object}  args
- * @param {string}  args.schoolId
- * @param {string} [args.cls]        e.g. '4S', 'Grade 4S', 'Grade 7 East'
- * @returns {Promise<{success:boolean, count?:number, displayClass?:string, error?:string}>}
- */
 export async function fetchStudentCount({ schoolId, cls } = {}) {
     try {
         if (!schoolId) {
@@ -220,7 +266,6 @@ export async function fetchStudentCount({ schoolId, cls } = {}) {
         const displayClass = normaliseClassDisplay(cls);
 
         if (!cls) {
-            // Whole-school count.
             const snap = await getCountFromServer(
                 query(
                     studentsRef,
@@ -231,7 +276,6 @@ export async function fetchStudentCount({ schoolId, cls } = {}) {
             return { success: true, count: snap.data().count, displayClass: 'the whole school' };
         }
 
-        // Try the class as given and a few common variants.
         const candidates = buildClassCandidates(cls);
         let count = 0;
         let matchedClass = null;
@@ -272,18 +316,6 @@ export async function fetchStudentCount({ schoolId, cls } = {}) {
     }
 }
 
-/**
- * Find the class teacher for a class.
- *
- * Reads `schools/{schoolId}.classTeachers`, which is a map:
- *     { 'Grade 4S': '<teacherUid>', 'Grade 5 East': '<teacherUid>', ... }
- * Then looks up the teacher's user doc for their display name.
- *
- * @param {Object}  args
- * @param {string}  args.schoolId
- * @param {string} [args.cls]
- * @returns {Promise<{success:boolean, teacher?:{name:string,email?:string,phone?:string}, displayClass?:string, error?:string}>}
- */
 export async function fetchClassTeacher({ schoolId, cls } = {}) {
     try {
         if (!schoolId) {
@@ -296,14 +328,12 @@ export async function fetchClassTeacher({ schoolId, cls } = {}) {
         const displayClass = normaliseClassDisplay(cls);
         const candidates = buildClassCandidates(cls);
 
-        // Read the school doc once.
         const schoolSnap = await getDoc(doc(db, 'schools', schoolId));
         if (!schoolSnap.exists()) {
             return { success: false, error: 'School not found.' };
         }
         const classTeachers = schoolSnap.data().classTeachers || {};
 
-        // Find the key that matches one of our candidates.
         let matchedKey = null;
         for (const key of Object.keys(classTeachers)) {
             if (candidates.some((c) => c.toLowerCase() === key.toLowerCase())) {
@@ -329,7 +359,6 @@ export async function fetchClassTeacher({ schoolId, cls } = {}) {
             };
         }
 
-        // Look up the teacher profile. Try `users` first, then `teachers`.
         let profile = null;
         try {
             const uSnap = await getDoc(doc(db, 'users', teacherUid));
@@ -376,7 +405,6 @@ export async function fetchClassTeacher({ schoolId, cls } = {}) {
    Small helpers used by both functions above
    ------------------------------------------------------------ */
 
-// Turn '4S' or 'grade 4s' into 'Grade 4S' for display purposes.
 function normaliseClassDisplay(cls) {
     if (!cls) return '';
     const s = String(cls).trim();
@@ -389,10 +417,6 @@ function normaliseClassDisplay(cls) {
     return s;
 }
 
-// Build a list of class-name variants to try against the students
-// `class` field and the school's `classTeachers` map.
-// E.g. '4S' -> ['4S', 'Grade 4S', 'grade 4s', '4s', 'GRADE 4S']
-//      'Grade 4S' -> ['Grade 4S', 'grade 4s', '4S', '4s', 'GRADE 4S']
 function buildClassCandidates(cls) {
     const s = String(cls).trim();
     const set = new Set();
