@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useBadges } from '../../context/BadgeContext';
+import { normalizeRole } from '../../utils/roles';
 import { db } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 
@@ -19,7 +20,7 @@ export default function MobileNav() {
     // Load school features and check if super-admin
     useEffect(() => {
         const checkRoleAndLoadFeatures = async () => {
-            const role = userRole || userData?.role || 'user';
+            const role = normalizeRole(userRole || userData?.role || 'user');
             const superAdmin = role === 'super-admin';
             setIsSuperAdmin(superAdmin);
 
@@ -161,9 +162,13 @@ export default function MobileNav() {
 
     // Get role-based navigation items (same as Sidebar with feature checks)
     const getNavItems = () => {
-        const role = userRole || userData?.role || 'user';
-        const isAdmin = role === 'admin' || role === 'user' || role === 'school_admin';
+        const role = normalizeRole(userRole || userData?.role || 'user');
+        const isAdmin = ['admin', 'user', 'school-admin', 'principal', 'headteacher'].includes(role);
+        const isHeadteacher = role === 'headteacher';
+        const isDeputyHeadteacher = role === 'deputy-headteacher';
+        const isAccountant = role === 'accountant';
         const isTeacher = role === 'teacher';
+        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
         const isStudent = role === 'student';
         const isSuperAdmin = role === 'super-admin';
 
@@ -210,13 +215,25 @@ export default function MobileNav() {
                 label: 'Fee Management',
                 badge: feeBadge,
                 badgeClass: 'danger',
-                show: isAdmin && !isSuperAdmin && isFeatureEnabled('fees')
+                show: (isAdmin || isAccountant) && !isSuperAdmin && isFeatureEnabled('fees')
+            },
+            {
+                path: '/attendance',
+                icon: 'fa-clipboard-check',
+                label: 'Attendance',
+                show: isAdmin && !isSuperAdmin
+            },
+            {
+                path: '/discipline',
+                icon: 'fa-scale-balanced',
+                label: 'Discipline',
+                show: isHeadteacher && !isSuperAdmin
             },
             {
                 path: '/communications',
                 icon: 'fa-comment-sms',
                 label: 'Communications',
-                show: isAdmin && !isSuperAdmin
+                show: isHeadteacher && !isSuperAdmin
             },
             {
                 path: '/reports',
@@ -256,25 +273,43 @@ export default function MobileNav() {
                 path: '/mydashboard',
                 icon: 'fa-chalkboard-teacher',
                 label: 'Dashboard',
-                show: isTeacher
+                show: isTeacherOrDeputy
             },
             {
                 path: '/my-students',
                 icon: 'fa-user-graduate',
                 label: 'My Students',
-                show: isTeacher
+                show: isTeacherOrDeputy
             },
             {
                 path: '/results',
                 icon: 'fa-chart-line',
                 label: 'Results',
-                show: isTeacher && isFeatureEnabled('results')
+                show: isTeacherOrDeputy && isFeatureEnabled('results')
+            },
+            {
+                path: '/attendance',
+                icon: 'fa-clipboard-check',
+                label: 'Attendance',
+                show: isTeacherOrDeputy
             },
             {
                 path: '/myreports',
                 icon: 'fa-file-alt',
                 label: 'My Reports',
-                show: isTeacher && isFeatureEnabled('reports')
+                show: isTeacherOrDeputy && isFeatureEnabled('reports')
+            },
+            {
+                path: '/studentreports',
+                icon: 'fa-file-alt',
+                label: 'Student Reports',
+                show: isDeputyHeadteacher
+            },
+            {
+                path: '/discipline',
+                icon: 'fa-scale-balanced',
+                label: 'Discipline',
+                show: isDeputyHeadteacher
             }
         ];
 
@@ -334,25 +369,25 @@ export default function MobileNav() {
                 path: '/transport',
                 icon: 'fa-bus',
                 label: 'Transport',
-                show: !isSuperAdmin && isFeatureEnabled('transport')
+                show: !isAccountant && !isSuperAdmin && isFeatureEnabled('transport')
             },
             {
                 path: '/accomodation',
                 icon: 'fa-house',
                 label: 'Accommodation',
-                show: !isSuperAdmin && isFeatureEnabled('accommodation')
+                show: !isAccountant && !isSuperAdmin && isFeatureEnabled('accommodation')
             },
             {
                 path: '/health',
                 icon: 'fa-cross',
                 label: 'Health Unit',
-                show: !isSuperAdmin && isFeatureEnabled('health')
+                show: !isAccountant && !isSuperAdmin && isFeatureEnabled('health')
             },
             {
                 path: '/inventory',
                 icon: 'fa-boxes',
                 label: 'Inventory',
-                show: !isSuperAdmin && isFeatureEnabled('inventory')
+                show: !isAccountant && !isSuperAdmin && isFeatureEnabled('inventory')
             }
         ];
 
@@ -362,7 +397,7 @@ export default function MobileNav() {
                 path: '/settings',
                 icon: 'fa-user-cog',
                 label: 'My Profile',
-                show: true
+                show: !isAccountant
             }
         ];
 

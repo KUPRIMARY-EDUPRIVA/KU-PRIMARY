@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/send-sms-modem.js
 // Server-side bridge for USB / GSM modems.
 //
@@ -104,3 +105,5 @@ exports.handler = async (event) => {
         results
     });
 };
+
+exports.handler = withCors(exports.handler);

@@ -16,6 +16,7 @@ import {
 } from '../utils/constants';
 import { requireSchoolId, getFeeStructures, upsertFeeStructure, deleteFeeStructure, getFeeStructure } from '../services/feeService';
 
+import { showAppNotice } from '../utils/appNotice';
 const FEE_CATEGORIES = [
     { id: 'Tuition', label: 'Tuition & Academic', icon: 'fa-graduation-cap', defaultOptional: false },
     { id: 'Meals', label: 'Meals / Lunch Program', icon: 'fa-utensils', defaultOptional: true },
@@ -92,8 +93,7 @@ export default function FeeStructure() {
         : selectedClass;
 
     const showNotification = (message, type = 'info') => {
-        setFeedback({ message, type });
-        setTimeout(() => setFeedback({ message: '', type: '' }), 4000);
+        showAppNotice(message, type);
     };
 
     // Load saved structures for this school & year
@@ -396,7 +396,7 @@ export default function FeeStructure() {
                 </div>
 
                 {feedback.message && (
-                    <div style={{
+                    <div role={feedback.type === 'error' ? 'alert' : 'status'} style={{
                         padding: '14px 20px',
                         borderRadius: 10,
                         marginBottom: 20,
@@ -411,6 +411,7 @@ export default function FeeStructure() {
                     }}>
                         <i className={`fas ${feedback.type === 'success' ? 'fa-check-circle' : feedback.type === 'error' ? 'fa-times-circle' : 'fa-exclamation-triangle'}`}></i>
                         {feedback.message}
+                        <button type="button" aria-label="Dismiss message" onClick={() => setFeedback({ message: '', type: '' })} style={{ marginLeft: 'auto' }}>×</button>
                     </div>
                 )}
 

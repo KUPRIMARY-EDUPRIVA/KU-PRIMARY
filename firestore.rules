@@ -60,7 +60,30 @@ service cloud.firestore {
     function isSchoolAdmin(schoolId) {
       return isSignedIn() && (
         isPlatformAdmin() || 
-        (userSchoolId() == schoolId && (userRole() == 'admin' || userRole() == 'principal' || userRole() == 'finance'))
+        (userSchoolId() == schoolId &&
+          userRole() in ['admin', 'principal', 'finance', 'headteacher', 'deputy-headteacher'])
+      );
+    }
+
+    function isSchoolProfileManager(schoolId) {
+      return isSignedIn() && (
+        isPlatformAdmin() ||
+        (userSchoolId() == schoolId && userRole() in ['admin', 'headteacher'])
+      );
+    }
+
+    function isManagedAdminRole(role) {
+      return role in [
+        'admin', 'user', 'school_admin', 'school-admin', 'principal',
+        'headteacher', 'deputy-headteacher', 'accountant', 'finance'
+      ];
+    }
+
+    function isFeeManager(schoolId) {
+      return isSignedIn() && (
+        isPlatformAdmin() ||
+        (userSchoolId() == schoolId &&
+          userRole() in ['admin', 'user', 'school_admin', 'principal', 'finance', 'accountant', 'headteacher', 'deputy-headteacher'])
       );
     }
 
@@ -82,7 +105,7 @@ service cloud.firestore {
       return isSignedIn() && (
         isPlatformAdmin() ||
         (userSchoolId() == schoolId &&
-          userRole() in ['admin', 'user', 'school_admin'])
+          userRole() == 'headteacher')
       );
     }
 
@@ -122,7 +145,7 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128 &&
              data.email is string && data.email.size() > 0 && data.email.size() <= 128 &&
-             data.role is string && data.role in ['admin', 'teacher', 'student', 'parent', 'super_admin', 'user', 'principal', 'finance'];
+             data.role is string && data.role in ['admin', 'teacher', 'student', 'parent', 'super_admin', 'user', 'principal', 'finance', 'accountant', 'headteacher', 'deputy-headteacher'];
     }
 
     // -------------------------------------------------------------
@@ -132,7 +155,11 @@ service cloud.firestore {
       allow get: if isValidId(schoolId) && (isSchoolMember(schoolId) || isPlatformAdmin());
       allow list: if isPlatformAdmin();
       allow create, delete: if isPlatformAdmin();
-      allow update: if isValidId(schoolId) && isSchoolAdmin(schoolId);
+      allow update: if isValidId(schoolId) &&
+        isSchoolProfileManager(schoolId) &&
+        !incoming().diff(existing()).affectedKeys().hasAny([
+          'adminRoleCounts', 'adminRoleCountsInitialized'
+        ]);
     }
 
     // -------------------------------------------------------------
@@ -144,21 +171,31 @@ service cloud.firestore {
       
       // Prevent Self-Assigned Roles:
       allow create: if isValidId(userId) && isUser(userId) && isValidUser(incoming()) && (
-        isPlatformAdmin() ||
-        (incoming().role in ['user', 'student', 'parent'] && incoming().uid == request.auth.uid)
+        (isPlatformAdmin() && !isManagedAdminRole(incoming().role)) ||
+        (incoming().role in ['user', 'student', 'parent'] &&
+         incoming().uid == request.auth.uid &&
+         (!('schoolId' in incoming()) || incoming().schoolId == ''))
       );
 
       // Users can update personal details, but CANNOT elevate role or change tenant
       allow update: if isValidId(userId) && (
-        isPlatformAdmin() ||
-        (isSchoolAdmin(existing().schoolId) && incoming().schoolId == existing().schoolId) ||
+        (isPlatformAdmin() && incoming().role == existing().role) ||
+        (isSchoolProfileManager(existing().schoolId) &&
+         incoming().schoolId == existing().schoolId &&
+         incoming().role == existing().role) ||
+        (isSchoolAdmin(existing().schoolId) &&
+         incoming().schoolId == existing().schoolId &&
+         incoming().role == existing().role &&
+         (!('role' in existing()) || !isManagedAdminRole(existing().role))) ||
         (isUser(userId) && 
          incoming().role == existing().role && 
          incoming().schoolId == existing().schoolId &&
          incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'lastLogin', 'updatedAt']))
       );
 
-      allow delete: if isValidId(userId) && (isPlatformAdmin() || isSchoolAdmin(existing().schoolId));
+      allow delete: if isValidId(userId) &&
+        isPlatformAdmin() &&
+        !isManagedAdminRole(existing().role);
     }
 
     // -------------------------------------------------------------
@@ -181,12 +218,14 @@ service cloud.firestore {
     match /students/{studentId} {
       allow get: if isValidId(studentId) && (
         canUseSchoolCommunications(existing().schoolId) ||
+        isFeeManager(existing().schoolId) ||
         isSchoolAdmin(existing().schoolId) ||
         (isSchoolTeacher(existing().schoolId) && existing().class in request.auth.token.assignedClasses) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
         canUseSchoolCommunications(resource.data.schoolId) ||
+        isFeeManager(resource.data.schoolId) ||
         isSchoolAdmin(userSchoolId()) ||
         (isSchoolTeacher(userSchoolId()) && resource.data.class in request.auth.token.assignedClasses) ||
         resource.data.studentId == request.auth.uid
@@ -204,25 +243,25 @@ service cloud.firestore {
     // -------------------------------------------------------------
     match /fee_transactions/{txnId} {
       allow get: if isValidId(txnId) && (
-        isSchoolAdmin(existing().schoolId) ||
+        isFeeManager(existing().schoolId) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
       
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
-        isSchoolAdmin(userSchoolId()) || 
+        isFeeManager(userSchoolId()) ||
         resource.data.studentId == request.auth.uid
       );
 
       // Create: Idempotent append-only, matching caller's school
       allow create: if isValidId(txnId) &&
                        txnId == incoming().idempotencyKey &&
-                       isSchoolAdmin(incoming().schoolId) &&
+                       isFeeManager(incoming().schoolId) &&
                        isValidFeeTransaction(incoming()) &&
                        incoming().voided == false;
 
       // Update: ONLY voiding allowed, cannot re-void an already voided transaction
       allow update: if isValidId(txnId) &&
-                       isSchoolAdmin(existing().schoolId) &&
+                       isFeeManager(existing().schoolId) &&
                        isValidFeeTransaction(incoming()) &&
                        existing().voided == false &&
                        incoming().voided == true &&
@@ -239,27 +278,27 @@ service cloud.firestore {
     // -------------------------------------------------------------
     match /invoices/{invoiceId} {
       allow get: if isValidId(invoiceId) && (
-        isSchoolAdmin(existing().schoolId) ||
+        isFeeManager(existing().schoolId) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
 
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
-        isSchoolAdmin(userSchoolId()) || 
+        isFeeManager(userSchoolId()) ||
         resource.data.studentId == request.auth.uid
       );
 
       allow create: if isValidId(invoiceId) &&
-                       isSchoolAdmin(incoming().schoolId) &&
+                       isFeeManager(incoming().schoolId) &&
                        isValidInvoice(incoming());
 
       // Update: Admins or batch updates; cannot revert a terminal 'paid' invoice without admin role
       allow update: if isValidId(invoiceId) &&
-                       isSchoolAdmin(existing().schoolId) &&
+                       isFeeManager(existing().schoolId) &&
                        isValidInvoice(incoming()) &&
                        incoming().schoolId == existing().schoolId &&
                        incoming().studentId == existing().studentId;
 
-      allow delete: if isValidId(invoiceId) && isSchoolAdmin(existing().schoolId) && existing().status != 'paid';
+      allow delete: if isValidId(invoiceId) && isFeeManager(existing().schoolId) && existing().status != 'paid';
     }
 
     // -------------------------------------------------------------
@@ -268,17 +307,17 @@ service cloud.firestore {
     match /student_balances/{balanceId} {
       allow get: if isValidId(balanceId) && (
         canUseSchoolCommunications(existing().schoolId) ||
-        isSchoolAdmin(existing().schoolId) ||
+        isFeeManager(existing().schoolId) ||
         (isSchoolMember(existing().schoolId) && existing().studentId == request.auth.uid)
       );
 
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId() && (
         canUseSchoolCommunications(resource.data.schoolId) ||
-        isSchoolAdmin(userSchoolId()) || 
+        isFeeManager(userSchoolId()) ||
         resource.data.studentId == request.auth.uid
       );
 
-      allow create, update: if isValidId(balanceId) && isSchoolAdmin(incoming().schoolId);
+      allow create, update: if isValidId(balanceId) && isFeeManager(incoming().schoolId);
       allow delete: if false;
     }
 
@@ -288,15 +327,15 @@ service cloud.firestore {
     match /fee_structures/{structureId} {
       allow get: if isValidId(structureId) && isSchoolMember(existing().schoolId);
       allow list: if isSignedIn() && resource.data.schoolId == userSchoolId();
-      allow create, update, delete: if isValidId(structureId) && isSchoolAdmin(incoming().schoolId);
+      allow create, update, delete: if isValidId(structureId) && isFeeManager(incoming().schoolId);
     }
 
     // -------------------------------------------------------------
     // Fee Audit Log (Immutable Operational Trail)
     // -------------------------------------------------------------
     match /fee_audit_log/{auditId} {
-      allow get, list: if isSignedIn() && resource.data.schoolId == userSchoolId() && isSchoolAdmin(userSchoolId());
-      allow create: if isValidId(auditId) && isSchoolAdmin(incoming().schoolId);
+      allow get, list: if isSignedIn() && resource.data.schoolId == userSchoolId() && isFeeManager(userSchoolId());
+      allow create: if isValidId(auditId) && isFeeManager(incoming().schoolId);
       allow update, delete: if false;
     }
 
@@ -491,7 +530,7 @@ service cloud.firestore {
       allow get, list: if isSignedIn() && (
         isPlatformAdmin() ||
         (resource.data.schoolId == userSchoolId() &&
-          userRole() in ['admin', 'user', 'school_admin', 'principal', 'finance'])
+          userRole() in ['admin', 'user', 'school_admin', 'principal', 'finance', 'headteacher', 'deputy-headteacher'])
       );
       allow create: if isValidId(logId) && isSignedIn() &&
         incoming().schoolId is string &&
@@ -522,6 +561,33 @@ service cloud.firestore {
     match /student_transfers/{transferId} {
       allow get, list: if isSignedIn() && resource.data.schoolId == userSchoolId() && isSchoolAdmin(userSchoolId());
       allow create, update: if isValidId(transferId) && isSchoolAdmin(incoming().schoolId);
+      allow delete: if false;
+    }
+
+    match /discipline_records/{recordId} {
+      function canManageDiscipline(schoolId) {
+        return isSignedIn() && (
+          isPlatformAdmin() ||
+          (userSchoolId() == schoolId &&
+            userRole() in ['headteacher', 'deputy-headteacher'])
+        );
+      }
+
+      allow get, list: if canManageDiscipline(resource.data.schoolId);
+      allow create: if isValidId(recordId) &&
+        incoming().schoolId is string &&
+        incoming().studentId is string &&
+        incoming().studentName is string &&
+        incoming().incidentDate is string &&
+        incoming().category is string &&
+        incoming().severity in ['Low', 'Moderate', 'High', 'Critical'] &&
+        incoming().summary is string &&
+        incoming().actionTaken is string &&
+        incoming().recordedBy == request.auth.uid &&
+        canManageDiscipline(incoming().schoolId);
+      allow update: if isValidId(recordId) &&
+        incoming().schoolId == existing().schoolId &&
+        canManageDiscipline(existing().schoolId);
       allow delete: if false;
     }
 

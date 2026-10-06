@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/chatbot-performance.js
 //
 // Computes performance summaries for the chatbot.
@@ -303,3 +304,5 @@ exports.handler = async (event) => {
         return errorResponse(err);
     }
 };
+
+exports.handler = withCors(exports.handler);

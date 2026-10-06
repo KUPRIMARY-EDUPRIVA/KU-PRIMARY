@@ -153,8 +153,6 @@ export default function Timetable() {
 
   const notify = useCallback((message, type = 'success') => {
     setFeedback({ message, type });
-    const t = setTimeout(() => setFeedback({ message: '', type: '' }), 4200);
-    return () => clearTimeout(t);
   }, []);
 
   /* ---------------- Bootstrap ---------------- */
@@ -1856,7 +1854,7 @@ export default function Timetable() {
         </header>
 
         {feedback.message && (
-          <div className={`tt-feedback tt-feedback-${feedback.type}`} role="status">
+          <div className={`tt-feedback tt-feedback-${feedback.type}`} role={feedback.type === 'error' ? 'alert' : 'status'}>
             <i
               className={`fas ${
                 feedback.type === 'error' ? 'fa-circle-exclamation'
@@ -1866,6 +1864,7 @@ export default function Timetable() {
               aria-hidden="true"
             ></i>
             <span>{feedback.message}</span>
+            <button type="button" aria-label="Dismiss message" onClick={() => setFeedback({ message: '', type: '' })}>×</button>
           </div>
         )}
 

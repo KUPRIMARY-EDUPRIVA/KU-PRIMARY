@@ -1,5 +1,7 @@
 // src/utils/ChatbotActions.js
 import { auth, db } from '../firebase';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
+import { normalizeAdmissionNumber } from '../services/admissionNumberService';
 import {
     collection,
     doc,
@@ -17,7 +19,7 @@ import {
 
 async function authedFetch(path, { method = 'POST', body = {} } = {}) {
     const token = await auth.currentUser?.getIdToken();
-    const res = await fetch(path, {
+    const res = await fetchNetlifyFunction(path, {
         method,
         headers: {
             'Content-Type': 'application/json',
@@ -35,20 +37,26 @@ async function authedFetch(path, { method = 'POST', body = {} } = {}) {
    ============================================================ */
 
 export const findStudentByAdmissionNumber = async (admissionNumber, schoolId) => {
-    const normalizedAdmission = String(admissionNumber || '').trim();
+    const normalizedAdmission = normalizeAdmissionNumber(admissionNumber);
     if (!schoolId || !/^[A-Za-z0-9][A-Za-z0-9/-]{0,39}$/.test(normalizedAdmission)) {
         return null;
     }
-    for (const field of ['admissionNumber', 'studentId']) {
-        const result = await getDocs(query(
-            collection(db, 'students'),
-            where('schoolId', '==', schoolId),
-            where(field, '==', normalizedAdmission),
-            limit(1)
-        ));
-        if (!result.empty) {
-            const student = result.docs[0];
-            return { id: student.id, ...student.data() };
+    const candidates = [...new Set([
+        normalizedAdmission,
+        String(admissionNumber || '').trim().toUpperCase(),
+    ])];
+    for (const candidate of candidates) {
+        for (const field of ['admissionNumber', 'studentId']) {
+            const result = await getDocs(query(
+                collection(db, 'students'),
+                where('schoolId', '==', schoolId),
+                where(field, '==', candidate),
+                limit(1)
+            ));
+            if (!result.empty) {
+                const student = result.docs[0];
+                return { id: student.id, ...student.data() };
+            }
         }
     }
     return null;
@@ -72,7 +80,7 @@ export const triggerSTKPush = async (phone, amount, student, schoolId) => {
         }
 
         const token = await auth.currentUser.getIdToken();
-        const response = await fetch('/api/mpesa-stk-push', {
+        const response = await fetchNetlifyFunction('mpesa-stk-push', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -169,7 +177,7 @@ export const checkMpesaStatus = async (checkoutRequestID, {
 export const fetchFeeBalance = async (admissionNumber, schoolId) => {
     try {
         const token = await auth.currentUser.getIdToken();
-        const response = await fetch('/api/get-student-balance', {
+        const response = await fetchNetlifyFunction('get-student-balance', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -234,7 +242,7 @@ export const fetchPerformance = async ({ scope = 'school', className, level, ter
 export const fetchDailyCollections = async (schoolId) => {
     try {
         const token = await auth.currentUser.getIdToken();
-        const response = await fetch('/api/reports-rollup', {
+        const response = await fetchNetlifyFunction('reports-rollup', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

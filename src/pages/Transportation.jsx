@@ -12,6 +12,7 @@ import {
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
+import { showAppNotice } from '../utils/appNotice';
 // Constants
 const BUS_STATUS = {
   active: 'Active',
@@ -405,37 +406,8 @@ export default function Transportation() {
 
   // Notification helper
   const showNotification = (message, type = 'info') => {
-    const colors = {
-      success: '#27ae60',
-      error: '#e74c3c',
-      warning: '#f39c12',
-      info: '#3498db'
+        showAppNotice(message, type);
     };
-    const iconMap = {
-      success: 'check-circle',
-      error: 'exclamation-circle',
-      warning: 'exclamation-triangle',
-      info: 'info-circle'
-    };
-
-    const notificationEl = document.createElement('div');
-    notificationEl.className = 'custom-notification';
-    notificationEl.style.backgroundColor = colors[type] || colors.info;
-    notificationEl.innerHTML = `
-      <i class="fas fa-${iconMap[type] || 'info-circle'}"></i>
-      <span>${message}</span>
-    `;
-    document.body.appendChild(notificationEl);
-
-    setTimeout(() => {
-      notificationEl.style.animation = 'slideOut 0.3s ease';
-      setTimeout(() => {
-        if (notificationEl.parentNode) {
-          notificationEl.parentNode.removeChild(notificationEl);
-        }
-      }, 300);
-    }, 4000);
-  };
 
   // Bus CRUD operations
   const handleAddBus = async () => {

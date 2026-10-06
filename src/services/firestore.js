@@ -5,6 +5,7 @@ import {
     serverTimestamp, onSnapshot
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { normalizeAdmissionNumber } from './admissionNumberService';
 import {
     makeScoreId, makeAssessmentConfigId,
     makePaperConfigId
@@ -359,16 +360,27 @@ export async function getClassSummary(schoolId, level, cls, subject, term) {
 // TENANT-SAFE STUDENT FETCH
 // ============================================================
 export async function findStudentByAdmission(schoolId, level, cls, admissionNumber) {
-    const q = query(
-        collection(db, 'students'),
-        where('schoolId', '==', schoolId),
-        where('level', '==', level),
-        where('class', '==', cls),
-        where('admissionNumber', '==', admissionNumber),
-        limit(1)
-    );
-    const snap = await getDocs(q);
-    if (snap.empty) return null;
-    const d = snap.docs[0];
-    return { id: d.id, ...d.data() };
+    const normalized = normalizeAdmissionNumber(admissionNumber);
+    const candidates = [...new Set([
+        normalized,
+        String(admissionNumber ?? '').trim().toUpperCase(),
+    ])];
+    for (const candidate of candidates) {
+        for (const field of ['admissionNumber', 'studentId']) {
+            const q = query(
+                collection(db, 'students'),
+                where('schoolId', '==', schoolId),
+                where('level', '==', level),
+                where('class', '==', cls),
+                where(field, '==', candidate),
+                limit(1)
+            );
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+                const d = snap.docs[0];
+                return { id: d.id, ...d.data() };
+            }
+        }
+    }
+    return null;
 }

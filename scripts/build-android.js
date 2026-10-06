@@ -93,7 +93,7 @@ run('npx', ['cap', 'sync', 'android']);
 run('./gradlew', ['assembleRelease'], path.join(root, 'android'));
 
 const apkPath = path.join(root, 'android/app/build/outputs/apk/release/app-release.apk');
-const outputPath = path.join(root, 'NEW.apk');
+const outputPath = path.join(root, 'ROLE3.apk');
 if (!fs.existsSync(apkPath)) throw new Error(`Release APK was not produced at ${apkPath}`);
 fs.copyFileSync(apkPath, outputPath);
 console.log(`Signed APK copied to ${outputPath}`);

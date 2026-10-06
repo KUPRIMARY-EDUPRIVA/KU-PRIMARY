@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/mpesa-callback.js
 //
 // Handles M-Pesa STK Push callbacks from Safaricom Daraja.
@@ -260,6 +261,8 @@ exports.handler = async (event) => {
       const amountMismatch = expectedAmount > 0 && Math.abs(paidAmount - expectedAmount) > 0.5;
 
       const balRef = db.collection('student_balances').doc(makeBalanceId(studentId, term, year));
+      const studentRef = db.collection('students').doc(studentId);
+      const invRef = invoiceId ? db.collection('invoices').doc(invoiceId) : null;
       const receiptDocId = `RCP_MPESA_${receiptNumber || CheckoutRequestID}`;
       const receiptRef = db.collection('receipts').doc(receiptDocId);
       const auditRef = db.collection('fee_audit_log').doc(`AUDIT_MPESA_${CheckoutRequestID}`);
@@ -271,7 +274,11 @@ exports.handler = async (event) => {
           return; // Completed in a parallel invocation.
         }
 
-        const balSnap = await trx.get(balRef);
+        const [balSnap, studentSnap] = await Promise.all([
+          trx.get(balRef),
+          trx.get(studentRef),
+        ]);
+        const invSnap = invRef ? await trx.get(invRef) : null;
         const curBal = balSnap.exists ? balSnap.data() : {
           studentId, studentName, admissionNumber,
           studentClass, level: studentLevel,
@@ -344,10 +351,7 @@ exports.handler = async (event) => {
         }, { merge: true });
 
         /* C. Invoice allocation, if applicable */
-        if (invoiceId) {
-          const invRef = db.collection('invoices').doc(invoiceId);
-          const invSnap = await trx.get(invRef);
-          if (invSnap.exists) {
+        if (invSnap?.exists) {
             const inv = invSnap.data();
             const newPaidOnInv = (inv.paidAmount || 0) + paidAmount;
             const remaining = Math.max(0, (inv.total || 0) - newPaidOnInv);
@@ -377,10 +381,25 @@ exports.handler = async (event) => {
               updatedAt: FieldValue.serverTimestamp(),
               ...(invStatus === 'paid' ? { paidAt: FieldValue.serverTimestamp() } : {}),
             });
-          }
         }
 
-        /* D. Immutable receipt record */
+        /* D. Keep the student document's legacy balance view current as well. */
+        if (studentSnap.exists) {
+          const student = studentSnap.data();
+          trx.set(studentRef, {
+            feeBalance: Math.max(0, (Number(student.feeBalance) || 0) - paidAmount),
+            lastPaymentDate: new Date().toISOString().split('T')[0],
+            lastPaymentAmount: paidAmount,
+            lastPaymentMethod: 'mpesa',
+            lastPaymentReference: receiptNumber || CheckoutRequestID,
+            lastPaymentTransactionId: deterministicTxnId,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        } else {
+          console.warn(`[mpesa-callback] Student ${studentId} is missing; skipped student document balance update.`);
+        }
+
+        /* E. Immutable receipt record */
         trx.set(receiptRef, {
           receiptNumber: receiptNumber ? `RCP-${receiptNumber}` : `RCP-${CheckoutRequestID.slice(-8)}`,
           schoolId, studentId, studentName, admissionNumber,
@@ -400,7 +419,7 @@ exports.handler = async (event) => {
           createdAt: FieldValue.serverTimestamp(),
         }, { merge: true });
 
-        /* E. Audit log */
+        /* F. Audit log */
         trx.set(auditRef, {
           schoolId,
           action: 'MPESA_PAYMENT_COMPLETED',
@@ -431,7 +450,7 @@ exports.handler = async (event) => {
           timestamp: FieldValue.serverTimestamp(),
         });
 
-        /* F. Pending doc — terminal but kept for idempotency */
+        /* G. Pending doc — terminal but kept for idempotency */
         trx.set(pendingRef, {
           status: TXN_STATUS.COMPLETED,
           mpesaReceiptNumber: receiptNumber,
@@ -567,3 +586,5 @@ exports.handler = async (event) => {
     return ok({ message: 'Logged error' });
   }
 };
+
+exports.handler = withCors(exports.handler);

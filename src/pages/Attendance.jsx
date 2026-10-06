@@ -17,7 +17,12 @@ import {
 } from '../services/attendanceService';
 import { LEVEL_DISPLAY_NAMES } from '../utils/constants';
 import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
+import { savePdfBlob } from '../services/deviceSecurity';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
+import { showAppNotice } from '../utils/appNotice';
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
@@ -64,7 +69,7 @@ export default function Attendance() {
     const [isAdmin, setIsAdmin] = useState(false);
 
     // ---- Page state -------------------------------------------------------
-    const [activeTab, setActiveTab] = useState('take');
+    const [activeTab, setActiveTab] = useState('reports');
     const [selectedClass, setSelectedClass] = useState('');
     const [selectedSession, setSelectedSession] = useState('full');
     const [selectedDate, setSelectedDate] = useState(todayISO());
@@ -85,20 +90,25 @@ export default function Attendance() {
     const [reportDate, setReportDate] = useState(todayISO());
     const [reportFrom, setReportFrom] = useState(startOfWeek());
     const [reportTo, setReportTo] = useState(todayISO());
+    const [reportTerm, setReportTerm] = useState(String(new Date().getMonth() < 4 ? 1 : new Date().getMonth() < 8 ? 2 : 3));
     const [reportClass, setReportClass] = useState('');
     const [reporting, setReporting] = useState(false);
+    const [classReportStats, setClassReportStats] = useState(null);
+
+    useEffect(() => {
+        if (!schoolData || reportType !== 'term') return;
+        setReportTerm(String(schoolData.currentTerm || 1));
+        setReportFrom(schoolData.termStart || startOfMonth());
+        setReportTo(schoolData.currentTermEnd || todayISO());
+    }, [schoolData, reportType]);
+
+    useEffect(() => {
+        setClassReportStats(null);
+    }, [reportClass, reportType, reportDate, reportFrom, reportTo, reportTerm]);
 
     // ---- Notifications ----------------------------------------------------
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = {
-            success: '#27ae60', error: '#e74c3c',
-            warning: '#f39c12', info: '#3498db',
-        };
-        const n = document.createElement('div');
-        n.style.cssText = `position:fixed;top:20px;right:20px;background:${colors[type] || colors.info};color:#fff;padding:14px 18px;border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,.2);z-index:10000;max-width:400px;font-size:14px;`;
-        n.textContent = message;
-        document.body.appendChild(n);
-        setTimeout(() => n.remove(), 3500);
+        showAppNotice(message, type);
     }, []);
 
     // ---- Bootstrap --------------------------------------------------------
@@ -118,9 +128,10 @@ export default function Attendance() {
                 if (cancelled) return;
                 setSchoolData(data);
 
-                const role = userRole || userData?.role || 'teacher';
-                const admin = ['admin', 'school_admin', 'super-admin'].includes(role);
+                const role = String(userRole || userData?.role || 'teacher').toLowerCase().replace(/[\s_]+/g, '-');
+                const admin = ['admin', 'user', 'school-admin', 'principal', 'super-admin', 'headteacher'].includes(role);
                 setIsAdmin(admin);
+                setActiveTab(admin ? 'reports' : 'take');
 
                 // Resolve which classes this user is a class teacher for
                 const classTeachers = data.classTeachers || {};
@@ -135,7 +146,7 @@ export default function Attendance() {
                 } else {
                     // Preselect the first available class
                     setSelectedClass(mine[0] || '');
-                    setReportClass(mine[0] || '');
+                    setReportClass(admin ? '__all__' : (mine[0] || ''));
                 }
             } catch (e) {
                 console.error('Attendance bootstrap failed:', e);
@@ -324,9 +335,10 @@ export default function Attendance() {
 
     // ---- Reports ----------------------------------------------------------
     const buildReportRequest = () => {
-        const cls = reportClass || selectedClass;
-        if (!cls) return null;
-        const level = findLevelForClass(cls);
+        const allClasses = isAdmin && reportClass === '__all__';
+        const cls = allClasses ? '' : (reportClass || selectedClass);
+        if (!cls && !allClasses) return null;
+        const level = cls ? findLevelForClass(cls) : '';
 
         let from = reportFrom;
         let to = reportTo;
@@ -335,24 +347,15 @@ export default function Attendance() {
             from = reportDate;
             to = reportDate;
         }
-        if (reportType === 'weekly') {
-            from = startOfWeek(new Date(reportDate));
-            to = reportDate;
-        }
-        if (reportType === 'monthly') {
-            from = startOfMonth(new Date(reportDate));
-            to = endOfMonth(new Date(reportDate));
-        }
-        if (reportType === 'term' || reportType === 'perStudent' || reportType === 'chronic') {
-            // Uses the current term window from school config if available
-            const termStart = schoolData?.termStart || startOfMonth();
-            from = termStart;
-            to = todayISO();
+        if (reportType === 'term') {
+            from = reportFrom;
+            to = reportTo;
         }
 
         return {
             schoolId: schoolData.id,
             cls,
+            allClasses,
             level,
             reportType,
             from,
@@ -366,7 +369,7 @@ export default function Attendance() {
                 logoUrl: schoolData.logoUrl || '',
                 stampUrl: schoolData.stampUrl || '',
                 principalSignatureUrl: schoolData.principalSignatureUrl || '',
-                currentTerm: schoolData.currentTerm || 1,
+                currentTerm: reportType === 'term' ? Number(reportTerm) : (schoolData.currentTerm || 1),
                 academicYear: schoolData.academicYear || null,
             },
             classTeacher: {
@@ -379,28 +382,94 @@ export default function Attendance() {
     const handleGenerateReport = async () => {
         const req = buildReportRequest();
         if (!req) return showNotification('Select a class first', 'warning');
+        if (req.from && req.to && req.from > req.to) {
+            return showNotification('The start date must be on or before the end date.', 'warning');
+        }
 
         setReporting(true);
         try {
-            const res = await fetch('/api/generate-attendance-pdf', {
+            if (req.allClasses) {
+                const records = await listAttendanceRecords({
+                    schoolId: req.schoolId,
+                    fromDate: req.from,
+                    toDate: req.to,
+                    max: 2000,
+                });
+                const totalsByClass = new Map();
+                records.forEach((record) => {
+                    const className = record.class || 'Unassigned';
+                    if (!totalsByClass.has(className)) {
+                        totalsByClass.set(className, {
+                            className, sessions: 0, present: 0, absent: 0, late: 0, excused: 0,
+                        });
+                    }
+                    const row = totalsByClass.get(className);
+                    row.sessions += 1;
+                    for (const status of ['present', 'absent', 'late', 'excused']) {
+                        const entries = Array.isArray(record.entries) ? record.entries : [];
+                        const entryCount = entries.filter((entry) => (entry.status || 'present') === status).length;
+                        const count = record.counts?.[status];
+                        row[status] += Number.isFinite(Number(count)) ? Number(count) : entryCount;
+                    }
+                });
+                const rows = [...totalsByClass.values()].sort((a, b) => a.className.localeCompare(b.className));
+                const totals = rows.reduce((acc, row) => {
+                    for (const status of ['present', 'absent', 'late', 'excused']) acc[status] += row[status];
+                    acc.sessions += row.sessions;
+                    return acc;
+                }, { sessions: 0, present: 0, absent: 0, late: 0, excused: 0 });
+                const marks = totals.present + totals.absent + totals.late + totals.excused;
+                const rate = marks ? Math.round(((totals.present + totals.late) / marks) * 100) : 0;
+                const classRows = rows.map((row) => {
+                    const classMarks = row.present + row.absent + row.late + row.excused;
+                    return {
+                        ...row,
+                        rate: classMarks ? Math.round(((row.present + row.late) / classMarks) * 100) : 0,
+                    };
+                });
+                setClassReportStats({ ...totals, marks, rate, rows: classRows });
+
+                const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+                pdf.setFontSize(18);
+                pdf.setTextColor(26, 35, 126);
+                pdf.text(schoolData?.name || 'School', 14, 18);
+                pdf.setFontSize(13);
+                pdf.text('All-Class Attendance Summary', 14, 27);
+                pdf.setFontSize(9);
+                pdf.setTextColor(80, 80, 80);
+                pdf.text(`${reportType === 'term' ? `Term ${reportTerm}  |  ` : ''}${req.from} to ${req.to}  |  ${totals.sessions} class sessions  |  Attendance rate ${rate}%`, 14, 34);
+                autoTable(pdf, {
+                    startY: 40,
+                    head: [['Class', 'Sessions', 'Present', 'Absent', 'Late', 'Excused', 'Attendance rate']],
+                    body: [
+                        ...classRows.map((row) => [
+                            row.className, row.sessions, row.present, row.absent,
+                            row.late, row.excused, `${row.rate}%`,
+                        ]),
+                        ['SCHOOL TOTAL', totals.sessions, totals.present, totals.absent, totals.late, totals.excused, `${rate}%`],
+                    ],
+                    styles: { fontSize: 9, cellPadding: 3 },
+                    headStyles: { fillColor: [26, 35, 126] },
+                    margin: { left: 14, right: 14 },
+                });
+                const saved = await savePdfBlob(pdf.output('blob'), `attendance_all_classes_${req.from}_to_${req.to}.pdf`);
+                showNotification(`Saved ${saved.filename} to ${saved.location || 'your Downloads folder'}.`, 'success');
+                return;
+            }
+
+            const res = await fetchNetlifyFunction('generate-attendance-pdf', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(req),
+                responseType: 'blob',
             });
             if (!res.ok) {
                 const err = await res.text().catch(() => '');
                 throw new Error(err || `HTTP ${res.status}`);
             }
             const blob = await res.blob();
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `attendance_${req.reportType}_${req.cls}_${req.from}_to_${req.to}.pdf`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            URL.revokeObjectURL(url);
-            showNotification('Report downloaded', 'success');
+            const saved = await savePdfBlob(blob, `attendance_${req.reportType}_${req.cls}_${req.from}_to_${req.to}.pdf`);
+            showNotification(`Saved ${saved.filename} to ${saved.location || 'your Downloads folder'}.`, 'success');
         } catch (e) {
             console.error('Report failed:', e);
             showNotification('Failed to generate report: ' + e.message, 'error');
@@ -472,29 +541,13 @@ export default function Attendance() {
                 }
             `}</style>
 
-            {/* Role banner */}
-            <div style={{
-                background: isAdmin ? '#d4edda' : '#d1ecf1',
-                color: isAdmin ? '#155724' : '#0c5460',
-                padding: '8px 16px', borderRadius: 8, marginBottom: 20,
-                display: 'flex', alignItems: 'center', gap: 10,
-                fontSize: 13, border: `1px solid ${isAdmin ? '#c3e6cb' : '#bee5eb'}`,
-            }}>
-                <i className={`fas ${isAdmin ? 'fa-user-shield' : 'fa-chalkboard-user'}`}></i>
-                <span>
-                    {isAdmin
-                        ? 'Admin Access — you can view and manage attendance for all classes.'
-                        : `Class Teacher Access — you are assigned to: ${assignedClasses.join(', ') || 'no classes'}`}
-                </span>
-            </div>
-
             {/* Tabs */}
             <div className="att-tabs">
                 {[
                     { key: 'take',    label: 'Take Attendance', icon: 'fa-clipboard-check' },
                     { key: 'history', label: 'History',         icon: 'fa-history' },
                     { key: 'reports', label: 'Reports',         icon: 'fa-file-pdf' },
-                ].map((t) => (
+                ].filter((tab) => !isAdmin || tab.key === 'reports').map((t) => (
                     <button
                         key={t.key}
                         className={`att-tab ${activeTab === t.key ? 'active' : ''}`}
@@ -664,7 +717,7 @@ export default function Attendance() {
                                 value={selectedClass}
                                 onChange={(e) => setSelectedClass(e.target.value)}
                             >
-                                <option value="">All classes</option>
+                                <option value="" disabled={!isAdmin}>{isAdmin ? 'All classes' : 'Select class'}</option>
                                 {(isAdmin
                                     ? allClassesFromSchool(schoolData, getLevelClasses)
                                     : assignedClasses
@@ -739,25 +792,47 @@ export default function Attendance() {
                     <div className="att-grid">
                         <div className="att-field">
                             <label>Report type</label>
-                            <select value={reportType} onChange={(e) => setReportType(e.target.value)}>
-                                {REPORT_TYPES.map((r) => (
+                            <select value={reportType} onChange={(e) => {
+                                const type = e.target.value;
+                                setReportType(type);
+                                if (type === 'weekly') {
+                                    setReportFrom(startOfWeek(new Date(reportDate)));
+                                    setReportTo(reportDate);
+                                } else if (type === 'monthly') {
+                                    setReportFrom(startOfMonth(new Date(reportDate)));
+                                    setReportTo(endOfMonth(new Date(reportDate)));
+                                } else if (type === 'term') {
+                                    setReportTerm(String(schoolData?.currentTerm || 1));
+                                    setReportFrom(schoolData?.termStart || startOfMonth());
+                                    setReportTo(schoolData?.currentTermEnd || todayISO());
+                                }
+                            }}>
+                                {REPORT_TYPES
+                                    .filter((report) => (!isAdmin || ['daily', 'weekly', 'monthly', 'term'].includes(report.value))
+                                        && (reportClass !== '__all__'
+                                            || ['daily', 'weekly', 'monthly', 'term'].includes(report.value)))
+                                    .map((r) => (
                                     <option key={r.value} value={r.value}>{r.label}</option>
                                 ))}
                             </select>
                         </div>
 
-                        <div className="att-field">
-                            <label>Class</label>
-                            <select value={reportClass} onChange={(e) => setReportClass(e.target.value)}>
-                                <option value="">Select class</option>
-                                {(isAdmin
-                                    ? allClassesFromSchool(schoolData, getLevelClasses)
-                                    : assignedClasses
-                                ).map((cls) => (
-                                    <option key={cls} value={cls}>{cls}</option>
-                                ))}
-                            </select>
-                        </div>
+                        {isAdmin ? (
+                            <div className="att-field">
+                                <label>Report scope</label>
+                                <input type="text" value="All classes — school-wide statistics" disabled />
+                            </div>
+                        ) : (
+                            <div className="att-field">
+                                <label>Class</label>
+                                <select value={reportClass} onChange={(e) => setReportClass(e.target.value)}>
+                                    <option value="">Select class</option>
+                                    {assignedClasses.map((cls) => (
+                                        <option key={cls} value={cls}>{cls}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
 
                         {reportType === 'daily' && (
                             <div className="att-field">
@@ -766,41 +841,89 @@ export default function Attendance() {
                             </div>
                         )}
 
-                        {(reportType === 'weekly' || reportType === 'monthly') && (
+                        {reportType === 'term' && (
+                            <div className="att-field">
+                                <label>Academic term</label>
+                                <select
+                                    value={reportTerm}
+                                    onChange={(e) => {
+                                        const term = e.target.value;
+                                        setReportTerm(term);
+                                        if (Number(term) === Number(schoolData?.currentTerm || 1)) {
+                                            setReportFrom(schoolData?.termStart || startOfMonth());
+                                            setReportTo(schoolData?.currentTermEnd || todayISO());
+                                        }
+                                    }}
+                                >
+                                    {['1', '2', '3'].map((term) => (
+                                        <option key={term} value={term}>Term {term}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        )}
+
+                        {(reportType !== 'daily') && (
                             <>
                                 <div className="att-field">
-                                    <label>Anchor date</label>
-                                    <input type="date" value={reportDate} onChange={(e) => setReportDate(e.target.value)} max={todayISO()} />
-                                </div>
-                                <div className="att-field">
-                                    <label>From</label>
+                                    <label>From date</label>
                                     <input type="date" value={reportFrom} onChange={(e) => setReportFrom(e.target.value)} />
                                 </div>
                                 <div className="att-field">
-                                    <label>To</label>
+                                    <label>To date</label>
                                     <input type="date" value={reportTo} onChange={(e) => setReportTo(e.target.value)} />
                                 </div>
                             </>
                         )}
-
-                        {(reportType === 'term' || reportType === 'perStudent' || reportType === 'chronic') && (
-                            <div className="att-field">
-                                <label>Term</label>
-                                <input type="text" value={`Term ${schoolData?.currentTerm || 1}`} disabled />
-                            </div>
-                        )}
                     </div>
+                    {reportType === 'term' && (
+                        <p style={{ color: 'var(--gray)', fontSize: 13, marginTop: -4 }}>
+                            Set the date range for the selected term. The current term uses dates saved in School Profile when available.
+                        </p>
+                    )}
 
                     <div style={{ marginTop: 10 }}>
                         <button
                             className="att-btn att-btn-primary"
                             onClick={handleGenerateReport}
-                            disabled={reporting || !reportClass}
+                            disabled={reporting || (!reportClass && !selectedClass)}
                         >
                             <i className="fas fa-file-pdf"></i>
-                            {reporting ? 'Generating…' : 'Generate PDF'}
+                            {reporting ? 'Generating…' : isAdmin && reportClass === '__all__' ? 'View school stats & export PDF' : 'Generate PDF'}
                         </button>
                     </div>
+                    {classReportStats && reportClass === '__all__' && (
+                        <div style={{ marginTop: 20 }}>
+                            <div className="att-stats">
+                                {[
+                                    ['Class sessions', classReportStats.sessions, '#1a237e'],
+                                    ['Present', classReportStats.present, '#16a34a'],
+                                    ['Absent', classReportStats.absent, '#dc2626'],
+                                    ['Attendance rate', `${classReportStats.rate}%`, '#2563eb'],
+                                ].map(([label, value, color]) => (
+                                    <div className="att-stat" key={label}>
+                                        <div className="att-stat-label">{label}</div>
+                                        <div className="att-stat-value" style={{ color }}>{value}</div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="att-panel" style={{ padding: 0, overflowX: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead><tr style={{ background: '#f8fafc' }}>
+                                        {['Class', 'Sessions', 'Present', 'Absent', 'Late', 'Excused', 'Rate'].map((heading) => (
+                                            <th key={heading} style={{ padding: 10, textAlign: 'left', fontSize: 12 }}>{heading}</th>
+                                        ))}
+                                    </tr></thead>
+                                    <tbody>{classReportStats.rows.map((row) => (
+                                        <tr key={row.className} style={{ borderTop: '1px solid var(--border)' }}>
+                                            {[row.className, row.sessions, row.present, row.absent, row.late, row.excused, `${row.rate}%`].map((value, index) => (
+                                                <td key={`${row.className}-${index}`} style={{ padding: 10 }}>{value}</td>
+                                            ))}
+                                        </tr>
+                                    ))}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </Layout>

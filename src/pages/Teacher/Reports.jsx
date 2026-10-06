@@ -9,6 +9,7 @@ import {
 } from 'firebase/firestore';
 import Layout from '../../components/Layout/Layout';
 import LoadingSpinner from '../../components/Common/LoadingSpinner';
+import { showAppNotice } from '../../utils/appNotice';
 import {
     LEVEL_DISPLAY_NAMES,
     LEVEL_BADGE_CLASSES,
@@ -117,12 +118,7 @@ export default function TeacherReports() {
 
     // ---- Notification ----
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
-        const el = document.createElement('div');
-        el.style.cssText = `position:fixed;top:20px;right:20px;background:${colors[type] || colors.info};color:#fff;padding:15px 20px;border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,.2);z-index:10000;max-width:400px;font-size:14px;`;
-        el.textContent = message;
-        document.body.appendChild(el);
-        setTimeout(() => el.remove(), 4000);
+        showAppNotice(message, type);
     }, []);
 
     // ------------------------------------------------------------
@@ -364,7 +360,7 @@ export default function TeacherReports() {
         setExporting(true);
         try {
             const result = await downloadTeacherRecordPDF(buildRecordForPDF(score), buildMeta(), teacherData);
-            showNotification(`PDF saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+            showNotification(`PDF saved${result?.location ? ` to ${result.location}` : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (err) {
             console.error('Export error:', err);
             showNotification('Failed to export PDF: ' + err.message, 'error');

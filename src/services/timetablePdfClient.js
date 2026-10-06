@@ -1,5 +1,6 @@
 // src/services/timetablePdfClient.js
 import { savePdfBlob } from './deviceSecurity';
+import { fetchNetlifyFunction } from './netlifyApi';
 /**
  * Thin client for the Netlify timetable-pdf function.
  *
@@ -8,10 +9,11 @@ import { savePdfBlob } from './deviceSecurity';
  */
 
 async function postJSON(url, body) {
-  const res = await fetch(url, {
+  const res = await fetchNetlifyFunction(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    responseType: 'blob',
   });
   if (!res.ok) {
     let detail = '';

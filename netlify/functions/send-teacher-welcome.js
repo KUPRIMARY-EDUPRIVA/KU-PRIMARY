@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/send-teacher-welcome.js
 //
 // Sends a styled welcome email to a newly created teacher via Gmail SMTP.
@@ -353,3 +354,5 @@ function json(statusCode, body) {
         body: JSON.stringify(body)
     };
 }
+
+exports.handler = withCors(exports.handler);

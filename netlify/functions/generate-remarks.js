@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-remarks.js
 
 exports.handler = async (event) => {
@@ -44,3 +45,5 @@ exports.handler = async (event) => {
         return { statusCode: 500, body: JSON.stringify({ success: false, message: error.message }) };
     }
 };
+
+exports.handler = withCors(exports.handler);

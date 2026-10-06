@@ -26,7 +26,7 @@
       "properties": {
         "uid": { "type": "string", "maxLength": 128 },
         "email": { "type": "string", "format": "email", "maxLength": 128 },
-        "role": { "type": "string", "enum": ["admin", "teacher", "student", "parent", "super_admin", "user"] },
+        "role": { "type": "string", "enum": ["admin", "teacher", "student", "parent", "super_admin", "user", "headteacher", "deputy-headteacher", "accountant"] },
         "schoolId": { "type": "string", "maxLength": 128 },
         "fullName": { "type": "string", "maxLength": 128 },
         "phone": { "type": "string", "maxLength": 32 },

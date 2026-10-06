@@ -8,6 +8,7 @@ import {
     doc, getDoc, setDoc, updateDoc, serverTimestamp
 } from 'firebase/firestore';
 import { useSync } from './SyncContext';
+import { getBiometricLoginStatus, isDeviceBiometricAvailable } from '../services/deviceSecurity';
 
 const AuthContext = createContext();
 
@@ -80,6 +81,7 @@ export function AuthProvider({ children }) {
     const [claims, setClaims] = useState({});
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [sessionLocked, setSessionLocked] = useState(false);
 
     const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
 
@@ -120,10 +122,24 @@ export function AuthProvider({ children }) {
     const resolveUser = useCallback(async (user, email) => {
         const uid = user.uid;
 
+        if (!isOnline) {
+            const cached = await getCachedUserData(uid);
+            if (cached) {
+                return {
+                    data: cached,
+                    role: cached.role || 'user',
+                    collection: cached.collection || 'users',
+                    schoolId: cached.schoolId || null,
+                    claims: {},
+                    source: 'cache'
+                };
+            }
+        }
+
         // ---- 1. Custom claims ----
         let tokenClaims = {};
         try {
-            const tokenResult = await getIdTokenResult(user, true);
+            const tokenResult = await getIdTokenResult(user);
             tokenClaims = tokenResult.claims || {};
         } catch (e) {
             console.warn('getIdTokenResult failed:', e);
@@ -185,42 +201,42 @@ export function AuthProvider({ children }) {
         }
 
         // ---- 2. Firestore fallback ----
-        const collections = ['users', 'teachers', 'students'];
-        for (const name of collections) {
-            try {
-                const snap = await getDoc(doc(db, name, uid));
-                if (snap.exists()) {
-                    const data = snap.data();
-                    const role = data.role
-                        || (name === 'teachers' ? 'teacher'
-                            : name === 'students' ? 'student'
-                            : 'user');
-                    const schoolId = data.schoolId || data.school_id || null;
+        if (isOnline) {
+            const collections = ['users', 'teachers', 'students'];
+            for (const name of collections) {
+                try {
+                    const snap = await getDoc(doc(db, name, uid));
+                    if (snap.exists()) {
+                        const data = snap.data();
+                        const role = data.role
+                            || (name === 'teachers' ? 'teacher'
+                                : name === 'students' ? 'student'
+                                : 'user');
+                        const schoolId = data.schoolId || data.school_id || null;
 
-                    const branding = await fetchSchoolBranding(schoolId);
+                        const branding = await fetchSchoolBranding(schoolId);
 
-                    return {
-                        data: {
-                            ...data,
-                            uid,
-                            email: email || data.email || '',
-                            // Ensure the profile-photo field is always present so
-                            // the header has something to fall back on.
-                            profileImageUrl:
-                                data.profileImageUrl
-                                || data.photoURL
-                                || '',
-                            ...(branding || {})
-                        },
-                        role,
-                        collection: name,
-                        schoolId,
-                        claims: tokenClaims,
-                        source: 'firestore'
-                    };
+                        return {
+                            data: {
+                                ...data,
+                                uid,
+                                email: email || data.email || '',
+                                profileImageUrl:
+                                    data.profileImageUrl
+                                    || data.photoURL
+                                    || '',
+                                ...(branding || {})
+                            },
+                            role,
+                            collection: name,
+                            schoolId,
+                            claims: tokenClaims,
+                            source: 'firestore'
+                        };
+                    }
+                } catch (e) {
+                    console.warn(`Firestore ${name} lookup failed:`, e);
                 }
-            } catch (e) {
-                console.warn(`Firestore ${name} lookup failed:`, e);
             }
         }
 
@@ -263,11 +279,24 @@ export function AuthProvider({ children }) {
                 setUserRole(null);
                 setUserCollection(null);
                 setClaims({});
+                setSessionLocked(false);
                 setLoading(false);
                 return;
             }
 
             try {
+                if (!navigator.onLine && isDeviceBiometricAvailable()) {
+                    try {
+                        const biometric = await getBiometricLoginStatus();
+                        setSessionLocked(biometric.available);
+                    } catch (biometricError) {
+                        console.warn('Could not check offline session protection:', biometricError);
+                        setSessionLocked(true);
+                    }
+                } else {
+                    setSessionLocked(false);
+                }
+
                 const resolved = await resolveUser(user, user.email);
 
                 // Backfill users doc only when we had to fall back to Firestore
@@ -290,20 +319,19 @@ export function AuthProvider({ children }) {
                     }
                 }
 
+                await cacheUserData(user.uid, {
+                    ...resolved.data,
+                    role: resolved.role,
+                    collection: resolved.collection,
+                    schoolId: resolved.schoolId
+                });
+
                 if (!mountedRef.current) return;
                 setCurrentUser(user);
                 setUserData(resolved.data);
                 setUserRole(resolved.role);
                 setUserCollection(resolved.collection);
                 setClaims(resolved.claims || {});
-
-                // Cache enriched data (with branding) for offline use
-                cacheUserData(user.uid, {
-                    ...resolved.data,
-                    role: resolved.role,
-                    collection: resolved.collection,
-                    schoolId: resolved.schoolId
-                });
             } catch (e) {
                 console.error('Auth bootstrap failed:', e);
                 if (mountedRef.current) setError(e.message);
@@ -314,6 +342,10 @@ export function AuthProvider({ children }) {
 
         return () => unsub();
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const unlockSession = useCallback(() => {
+        setSessionLocked(false);
     }, []);
 
     // ---- Update user data ----
@@ -406,6 +438,7 @@ export function AuthProvider({ children }) {
             setUserRole(null);
             setUserCollection(null);
             setClaims({});
+            setSessionLocked(false);
         } catch (e) {
             console.error('Logout error:', e);
             throw e;
@@ -421,6 +454,8 @@ export function AuthProvider({ children }) {
         loading,
         error,
         isOnline,
+        sessionLocked,
+        unlockSession,
         logout,
         updateUserData
     };

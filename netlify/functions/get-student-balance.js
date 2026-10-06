@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/get-student-balance.js
 const { initAdmin } = require('./_lib/firebaseAdmin');
 
@@ -47,3 +48,5 @@ exports.handler = async (event) => {
         return { statusCode: 500, body: JSON.stringify({ success: false, message: error.message }) };
     }
 };
+
+exports.handler = withCors(exports.handler);

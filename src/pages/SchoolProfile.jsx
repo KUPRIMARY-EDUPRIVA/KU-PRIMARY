@@ -1,10 +1,11 @@
 // src/pages/SchoolProfile.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/constants';
 import { db } from '../firebase';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
+import { normalizeRole } from '../utils/roles';
 import {
     doc, getDoc, updateDoc, collection, query, where, getDocs,
     setDoc, serverTimestamp
@@ -12,6 +13,7 @@ import {
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
+import { showAppNotice } from '../utils/appNotice';
 const DARAJA_FIELDS = [
     {
         key: 'consumerKey',
@@ -82,7 +84,7 @@ async function invalidateChatbotCache({ currentUser, schoolId, prefixes = [] }) 
     try {
         if (!currentUser) return;
         const token = await currentUser.getIdToken();
-        await fetch('/api/chatbot-cache-invalidate', {
+        await fetchNetlifyFunction('chatbot-cache-invalidate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -129,9 +131,28 @@ async function uploadToCloudinary(file, folder) {
     return json.secure_url;
 }
 
+async function manageSchoolAdmins(currentUser, action, details = {}) {
+    const token = await currentUser.getIdToken();
+    const response = await fetchNetlifyFunction('manage-school-admins', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action, ...details }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Administrator operation failed.');
+    }
+    return result;
+}
+
 export default function SchoolProfile() {
-    const navigate = useNavigate();
-    const { currentUser, userData } = useAuth();
+    const { currentUser, userData, userRole } = useAuth();
+    const canManageProfile = ['admin', 'headteacher'].includes(
+        normalizeRole(userRole || userData?.role)
+    );
     const {
         isOnline,
         saveToIndexedDB,
@@ -144,6 +165,7 @@ export default function SchoolProfile() {
     const [saving, setSaving] = useState(false);
     const [savingDaraja, setSavingDaraja] = useState(false);
     const [admins, setAdmins] = useState([]);
+    const [teachers, setTeachers] = useState([]);
     const [activeTab, setActiveTab] = useState('general');
     const [usingCachedData, setUsingCachedData] = useState(false);
 
@@ -265,7 +287,7 @@ export default function SchoolProfile() {
                 setDarajaShortcode(cachedSchool.paybillNumber || '');
                 setDarajaEnvironment(cachedSchool.darajaEnvironment || 'sandbox');
                 setUsingCachedData(true);
-                await loadAdmins(schoolId);
+                if (canManageProfile) await loadAdmins(schoolId);
                 setLoading(false);
             }
 
@@ -281,7 +303,7 @@ export default function SchoolProfile() {
                     setDarajaUpdatedAt(data.darajaUpdatedAt || null);
                     setUsingCachedData(false);
                     await saveToIndexedDB('school_data', { id: schoolId, ...data });
-                    await loadAdmins(schoolId);
+                    if (canManageProfile) await loadAdmins(schoolId);
                 } else {
                     throw new Error('School not found');
                 }
@@ -339,24 +361,37 @@ export default function SchoolProfile() {
             if (!isOnline) {
                 const cachedAdmins = await getFromIndexedDB('admins_cache', schoolId);
                 if (cachedAdmins) {
-                    setAdmins(cachedAdmins);
+                    setAdmins(cachedAdmins.filter((person) => person.role !== 'teacher'));
+                    setTeachers(cachedAdmins.filter((person) => person.role === 'teacher'));
                     return;
                 }
             }
-            const q = query(
-                collection(db, 'users'),
-                where('schoolId', '==', schoolId),
-                where('role', 'in', ['admin', 'super-admin', 'teacher', 'staff'])
-            );
-            const snapshot = await getDocs(q);
+            const [adminSnapshot, teacherSnapshot] = await Promise.all([
+                getDocs(query(
+                    collection(db, 'users'),
+                    where('schoolId', '==', schoolId),
+                    where('role', 'in', ['admin', 'user', 'school_admin', 'principal', 'super-admin', 'headteacher', 'deputy-headteacher', 'accountant', 'finance', 'staff'])
+                )),
+                getDocs(query(
+                    collection(db, 'users'),
+                    where('schoolId', '==', schoolId),
+                    where('role', '==', 'teacher')
+                )),
+            ]);
             const adminList = [];
-            snapshot.forEach((d) => adminList.push({ id: d.id, ...d.data() }));
+            adminSnapshot.forEach((d) => adminList.push({ id: d.id, ...d.data() }));
+            const teacherList = [];
+            teacherSnapshot.forEach((d) => teacherList.push({ id: d.id, ...d.data() }));
             setAdmins(adminList);
-            await saveToIndexedDB('admins_cache', adminList);
+            setTeachers(teacherList);
+            await saveToIndexedDB('admins_cache', [...adminList, ...teacherList]);
         } catch (error) {
             console.error('Error loading admins:', error);
             const cachedAdmins = await getFromIndexedDB('admins_cache', schoolId);
-            if (cachedAdmins) setAdmins(cachedAdmins);
+            if (cachedAdmins) {
+                setAdmins(cachedAdmins.filter((person) => person.role !== 'teacher'));
+                setTeachers(cachedAdmins.filter((person) => person.role === 'teacher'));
+            }
             else showNotification('Failed to load administrators', 'error');
         }
     };
@@ -683,19 +718,12 @@ export default function SchoolProfile() {
                 setSaving(false);
                 return;
             }
-            const userSnapshot = await getDocs(
-                query(collection(db, 'users'), where('email', '==', email))
-            );
-            if (userSnapshot.empty) {
-                showNotification('User not found. Please ensure the user has registered first.', 'error');
-                setSaving(false);
-                return;
-            }
-            const userDoc = userSnapshot.docs[0];
-            await updateDoc(doc(db, 'users', userDoc.id), {
+            await manageSchoolAdmins(currentUser, 'add-admin', {
+                email,
                 role,
-                schoolId,
-                updatedAt: new Date().toISOString()
+                firstName,
+                lastName,
+                phone,
             });
             await loadAdmins(schoolId);
             form.reset();
@@ -709,8 +737,8 @@ export default function SchoolProfile() {
         }
     };
 
-    const handleRemoveAdmin = async (uid) => {
-        if (!window.confirm('Are you sure you want to remove this administrator?')) return;
+    const handleRemoveAdmin = async (targetUid) => {
+        if (!window.confirm('A deletion request will be sent to this account. Its owner must approve before the account and sign-in credentials are deleted. Continue?')) return;
         const schoolId = userData?.schoolId;
         if (!schoolId) return;
         setSaving(true);
@@ -720,12 +748,8 @@ export default function SchoolProfile() {
                 setSaving(false);
                 return;
             }
-            await updateDoc(doc(db, 'users', uid), {
-                role: 'staff',
-                updatedAt: new Date().toISOString()
-            });
-            await loadAdmins(schoolId);
-            showNotification('Administrator removed successfully.', 'success');
+            await manageSchoolAdmins(currentUser, 'request-deletion', { targetUid });
+            showNotification('Deletion request sent. The account owner must approve it before removal.', 'info');
         } catch (error) {
             console.error('Error removing admin:', error);
             showNotification('Failed to remove administrator: ' + error.message, 'error');
@@ -735,23 +759,20 @@ export default function SchoolProfile() {
     };
 
     const showNotification = (message, type = 'info') => {
-        const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
-        const iconMap = {
-            success: 'check-circle', error: 'exclamation-circle',
-            warning: 'exclamation-triangle', info: 'info-circle'
-        };
-        const el = document.createElement('div');
-        el.className = 'custom-notification';
-        el.style.backgroundColor = colors[type] || colors.info;
-        el.innerHTML = `<i class="fas fa-${iconMap[type] || 'info-circle'}"></i><span>${message}</span>`;
-        document.body.appendChild(el);
-        setTimeout(() => {
-            el.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 300);
-        }, 4000);
+        showAppNotice(message, type);
     };
 
     if (loading) return <LoadingSpinner fullScreen text="Loading school profile..." />;
+
+    if (!canManageProfile) {
+        return (
+            <Layout title="School Profile">
+                <div className="profile-card" style={{ padding: 24 }}>
+                    <p>Only an Admin or HeadTeacher can edit the school profile and manage administrator accounts.</p>
+                </div>
+            </Layout>
+        );
+    }
 
     const renderAdmins = () => {
         if (admins.length === 0) {
@@ -774,22 +795,35 @@ export default function SchoolProfile() {
                     <div className="admin-email">{admin.email || ''}</div>
                 </div>
                 <div className="admin-actions">
-                    {admin.uid !== currentUser?.uid ? (
+                    {(admin.uid || admin.id) !== currentUser?.uid && (
+                        ['admin', 'user', 'school-admin', 'principal', 'headteacher', 'deputy-headteacher', 'accountant', 'finance']
+                            .includes(normalizeRole(admin.role)) ? (
                         <>
                             <button className="edit-admin" onClick={() => showNotification('Edit admin functionality coming soon.', 'info')}>
                                 <i className="fas fa-edit"></i>
                             </button>
-                            <button className="remove-admin" onClick={() => handleRemoveAdmin(admin.uid)}>
+                            <button className="remove-admin" onClick={() => handleRemoveAdmin(admin.uid || admin.id)}>
                                 <i className="fas fa-trash"></i>
                             </button>
                         </>
-                    ) : (
+                        ) : null
+                    )}
+                    {(admin.uid || admin.id) === currentUser?.uid && (
                         <span style={{ fontSize: 11, color: 'var(--gray)' }}>(You)</span>
                     )}
                 </div>
             </div>
         ));
     };
+
+    const roleCounts = admins.reduce((counts, person) => {
+        const role = normalizeRole(person.role);
+        const category = ['user', 'school-admin', 'principal'].includes(role)
+            ? 'admin'
+            : (role === 'finance' ? 'accountant' : role);
+        counts[category] = (counts[category] || 0) + 1;
+        return counts;
+    }, {});
 
     // ---- Finance tab render ----
     const renderFinanceTab = () => {
@@ -1236,7 +1270,7 @@ export default function SchoolProfile() {
                                                         value={assignment || ''}
                                                     >
                                                         <option value="">Unassigned</option>
-                                                        {admins.filter(a => a.role === 'teacher').map(t => (
+                                                        {teachers.map(t => (
                                                             <option key={t.id} value={t.id}>{t.firstName} {t.lastName}</option>
                                                         ))}
                                                     </select>
@@ -1643,10 +1677,18 @@ export default function SchoolProfile() {
                         <div className="form-group">
                             <label>Role <span className="required">*</span></label>
                             <select name="adminRole" required>
-                                <option value="admin">Administrator</option>
-                                <option value="super-admin">Super Administrator</option>
-                                <option value="teacher">Teacher</option>
-                                <option value="staff">Staff</option>
+                                <option value="admin" disabled={(roleCounts.admin || 0) >= 1}>
+                                    Admin ({roleCounts.admin || 0}/1)
+                                </option>
+                                <option value="headteacher" disabled={(roleCounts.headteacher || 0) >= 1}>
+                                    HeadTeacher ({roleCounts.headteacher || 0}/1)
+                                </option>
+                                <option value="deputy-headteacher" disabled={(roleCounts['deputy-headteacher'] || 0) >= 2}>
+                                    Deputy-Headteacher ({roleCounts['deputy-headteacher'] || 0}/2)
+                                </option>
+                                <option value="accountant" disabled={(roleCounts.accountant || 0) >= 2}>
+                                    Accountant ({roleCounts.accountant || 0}/2)
+                                </option>
                             </select>
                         </div>
                         <div className="form-group">

@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-receipt.js
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
@@ -437,3 +438,5 @@ function generateReceiptPDF(receipt, school) {
         });
     });
 }
+
+exports.handler = withCors(exports.handler);

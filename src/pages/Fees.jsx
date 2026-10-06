@@ -19,11 +19,14 @@ import {
 } from '../utils/constants';
 import {
     requireSchoolId, getSchoolData, getFeeStructure, getFeeStructures,
-    DEFAULT_PAGE_SIZE, getStudentByAdmission
+    DEFAULT_PAGE_SIZE, getStudentByAdmission, searchStudentsLive
 } from '../services/feeService';
+import { normalizeAdmissionNumber } from '../services/admissionNumberService';
 import { downloadReceiptPDF } from '../services/pdf';
 import { AuditLogService } from '../services/auditService';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
 
+import { showAppNotice } from '../utils/appNotice';
 // ---------- Constants ----------
 const MAX_IMPORT_SIZE = 5 * 1024 * 1024;
 const OVERDUE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -110,7 +113,10 @@ export default function Fees() {
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
     const [searchByAdmission, setSearchByAdmission] = useState('');
-    const [searchType, setSearchType] = useState('name');
+    const [searchType, setSearchType] = useState('admission');
+    const [liveSearchResults, setLiveSearchResults] = useState([]);
+    const [liveSearchLoading, setLiveSearchLoading] = useState(false);
+    const [liveSearchError, setLiveSearchError] = useState('');
 
     // ---- School highest level (for filtering level dropdowns) ----
     const [schoolHighestLevel, setSchoolHighestLevel] = useState('senior-school');
@@ -156,12 +162,7 @@ export default function Fees() {
 
     // ---- Notifications ----
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
-        const n = document.createElement('div');
-        n.style.cssText = `position:fixed;top:20px;right:20px;background:${colors[type] || colors.info};color:#fff;padding:14px 18px;border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,.2);z-index:10000;max-width:400px;font-size:14px;`;
-        n.textContent = message;
-        document.body.appendChild(n);
-        setTimeout(() => n.remove(), 3500);
+        showAppNotice(message, type);
     }, []);
 
     /* =========================================================
@@ -276,22 +277,59 @@ export default function Fees() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedLevel, selectedClass]);
 
-    // ---- Filter students for rendering (client-side on current page) ----
-    const displayedStudents = useMemo(() => {
-        const term = searchTerm.toLowerCase().trim();
-        const admission = searchByAdmission.toLowerCase().trim();
-        const hasLocalFilter = !!(term || admission);
-        if (!hasLocalFilter) return students;
-        return students.filter(student => {
-            const name = `${student.firstName || ''} ${student.lastName || ''}`.toLowerCase();
-            const studentAdmission = (student.admissionNumber || student.studentId || '').toLowerCase();
-            if (searchType === 'admission' && admission) return studentAdmission.includes(admission);
-            const matchSearch = !term || name.includes(term) ||
-                studentAdmission.includes(term) ||
-                (student.email || '').toLowerCase().includes(term);
-            return matchSearch;
-        });
-    }, [students, searchTerm, searchByAdmission, searchType]);
+    const liveSearchTerm = searchType === 'admission' ? searchByAdmission.trim() : searchTerm.trim();
+    const hasLiveSearch = liveSearchTerm.length >= 2;
+
+    useEffect(() => {
+        if (!hasLiveSearch) {
+            setLiveSearchResults([]);
+            setLiveSearchLoading(false);
+            setLiveSearchError('');
+            return undefined;
+        }
+
+        let cancelled = false;
+        setLiveSearchLoading(true);
+        setLiveSearchError('');
+        setLiveSearchResults([]);
+        const timer = window.setTimeout(async () => {
+            try {
+                if (isOnline) {
+                    const matches = await searchStudentsLive(userData?.schoolId, liveSearchTerm, {
+                        level: selectedLevel || undefined,
+                        cls: selectedClass || undefined,
+                        limit: 50,
+                        admissionFirst: searchType === 'admission',
+                        matchType: searchType,
+                    });
+                    if (!cancelled) setLiveSearchResults(matches);
+                } else {
+                    const term = normalizeAdmissionNumber(liveSearchTerm).toLowerCase();
+                    const matches = students.filter((student) => {
+                        const name = `${student.firstName || ''} ${student.lastName || ''}`.toLowerCase();
+                        const admission = normalizeAdmissionNumber(student.admissionNumber || student.studentId || '').toLowerCase();
+                        return searchType === 'admission'
+                            ? admission.startsWith(term)
+                            : name.startsWith(liveSearchTerm.toLowerCase());
+                    });
+                    if (!cancelled) setLiveSearchResults(matches);
+                }
+            } catch (searchError) {
+                console.error('Fee student live search failed:', searchError);
+                if (!cancelled) {
+                    setLiveSearchResults([]);
+                    setLiveSearchError(searchError.message || 'Student search failed.');
+                }
+            } finally {
+                if (!cancelled) setLiveSearchLoading(false);
+            }
+        }, 250);
+
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+        };
+    }, [hasLiveSearch, isOnline, liveSearchTerm, selectedLevel, selectedClass, userData?.schoolId, students, searchType]);
 
     // ---- Unique option helpers ----
     const schoolLevels = useMemo(() => {
@@ -616,7 +654,7 @@ export default function Fees() {
             }
         } catch (error) {
             console.error('Error recording fee:', error);
-            showNotification('Failed to record payment', 'error');
+            showNotification(`Failed to record payment: ${error.message}`, 'error');
         } finally { setIsProcessing(false); }
     };
 
@@ -862,7 +900,7 @@ export default function Fees() {
                 if (currentUser?.getIdToken) token = await currentUser.getIdToken();
             } catch { /* ignore */ }
 
-            const response = await fetch('/api/mpesa-stk-push', {
+            const response = await fetchNetlifyFunction('mpesa-stk-push', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -876,29 +914,17 @@ export default function Fees() {
                     admissionNumber: student.admissionNumber || student.studentId || '',
                     description: mpesaForm.description || 'School fees payment',
                     schoolId: userData?.schoolId,
-                    schoolName: userData?.schoolName || ''
+                    schoolName: userData?.schoolName || '',
+                    studentClass: student.class || '',
+                    level: student.level || '',
+                    term: feeForm.term || 'Term 1',
+                    year: parseInt(feeForm.year || new Date().getFullYear(), 10)
                 })
             });
 
             const result = await response.json();
             if (result.success) {
-                await addFeeTransaction({
-                    studentId: student.id,
-                    studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
-                    admissionNumber: student.admissionNumber || student.studentId || '',
-                    amount: amountNum,
-                    description: mpesaForm.description || 'M-Pesa payment',
-                    paymentMethod: 'mpesa',
-                    paymentDate: new Date().toISOString().split('T')[0],
-                    reference: result.CheckoutRequestID || `MPESA-${Date.now()}`,
-                    class: student.class, level: student.level,
-                    term: feeForm.term || 'Term 1',
-                    year: parseInt(feeForm.year || new Date().getFullYear(), 10),
-                    type: 'payment', status: 'pending',
-                    recordedBy: currentUser?.uid,
-                    recordedByName: userData?.fullName || userData?.firstName || 'System',
-                    mpesaResult: result
-                });
+                refreshData();
                 showNotification('M-Pesa STK push sent! Check the phone to complete payment.', 'success');
                 setShowMpesaModal(false);
                 setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
@@ -1034,9 +1060,11 @@ export default function Fees() {
 
             roster.forEach(s => {
                 const name = `${s.firstName || ''} ${s.lastName || ''}`.trim().toLowerCase();
-                const admission = (s.admissionNumber || s.studentId || '').toLowerCase();
+                const rawAdmission = String(s.admissionNumber || s.studentId || '').trim().toLowerCase();
+                const admission = normalizeAdmissionNumber(rawAdmission).toLowerCase();
                 if (name) studentMap[name] = s;
                 if (admission) studentMap[admission] = s;
+                if (/^\d+$/.test(rawAdmission)) studentMap[String(parseInt(rawAdmission, 10))] = s;
                 const noSpaceName = name.replace(/\s/g, '');
                 if (noSpaceName) studentMap[noSpaceName] = s;
                 // Index individual name tokens ≥3 chars
@@ -1277,6 +1305,9 @@ export default function Fees() {
     const invoiceStats = useMemo(() => {
         try { return getInvoiceStats(); } catch { return null; }
     }, [getInvoiceStats]);
+    const invoiceCollectionRate = invoiceStats?.totalAmount > 0
+        ? Math.round((invoiceStats.paidAmount / invoiceStats.totalAmount) * 100)
+        : null;
 
     const totalCollected = useMemo(() =>
         feeTransactions
@@ -1296,7 +1327,20 @@ export default function Fees() {
 
     // Memoized balance enrichment — avoids calling getStudentInvoices in the render loop.
     const enrichedBalances = useMemo(() => {
-        return paginatedBalances.map(studentBalance => {
+        const balancesToShow = hasLiveSearch
+            ? liveSearchResults.map((student) => ({
+                ...(feeBalances[student.id] || {}),
+                studentId: student.id,
+                studentName: feeBalances[student.id]?.studentName
+                    || `${student.firstName || ''} ${student.lastName || ''}`.trim()
+                    || 'Unnamed Student',
+                studentClass: feeBalances[student.id]?.studentClass || student.class || 'N/A',
+                admissionNumber: feeBalances[student.id]?.admissionNumber
+                    || student.admissionNumber || student.studentId || '',
+                balance: feeBalances[student.id]?.balance || 0,
+            }))
+            : paginatedBalances;
+        return balancesToShow.map(studentBalance => {
             const enriched = {
                 ...studentBalance,
                 studentName: studentBalance.studentName || 'Unnamed Student',
@@ -1319,7 +1363,7 @@ export default function Fees() {
             }
             return enriched;
         });
-    }, [paginatedBalances, getStudentInvoices]);
+    }, [paginatedBalances, hasLiveSearch, liveSearchResults, feeBalances, getStudentInvoices]);
 
     /* =========================================================
        Render helpers
@@ -1484,6 +1528,20 @@ export default function Fees() {
                         <div className="stat-value" style={{ color: 'var(--success)' }}>{fullyPaid}</div>
                         <div className="stat-sub">{partialPaid} partial</div>
                     </div>
+                    <div className="fee-stat-card">
+                        <div className="stat-label">Invoice Collection Rate</div>
+                        <div className="stat-value" style={{
+                            color: invoiceCollectionRate === null ? 'var(--gray)'
+                                : invoiceCollectionRate >= 80 ? 'var(--success)' : 'var(--warning)'
+                        }}>
+                            {invoiceCollectionRate === null ? '—' : `${invoiceCollectionRate}%`}
+                        </div>
+                        <div className="stat-sub">
+                            {invoiceStats?.total
+                                ? `KES ${(invoiceStats.paidAmount || 0).toLocaleString()} collected against KES ${(invoiceStats.totalAmount || 0).toLocaleString()} invoiced`
+                                : 'Create invoices to calculate collection rate'}
+                        </div>
+                    </div>
                 </div>
 
                 {/* Action Buttons */}
@@ -1507,20 +1565,20 @@ export default function Fees() {
                 <div className="filters-section">
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', width: '100%' }}>
                         <div className="search-toggle">
-                            <button type="button" className={searchType === 'name' ? 'active' : ''} onClick={() => { setSearchType('name'); setSearchByAdmission(''); setSearchTerm(''); }}>
-                                <i className="fas fa-user"></i> Name
-                            </button>
                             <button type="button" className={searchType === 'admission' ? 'active' : ''} onClick={() => { setSearchType('admission'); setSearchTerm(''); }}>
                                 <i className="fas fa-id-card"></i> Admission No
+                            </button>
+                            <button type="button" className={searchType === 'name' ? 'active' : ''} onClick={() => { setSearchType('name'); setSearchByAdmission(''); setSearchTerm(''); }}>
+                                <i className="fas fa-user"></i> Name
                             </button>
                         </div>
                     </div>
 
                     {searchType === 'name' ? (
-                        <input type="text" className="search-input" placeholder="Search on current page by name, email, or ID..."
+                        <input type="text" className="search-input" placeholder="Type 2+ letters of a student's first or last name..."
                             value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                     ) : (
-                        <input type="text" className="search-input" placeholder="Search on current page by admission number..."
+                        <input type="text" className="search-input" placeholder="Type 2+ admission number characters (45 also matches 0045)..."
                             value={searchByAdmission} onChange={(e) => setSearchByAdmission(e.target.value)}
                             style={{ borderColor: 'var(--primary)' }} />
                     )}
@@ -1541,6 +1599,21 @@ export default function Fees() {
                     }}><i className="fas fa-times"></i> Clear</button>
                 </div>
 
+                {liveSearchTerm.length === 1 && (
+                    <div style={{ margin: '-8px 0 16px', color: 'var(--gray)', fontSize: 13 }}>
+                        Enter at least 2 characters to search the whole school roster.
+                    </div>
+                )}
+                {hasLiveSearch && (
+                    <div style={{ margin: '-8px 0 16px', color: liveSearchError ? 'var(--danger)' : 'var(--gray)', fontSize: 13 }}>
+                        {liveSearchLoading
+                            ? 'Searching all students…'
+                            : liveSearchError
+                                ? `Live search failed: ${liveSearchError}`
+                                : `${liveSearchResults.length} live match${liveSearchResults.length === 1 ? '' : 'es'} across the school`}
+                    </div>
+                )}
+
                 {loadingAllStudents && (
                     <div style={{ padding: '10px 16px', background: '#eef2ff', color: '#3730a3', borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
                         <i className="fas fa-spinner fa-spin" style={{ marginRight: 8 }}></i>
@@ -1558,7 +1631,7 @@ export default function Fees() {
                     <div className="balance-list">
                         {enrichedBalances.map(enriched => renderBalanceCard(enriched))}
 
-                        {paginatedBalances.length === 0 && !balancesPage.loading && (
+                        {enrichedBalances.length === 0 && !balancesPage.loading && !liveSearchLoading && (
                             <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '60px 20px', color: 'var(--gray)' }}>
                                 <i className="fas fa-search" style={{ fontSize: '64px', display: 'block', marginBottom: '20px', color: 'var(--border)' }}></i>
                                 <h3 style={{ fontSize: '20px', color: 'var(--secondary)', marginBottom: '10px' }}>No Students Found</h3>
@@ -1568,7 +1641,7 @@ export default function Fees() {
                     </div>
                 )}
 
-                {renderPagination()}
+                {!hasLiveSearch && renderPagination()}
 
                 {/* ===================== MODALS ===================== */}
 
@@ -1581,6 +1654,7 @@ export default function Fees() {
                                 <StudentPicker
                                     schoolId={userData?.schoolId}
                                     value={feeForm.student}
+                                    admissionFirst
                                     onChange={(student) => {
                                         setFeeForm(prev => ({
                                             ...prev,

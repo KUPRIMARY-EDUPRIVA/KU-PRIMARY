@@ -20,6 +20,7 @@ import {
 } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import {
@@ -31,7 +32,7 @@ import './Communications.css';
    Constants
    ============================================================ */
 
-const SCHOOL_ADMIN_ROLES = new Set(['admin', 'user', 'school_admin', 'super-admin']);
+const SCHOOL_ADMIN_ROLES = new Set(['admin', 'user', 'school_admin', 'super-admin', 'headteacher']);
 const MAX_RECIPIENTS_PER_CAMPAIGN = 100;
 
 const SMS_BATCH_SIZE = 30;
@@ -315,7 +316,7 @@ export default function Communication() {
 
     const checkModemStatus = async () => {
         try {
-            const res = await fetch('/api/send-sms-modem', {
+            const res = await fetchNetlifyFunction('send-sms-modem', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'status' })
@@ -609,7 +610,7 @@ export default function Communication() {
     };
 
     const sendBatchViaModem = async (items) => {
-        const res = await fetch('/api/send-sms-modem', {
+        const res = await fetchNetlifyFunction('send-sms-modem', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -636,8 +637,8 @@ export default function Communication() {
     };
 
     const sendBatchViaGateway = async (items) => {
-        const endpoint = gatewayConfig.apiUrl || '/.netlify/functions/send-sms';
-        const res = await fetch(endpoint, {
+        const endpoint = gatewayConfig.apiUrl;
+        const options = {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -651,7 +652,13 @@ export default function Communication() {
                 deviceId: gatewayConfig.deviceId,
                 sender: gatewayConfig.defaultSender || school.name || ''
             })
-        });
+        };
+        if (!endpoint && currentUser) {
+            options.headers.Authorization = `Bearer ${await currentUser.getIdToken()}`;
+        }
+        const res = endpoint
+            ? await fetch(endpoint, options)
+            : await fetchNetlifyFunction('send-sms', options);
         const data = await res.json().catch(() => ({}));
         if (Array.isArray(data.results)) {
             return items.map((item, i) => {

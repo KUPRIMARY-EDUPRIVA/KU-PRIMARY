@@ -1,6 +1,12 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/mpesa-stk-push.js
 const axios = require('axios');
 const { initAdmin } = require('./_lib/firebaseAdmin');
+
+const normalizeAdmissionNumber = (value) => {
+    const admission = String(value || '').trim();
+    return /^\d+$/.test(admission) ? admission.padStart(4, '0') : admission.toUpperCase();
+};
 
 exports.handler = async (event) => {
     if (event.httpMethod !== 'POST') {
@@ -65,10 +71,12 @@ exports.handler = async (event) => {
             return json(404, { success: false, message: 'Student not found.' });
         }
         const verifiedStudent = studentDoc.data();
-        const verifiedAdmission = String(verifiedStudent.admissionNumber || verifiedStudent.studentId || '');
+        const verifiedAdmission = normalizeAdmissionNumber(
+            verifiedStudent.admissionNumber || verifiedStudent.studentId || ''
+        );
         if (
             verifiedStudent.schoolId !== schoolId
-            || verifiedAdmission !== String(admissionNumber)
+            || verifiedAdmission !== normalizeAdmissionNumber(admissionNumber)
         ) {
             return json(400, { success: false, message: 'Student admission details do not match.' });
         }
@@ -164,7 +172,9 @@ exports.handler = async (event) => {
 
         const callbackUrl = schoolCallbackUrl
             || process.env.MPESA_CALLBACK_URL
-            || (process.env.URL ? `${process.env.URL}/api/mpesa-callback` : 'https://toplink-edu.netlify.app/api/mpesa-callback');
+            || (process.env.URL
+                ? `${process.env.URL}/.netlify/functions/mpesa-callback`
+                : 'https://kupri.netlify.app/.netlify/functions/mpesa-callback');
 
         const rawSchoolName = (schoolName || 'School').trim();
         const schoolFirstName = rawSchoolName.split(/\s+/)[0] || 'School';
@@ -223,13 +233,21 @@ exports.handler = async (event) => {
         // ---- 7. Persist pending transaction (used by the callback) ----
         // Written BEFORE we respond, so the chatbot's poll never misses it.
         const transactionData = {
+            idempotencyKey: `MPESA_${checkoutRequestId}`,
             studentId,
             studentName: verifiedStudentName || studentName || '',
+            admissionNumber: verifiedAdmission,
+            class: studentClass || verifiedStudent.class || '',
+            level: level || verifiedStudent.level || '',
+            term: term || 'Term 1',
+            year: Number(year) || new Date().getFullYear(),
+            invoiceId: invoiceId || null,
             schoolId,
             amount: totalAmount,
             phoneNumber: formattedPhone,
             description: description || 'School Fees Payment',
             status: 'pending',
+            type: 'payment',
             paymentMethod: 'mpesa',
             checkoutRequestID: checkoutRequestId,
             merchantRequestID: merchantRequestId || '',
@@ -243,8 +261,9 @@ exports.handler = async (event) => {
         if (admin && db) {
             try {
                 transactionData.createdAt = admin.firestore.FieldValue.serverTimestamp();
-                // Two places so the callback can look up by CheckoutRequestID:
-                await db.collection('fee_transactions').add(transactionData);
+                await db.collection('fee_transactions')
+                    .doc(`MPESA_${checkoutRequestId}`)
+                    .set(transactionData);
                 await db
                     .collection('mpesa_pending_transactions')
                     .doc(checkoutRequestId)
@@ -286,3 +305,5 @@ function json(statusCode, body) {
         body: JSON.stringify(body)
     };
 }
+
+exports.handler = withCors(exports.handler);

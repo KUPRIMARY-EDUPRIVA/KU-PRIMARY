@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
+import { normalizeAdmissionNumber } from '../services/admissionNumberService';
 import { db } from '../firebase';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
@@ -97,11 +98,11 @@ export default function Transcripts() {
                 scores = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
                 setAllSchoolScores(scores);
             }
-            const admission = String(student.admissionNumber || student.studentId || '');
+            const admission = normalizeAdmissionNumber(student.admissionNumber || student.studentId || '');
             const records = scores
                 .filter((score) => score.studentId === student.studentId
                     || score.studentId === student.id
-                    || (admission && String(score.admissionNumber || '') === admission))
+                    || (admission && normalizeAdmissionNumber(score.admissionNumber) === admission))
                 .sort((a, b) => {
                     const yearDiff = Number(a.year || a.academicYear || 0) - Number(b.year || b.academicYear || 0);
                     if (yearDiff) return yearDiff;

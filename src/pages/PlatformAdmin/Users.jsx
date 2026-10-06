@@ -2,12 +2,36 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../firebase';
-import { collection, query, getDocs, doc, deleteDoc, updateDoc, where } from 'firebase/firestore';
+import { collection, query, getDocs, doc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { fetchNetlifyFunction } from '../../services/netlifyApi';
+import { normalizeRole } from '../../utils/roles';
 import Layout from '../../components/Layout/Layout';
 import LoadingSpinner from '../../components/Common/LoadingSpinner';
 
+const MANAGED_ADMIN_ROLES = new Set([
+    'admin', 'user', 'school-admin', 'principal',
+    'headteacher', 'deputy-headteacher', 'accountant', 'finance',
+]);
+
+async function platformAdminAction(currentUser, action, details = {}) {
+    const token = await currentUser.getIdToken();
+    const response = await fetchNetlifyFunction('manage-school-admins', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ action, ...details }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Administrator operation failed.');
+    }
+    return result;
+}
+
 export default function PlatformUsers() {
-    const { userData, currentUser } = useAuth();
+    const { currentUser } = useAuth();
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -36,6 +60,18 @@ export default function PlatformUsers() {
 
     const handleRoleChange = async (userId, newRole) => {
         try {
+            const selectedUser = users.find((user) => user.id === userId);
+            if (!selectedUser) throw new Error('User not found.');
+            const currentRole = normalizeRole(selectedUser.role);
+            if (MANAGED_ADMIN_ROLES.has(currentRole) && currentRole !== normalizeRole(newRole)) {
+                throw new Error('Administrator accounts cannot be reassigned. Request account deletion and obtain the account owner’s approval first.');
+            }
+            if (normalizeRole(newRole) === 'admin' && currentRole !== 'admin') {
+                await platformAdminAction(currentUser, 'platform-set-role', { targetUid: userId, role: 'admin' });
+                await loadUsers();
+                alert('Admin role assigned successfully.');
+                return;
+            }
             await updateDoc(doc(db, 'users', userId), { role: newRole });
             setUsers(users.map(u => 
                 u.id === userId ? { ...u, role: newRole } : u
@@ -48,8 +84,19 @@ export default function PlatformUsers() {
     };
 
     const handleDeleteUser = async (userId) => {
-        if (!window.confirm('Are you sure you want to delete this user?')) return;
+        const target = users.find((user) => user.id === userId);
+        if (!target) return;
+        const isManagedAdmin = MANAGED_ADMIN_ROLES.has(normalizeRole(target.role));
+        const confirmation = isManagedAdmin
+            ? 'This will request deletion of the administrator account. The account owner must approve before their sign-in credentials and school record are deleted. Continue?'
+            : 'Are you sure you want to delete this user?';
+        if (!window.confirm(confirmation)) return;
         try {
+            if (isManagedAdmin) {
+                await platformAdminAction(currentUser, 'platform-request-deletion', { targetUid: userId });
+                alert('Deletion request sent. The account owner must approve it before removal.');
+                return;
+            }
             await deleteDoc(doc(db, 'users', userId));
             setUsers(users.filter(u => u.id !== userId));
             alert('User deleted successfully!');

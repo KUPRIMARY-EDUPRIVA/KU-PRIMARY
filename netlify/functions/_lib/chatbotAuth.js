@@ -1,7 +1,7 @@
 // netlify/functions/_lib/chatbotAuth.js
 const { initAdmin } = require('./firebaseAdmin');
 
-const ADMIN_ROLES = new Set(['admin', 'school_admin', 'super-admin', 'platform_admin', 'user']);
+const ADMIN_ROLES = new Set(['admin', 'school_admin', 'super-admin', 'platform_admin', 'user', 'headteacher', 'deputy-headteacher']);
 
 // Same fallback order as src/context/AuthContext.jsx → resolveUser().
 // A user's document can live in any of these collections depending on
@@ -12,7 +12,7 @@ const ADMIN_ROLES = new Set(['admin', 'school_admin', 'super-admin', 'platform_a
 // We try them in order and stop at the first one that has a schoolId.
 const USER_COLLECTIONS = ['users', 'teachers', 'students'];
 
-async function requireAuth(event) {
+async function requireAuth(event, options = {}) {
     const authHeader = event.headers.authorization || event.headers.Authorization || '';
     if (!authHeader.startsWith('Bearer ')) {
         throw Object.assign(new Error('Missing Authorization header'), { statusCode: 401 });
@@ -96,7 +96,7 @@ async function requireAuth(event) {
         || decoded.email
         || 'User';
 
-    if (!schoolId) {
+    if (!schoolId && options.allowNoSchool !== true) {
         console.warn('[chatbotAuth] No school membership', {
             uid: decoded.uid,
             email: decoded.email,
@@ -121,7 +121,7 @@ async function requireAuth(event) {
         !userDoc.schoolId ||
         !userDoc.fullName;
 
-    if (needsHeal) {
+    if (needsHeal && options.healProfile !== false) {
         setImmediate(() => {
             const healPayload = {
                 uid: decoded.uid,

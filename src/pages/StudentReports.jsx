@@ -6,6 +6,7 @@ import { db } from '../firebase';
 import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
+import { showAppNotice } from '../utils/appNotice';
 import {
     LEVEL_CLASSES, LEVEL_DISPLAY_NAMES, LEVEL_SUBJECTS, getCBCGrade,
 } from '../utils/constants';
@@ -112,15 +113,7 @@ export default function StudentReports() {
     const ready = students.length > 0;
 
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = {
-            success: '#27ae60', error: '#e74c3c',
-            warning: '#f39c12', info: '#3498db',
-        };
-        const el = document.createElement('div');
-        el.style.cssText = `position:fixed;top:20px;right:20px;background:${colors[type] || colors.info};color:#fff;padding:14px 18px;border-radius:10px;box-shadow:0 10px 25px rgba(0,0,0,.18);z-index:10000;max-width:420px;font-size:14px;font-weight:500;`;
-        el.textContent = message;
-        document.body.appendChild(el);
-        setTimeout(() => el.remove(), 4000);
+        showAppNotice(message, type);
     }, []);
 
     const buildMeta = useCallback(() => ({

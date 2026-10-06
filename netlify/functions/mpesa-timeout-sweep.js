@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/mpesa-timeout-sweep.js
 //
 // Scheduled sweep of mpesa_pending_transactions that never received a callback.
@@ -146,3 +147,5 @@ async function sweepOne({ db, FieldValue, pending }) {
     });
   });
 }
+
+exports.handler = withCors(exports.handler);

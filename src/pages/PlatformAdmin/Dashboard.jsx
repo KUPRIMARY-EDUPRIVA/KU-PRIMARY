@@ -13,6 +13,7 @@ import {
 import Layout from '../../components/Layout/Layout';
 import LoadingSpinner from '../../components/Common/LoadingSpinner';
 
+import { showAppNotice } from '../../utils/appNotice';
 export default function PlatformAdminDashboard() {
     const navigate = useNavigate();
     const { currentUser, userData } = useAuth();
@@ -382,36 +383,7 @@ export default function PlatformAdminDashboard() {
     };
 
     const showNotification = (message, type = 'info') => {
-        const colors = {
-            success: '#27ae60',
-            error: '#e74c3c',
-            warning: '#f39c12',
-            info: '#3498db'
-        };
-        const iconMap = {
-            success: 'check-circle',
-            error: 'exclamation-circle',
-            warning: 'exclamation-triangle',
-            info: 'info-circle'
-        };
-
-        const notificationEl = document.createElement('div');
-        notificationEl.className = 'custom-notification';
-        notificationEl.style.backgroundColor = colors[type] || colors.info;
-        notificationEl.innerHTML = `
-            <i class="fas fa-${iconMap[type] || 'info-circle'}"></i>
-            <span>${message}</span>
-        `;
-        document.body.appendChild(notificationEl);
-
-        setTimeout(() => {
-            notificationEl.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => {
-                if (notificationEl.parentNode) {
-                    notificationEl.parentNode.removeChild(notificationEl);
-                }
-            }, 300);
-        }, 4000);
+        showAppNotice(message, type);
     };
 
     if (loading) {

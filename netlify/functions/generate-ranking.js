@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-ranking.js
 //
 // Generates a class ranking PDF (A4 landscape):
@@ -575,3 +576,5 @@ function generateRankingPDF(students, meta, logoBuffer) {
         doc.end();
     });
 }
+
+exports.handler = withCors(exports.handler);

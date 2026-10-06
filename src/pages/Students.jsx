@@ -28,6 +28,7 @@ import {
 } from '../services/studentService';
 import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
 
+import { showAppNotice } from '../utils/appNotice';
 // ============================================================
 // Constants
 // ============================================================
@@ -236,23 +237,7 @@ export default function Students() {
     // Notification
     // ============================================================
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = {
-            success: '#27ae60', error: '#e74c3c',
-            warning: '#f39c12', info: '#3498db',
-        };
-        const icons = {
-            success: 'check-circle', error: 'exclamation-circle',
-            warning: 'exclamation-triangle', info: 'info-circle',
-        };
-        const el = document.createElement('div');
-        el.className = 'custom-notification';
-        el.style.backgroundColor = colors[type] || colors.info;
-        el.innerHTML = `<i class="fas fa-${icons[type] || 'info-circle'}"></i><span>${message}</span>`;
-        document.body.appendChild(el);
-        setTimeout(() => {
-            el.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 300);
-        }, 4000);
+        showAppNotice(message, type);
     }, []);
 
     // ============================================================

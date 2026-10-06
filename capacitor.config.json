@@ -4,7 +4,10 @@
   "webDir": "build",
   "server": {
     "androidScheme": "https",
-    "hostname": "localhost"
+    "hostname": "localhost",
+    "allowNavigation": [
+      "kupri.netlify.app"
+    ]
   },
   "backgroundColor": "#f5f7fb",
   "plugins": {

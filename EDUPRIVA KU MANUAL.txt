@@ -1,0 +1,447 @@
+EDUPRIVA KU
+USER MANUAL
+
+Version: October 2026
+
+======================================================================
+1. ABOUT THIS MANUAL
+======================================================================
+
+This manual explains how to sign in, navigate the Edupriva KU school
+management app, use the main school modules, export reports, and get
+help with common issues. Your available pages and actions depend on
+your account role and the features enabled for your school.
+
+The Android app has a native Capacitor shell with the application
+interface bundled on the device. It connects to Firebase for school
+data and to the school's Netlify functions for supported server-side
+operations.
+
+======================================================================
+2. SIGNING IN AND OFFLINE ACCESS
+======================================================================
+
+First sign-in
+-------------
+1. Connect the device to the internet.
+2. Open Edupriva KU and enter the email address and password registered
+   for your school account.
+3. Select the sign-in button and wait for the application to load your
+   role and school information.
+
+Offline use
+-----------
+The first sign-in requires an internet connection. After signing in,
+the app may use the saved session and cached information when offline.
+Some protected offline sessions require biometric unlock. Biometric
+access can be enabled when offered by the app; the app does not store
+your password for biometric access.
+
+Offline access is limited. Actions that require a live server, including
+some exports, SMS, account-management actions, and payment-related
+operations, need an internet connection. Changes queued by an offline
+feature may not appear to other users until they synchronize. Check the
+connection/sync indicator before relying on recently entered data.
+
+For password recovery, connect to the internet and use the sign-in
+screen's password recovery option. Contact your school administrator if
+you cannot access the registered email account.
+
+======================================================================
+3. ROLES AND ACCESS
+======================================================================
+
+The application shows different navigation items according to role.
+Some modules are also controlled by school feature settings.
+
+Admin
+-----
+- School-wide dashboard and management pages, including students,
+  teachers, exams, results, fee management, attendance reports,
+  school performance reports, student reports, school profile,
+  timetables, and enabled optional modules.
+- Attendance is for school-wide statistics, filters, history and
+  reports; the Admin does not mark individual students present or absent.
+- Does not have the Discipline navigation tab.
+- Can edit the school profile and manage school administrator accounts.
+
+HeadTeacher
+-----------
+- Has the Admin management pages.
+- Also has Communications and Discipline.
+- Attendance is the school-wide reporting view, not attendance marking.
+- Can edit the school profile and manage school administrator accounts.
+
+Deputy-Headteacher
+------------------
+- Has the teacher dashboard and teacher pages, plus Attendance,
+  Student Reports and Discipline.
+- Can mark attendance only for classes assigned to the account as class
+  teacher.
+- Does not have school-profile editing or administrator-management
+  access.
+
+Teacher
+-------
+- Uses the teacher dashboard, assigned students/classes, results,
+  attendance, reports, timetable and profile pages as made available.
+- Attendance marking is restricted to assigned classes.
+
+Accountant
+----------
+- Uses Fee Management only. Other school modules are not part of the
+  Accountant navigation.
+
+Student
+-------
+- Uses the student dashboard, own results and own fee information.
+
+Super Administrator
+-------------------
+- Uses platform-level administration pages to manage schools, users and
+  platform settings. This role is different from a school's Admin.
+
+======================================================================
+4. NAVIGATION AND BASIC USE
+======================================================================
+
+1. Sign in. The navigation panel is available from the app's menu.
+2. Choose a page from the sidebar or mobile navigation.
+3. Select the relevant school year, term, level, class, subject or date
+   before loading records where those filters are provided.
+4. Use Save/Apply/Load actions to commit or retrieve information.
+5. Use the page's export action to generate a report or data file.
+6. Check the application notice and the device's Downloads/files area
+   after an export. A successful export should produce a file; a notice
+   by itself is not the exported document.
+
+On mobile, less-frequently used pages may be placed under the More menu.
+If a page is not visible, check your account role, school feature
+settings, and the More menu.
+
+======================================================================
+5. SCHOOL PROFILE AND ADMINISTRATORS
+======================================================================
+
+Only the school's Admin and HeadTeacher can edit the school profile or
+manage school administrator accounts. The profile contains settings
+such as school contact details, academic configuration, class-teacher
+assignments, finance configuration, administrator accounts, and
+preferences. Save changes after editing.
+
+Adding an administrator
+-----------------------
+1. Open School Profile, then the Admins tab.
+2. Select Add Admin.
+3. Enter the person's registered account email, name and phone number.
+4. Choose the appropriate role and submit.
+5. The person must already have a registered user account. If the email
+   cannot be found, ask the person to register/sign in first, then retry.
+
+Role limits are:
+- Admin: at most 1
+- HeadTeacher: at most 1
+- Deputy-Headteacher: at most 2
+- Accountant: at most 2
+
+If the limit for a role has been reached, an existing role holder must
+be removed before another account can be assigned that role. The
+backend is intended to enforce these limits as well as the role selector.
+
+Deleting an administrator
+-------------------------
+Removing an administrator is a two-step process:
+1. An Admin or HeadTeacher requests deletion from the administrator list.
+2. The account being removed receives an approval button while that
+   request is active. The account owner must sign in and approve.
+3. After approval, the system deletes the person's Firebase sign-in
+   account and school user record. They are signed out and must no longer
+   be able to use that account.
+
+The approval button is only shown while a deletion request is pending.
+Do not request deletion unless the account owner is expected to review
+and approve it. A replacement for a one-person role can be assigned
+after the existing account has been deleted.
+
+IMPORTANT: These administrator-management safeguards require the
+corresponding Netlify function and Firestore rules to be deployed to the
+live environment. If administrator assignment or approval is unavailable,
+contact the platform operator rather than attempting to edit user roles
+directly.
+
+======================================================================
+6. STUDENTS AND TEACHERS
+======================================================================
+
+Student management
+------------------
+Authorized school staff can use Students to maintain student records
+and view/search the student roster. Use the student's admission number
+when searching or importing records. Admission numbers shorter than
+four digits are normalized with leading zeros for matching; for example,
+45 can match 0045. Confirm the matched student's name and class before
+saving financial or academic information.
+
+Use the page's own actions for editing, importing, promotion, transfer,
+graduation or archiving. Review the destination level and class before
+confirming promotions, especially when processing a group.
+
+Teacher management
+------------------
+Authorized administrators use Teachers to maintain teacher profiles
+and assignments. Keep each teacher's classes, levels and subjects
+current; those assignments control the teacher's access to class
+attendance and academic work.
+
+Class-teacher assignment
+------------------------
+In School Profile, use Class Teachers to associate each class with its
+responsible teacher. A teacher who is not assigned to a class may not be
+able to mark attendance for it.
+
+======================================================================
+7. ATTENDANCE
+======================================================================
+
+Class teachers and Deputies
+---------------------------
+1. Open Attendance.
+2. Select an assigned class, session and date.
+3. Review the student roster. Use Mark all present/absent only when
+   appropriate, then correct individual student statuses and add
+   optional notes.
+4. Select Save Attendance.
+5. Use History to filter saved records by class and date range.
+
+Admin and HeadTeacher
+---------------------
+The school-wide attendance view is reports-only. Select the available
+date, term, class or other report filters, review the statistics and
+generate the report. Administrators do not use the class marking
+controls.
+
+Attendance reports can be exported as PDF. Allow the report to finish
+generating, then open the PDF from the device's Downloads or file
+location. If no file appears, retry while online and check the
+application's error notice.
+
+======================================================================
+8. EXAMS, RESULTS AND STUDENT REPORTS
+======================================================================
+
+Exams
+-----
+Use Exams to configure and manage assessment/exam information available
+to your role. Confirm the term, level, class and assessment details
+before publishing or changing an exam.
+
+Entering results
+----------------
+1. Open Results.
+2. Choose the school level, class, subject, term and assessment type.
+   The level list is limited to the highest level configured for the
+   school.
+3. Select Load Students and verify the roster.
+4. Enter or import scores. For CSV imports, check the required column
+   headers shown on the page and ensure each admission number identifies
+   the intended student.
+5. Save the scores and confirm that the save completes.
+
+Administrators can open or close result entry for assessment types at
+each configured school level. Closed entry is read-only for teachers.
+The lock controls do not list levels above the school's configured
+highest level.
+
+Results can provide score-sheet/ranking exports in CSV and student or
+ranking PDFs. Choose the correct class and term before exporting.
+
+Student Reports and performance reports
+---------------------------------------
+Use Student Reports for individual student report forms and School
+Performance Reports for school-level summaries. Apply the term, year,
+level and class filters, review the displayed data, then select Export
+PDF. Student report access depends on the account role.
+
+======================================================================
+9. FEE MANAGEMENT
+======================================================================
+
+Finding a student
+-----------------
+Use the live search controls in Fee Management. Search by admission
+number or switch to name search. Enter at least two characters to search.
+Admission-number search normalizes leading zeros, so 45 can match 0045.
+Verify the student's name, admission number and class before recording
+or viewing a transaction.
+
+Common fee tasks
+----------------
+- Review fee balances, invoices and invoice statistics.
+- Record a payment or other permitted fee transaction against the
+  correct student.
+- Create or review invoices and fee structures where available.
+- Open a student's fee details for transaction and balance information.
+- Generate a receipt after a payment and save/print the resulting PDF.
+- Use reconciliation actions when a balance needs to be checked against
+  its transactions.
+- Export defaulters or other data only after reviewing the current term,
+  year and filters.
+
+For M-Pesa or online payment activity, allow the payment callback to
+complete before treating a transaction as final. If the student's
+balance does not update, refresh the page and ask an authorized user to
+reconcile the balance. Do not enter the same payment a second time
+without checking the transaction history.
+
+PDF receipts and other fee documents depend on the required server-side
+services when applicable. Stay online for payment, reminder and
+server-generated operations. After selecting a PDF action, verify that
+the file is actually present in the device's Downloads/files location.
+
+======================================================================
+10. DISCIPLINE AND COMMUNICATIONS
+======================================================================
+
+Discipline is available to the HeadTeacher and Deputy-Headteacher.
+Authorized users can find a student by admission number or by entering
+at least two letters of the student's name.
+
+To record a case:
+1. Select the correct student and verify their identity.
+2. Enter the incident date, category, severity, summary and action taken.
+3. Add a follow-up date if needed, then save the record.
+4. Use the status controls to track whether a case is open, under review
+   or resolved.
+5. Filter existing records by student, class, severity, status and date.
+6. Export the filtered records and statistics to PDF when required.
+
+Parent/guardian SMS is a confidential follow-up asking the parent to
+contact the school; incident details are not included in the message.
+Verify that the parent's phone number is correct before sending.
+Discipline information is sensitive: access and share reports only with
+authorized school personnel.
+
+Communications is available to the HeadTeacher. Review recipients and
+message content carefully before sending SMS or other communications.
+Some communications require an internet connection and an active SMS
+service.
+
+======================================================================
+11. OTHER SCHOOL MODULES
+======================================================================
+
+Depending on role and school configuration, additional pages may include:
+- School Performance Reports: filtered school-level academic summaries.
+- Timetable: view/manage timetable information permitted for the role.
+- Student Transcripts: student academic-history records.
+- Transport: buses, routes and related transport records.
+- Accommodation/Boarding: dormitories and boarding records.
+- Health Records: authorized student health information.
+- Inventory: school inventory records.
+- Subscription: school subscription information and support.
+- Audit Logs: review recorded administrative activity.
+- Settings/My Profile: personal account preferences and profile details.
+
+Use each page's on-screen filters and prompts. Do not assume that a
+hidden navigation item is a system error; it may not be available to
+your role or may be disabled for your school.
+
+======================================================================
+12. EXPORTS AND FILES
+======================================================================
+
+PDF and CSV exports are generated per module and may use different
+filters. Before exporting:
+1. Check the displayed school, term, year, class, dates and student.
+2. Apply the desired filters and confirm the on-screen results.
+3. Select the export action once and wait for completion.
+4. Open the device's Downloads or file manager and locate the generated
+   file. On a native Android device, file access/save prompts may appear.
+5. Open the document to confirm that it contains the expected records.
+
+If the app reports an export error, note the page, filters, time and
+error text. Retry online. If the message reports success but the file is
+missing, check Downloads and the app's requested save location before
+repeating the export; contact support if the file still cannot be found.
+
+======================================================================
+13. PRIVACY, SECURITY AND GOOD PRACTICE
+======================================================================
+
+- Use your own account and do not share your password or device unlock.
+- Lock the device when unattended and sign out on shared devices.
+- Use only the role assigned to you; never ask another person to approve
+  a deletion request on your behalf.
+- Verify student identity before editing marks, fees, attendance or
+  discipline information.
+- Treat exported student, financial, health and discipline reports as
+  confidential. Store and share them only through approved channels.
+- Do not upload spreadsheets containing unrelated personal data.
+- Keep admission numbers, classes, dates and terms consistent in imports.
+- A server-side feature may require internet access even when other
+  cached parts of the app remain available offline.
+
+======================================================================
+14. TROUBLESHOOTING
+======================================================================
+
+Cannot sign in
+--------------
+Check internet access, email spelling and password. First sign-in must
+be online. Use password recovery or contact the school administrator.
+
+Page or action is missing
+-------------------------
+Confirm the account role and ask an Admin/HeadTeacher whether the school
+feature is enabled. Some navigation links are intentionally role-limited.
+
+Teacher cannot mark a class
+---------------------------
+Ask an administrator to assign the teacher as class teacher for that
+class in School Profile. Refresh after the assignment is saved.
+
+Student search returns no match
+-------------------------------
+Check the admission number, school and student status. Try at least two
+characters for live search; a short admission such as 45 should match
+0045 when the stored number uses four digits.
+
+PDF or CSV file is missing
+--------------------------
+Check Downloads and file-save prompts. Confirm filters and connectivity.
+Retry only after checking that the same file was not already saved.
+
+Fee balance or payment looks incorrect
+--------------------------------------
+Refresh and inspect the student's transactions/invoices. Do not
+duplicate a payment. Ask an authorized fee manager to reconcile the
+balance and provide the transaction reference to support.
+
+Deletion approval button does not appear
+-----------------------------------------
+The approval button appears only for the account targeted by an active
+deletion request. The account owner must be signed in and online for the
+app to retrieve the request. Contact the requesting administrator if
+there is no pending request.
+
+Changes do not synchronize
+--------------------------
+Restore internet access and wait for the sync indicator. Reopen the page
+and verify the server-side value before entering the change again.
+
+======================================================================
+15. SUPPORT CHECKLIST
+======================================================================
+
+When reporting an issue, provide:
+- Your role and school name/ID.
+- The page and action you were using.
+- The date/time and whether the device was online.
+- The exact error text, if shown.
+- Relevant student admission number or transaction reference only
+  through an approved private support channel.
+
+Do not send passwords, authentication codes, payment secrets or private
+student records in an unsecured message.
+
+END OF MANUAL

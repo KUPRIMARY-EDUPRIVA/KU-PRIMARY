@@ -1,5 +1,7 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import {
+    browserLocalPersistence, getAuth, indexedDBLocalPersistence, initializeAuth
+} from 'firebase/auth';
 import { getFirestore, enableIndexedDbPersistence, CACHE_SIZE_UNLIMITED } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -31,7 +33,15 @@ if (!validateConfig()) {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+let auth;
+try {
+    auth = initializeAuth(app, {
+        persistence: [indexedDBLocalPersistence, browserLocalPersistence]
+    });
+} catch (error) {
+    if (error.code !== 'auth/already-initialized') throw error;
+    auth = getAuth(app);
+}
 const db = getFirestore(app);
 const activeDb = db;
 const archiveDb = db;

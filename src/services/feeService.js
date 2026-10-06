@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getMemory, setMemory } from './cache';
+import { normalizeAdmissionNumber } from './admissionNumberService';
 
 // ---------- Tenant guard ----------
 export function requireSchoolId(userData) {
@@ -1013,13 +1014,16 @@ export async function lockTerm(schoolId, term, year, performedBy, performedByNam
 // ---------- Student lookup ----------
 export async function findStudentByAdmission(schoolId, admissionNumber) {
     if (!admissionNumber) return null;
-    const normalized = admissionNumber.trim().toUpperCase();
-    for (const field of ['admissionNumber', 'studentId']) {
-        const q = query(collection(db, 'students'),
-            where('schoolId', '==', schoolId),
-            where(field, '==', normalized), limit(1));
-        const snap = await getDocs(q);
-        if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
+    const normalized = normalizeAdmissionNumber(admissionNumber);
+    const candidates = [...new Set([normalized, String(admissionNumber).trim().toUpperCase()])];
+    for (const candidate of candidates) {
+        for (const field of ['admissionNumber', 'studentId']) {
+            const q = query(collection(db, 'students'),
+                where('schoolId', '==', schoolId),
+                where(field, '==', candidate), limit(1));
+            const snap = await getDocs(q);
+            if (!snap.empty) return { id: snap.docs[0].id, ...snap.docs[0].data() };
+        }
     }
     return null;
 }
@@ -1048,56 +1052,61 @@ export async function getInvoiceSummary(schoolId, term, year) {
  * Case-insensitive prefix search across admissionNumber, firstName, lastName.
  * Returns up to `maxResults` matches scoped to the school.
  *
- * Requires 3 composite indexes on `students`:
+ * Requires composite indexes on `students` for schoolId plus admissionNumber,
+ * studentId, firstName, and lastName:
  *   (schoolId ASC, admissionNumber ASC)
+ *   (schoolId ASC, studentId ASC)
  *   (schoolId ASC, firstName ASC)
  *   (schoolId ASC, lastName ASC)
- * If `level`/`cls` are also passed, add those fields to each index too.
+ * Optional level/class filters are applied to the returned school-scoped results.
  */
 export async function searchStudentsLive(schoolId, searchTerm, opts = {}) {
-    const { limit: maxResults = 15, level, cls } = opts;
+    const {
+        limit: maxResults = 15,
+        level,
+        cls,
+        admissionFirst = false,
+        matchType,
+    } = opts;
     const term = String(searchTerm || '').trim();
     if (!schoolId || term.length < 2) return [];
 
-    const normalizedUpper = term.toUpperCase();
-    const normalizedCap = term.charAt(0).toUpperCase() + term.slice(1);
+    const normalizedUpper = normalizeAdmissionNumber(term);
+    const admissionPrefixes = [...new Set([normalizedUpper, term.toUpperCase()])];
+    const namePrefixes = [...new Set([
+        term,
+        term.toLowerCase(),
+        term.toUpperCase(),
+        term.charAt(0).toUpperCase() + term.slice(1).toLowerCase(),
+    ])];
 
     const baseConstraints = [where('schoolId', '==', schoolId)];
-    if (level) baseConstraints.push(where('level', '==', level));
-    if (cls) baseConstraints.push(where('class', '==', cls));
 
+    const admissionFields = matchType === 'name' ? [] : ['admissionNumber', 'studentId'];
+    const nameFields = matchType === 'admission' ? [] : ['firstName', 'lastName'];
     const queries = [
-        // admissionNumber — uppercase range
-        query(
+        ...admissionPrefixes.flatMap((prefix) => admissionFields.map((field) => query(
             collection(db, 'students'),
             ...baseConstraints,
-            where('admissionNumber', '>=', normalizedUpper),
-            where('admissionNumber', '<=', normalizedUpper + '\uf8ff'),
+            where(field, '>=', prefix),
+            where(field, '<=', prefix + '\uf8ff'),
             limit(maxResults)
-        ),
-        // firstName — capitalized range
-        query(
+        ))),
+        ...namePrefixes.flatMap((prefix) => nameFields.map((field) => query(
             collection(db, 'students'),
             ...baseConstraints,
-            where('firstName', '>=', normalizedCap),
-            where('firstName', '<=', normalizedCap + '\uf8ff'),
+            where(field, '>=', prefix),
+            where(field, '<=', prefix + '\uf8ff'),
             limit(maxResults)
-        ),
-        // lastName — capitalized range
-        query(
-            collection(db, 'students'),
-            ...baseConstraints,
-            where('lastName', '>=', normalizedCap),
-            where('lastName', '<=', normalizedCap + '\uf8ff'),
-            limit(maxResults)
-        )
+        )))
     ];
 
     try {
+        let needsFallback = false;
         const snaps = await Promise.all(queries.map(q =>
             getDocs(q).catch(err => {
                 if (err.code === 'failed-precondition') {
-                    console.warn('searchStudentsLive: missing composite index. Create it in Firebase Console.', err.message);
+                    needsFallback = true;
                     return { docs: [] };
                 }
                 throw err;
@@ -1111,10 +1120,40 @@ export async function searchStudentsLive(schoolId, searchTerm, opts = {}) {
             }
         }
 
-        const results = [...byId.values()];
+        if (needsFallback) {
+            const fallback = await getDocs(query(
+                collection(db, 'students'),
+                where('schoolId', '==', schoolId)
+            ));
+            fallback.docs.forEach((d) => {
+                const student = { id: d.id, ...d.data() };
+                if ((!level || student.level === level) && (!cls || student.class === cls)) {
+                    const nameMatches = [student.firstName, student.lastName]
+                        .some((name) => String(name || '').toLowerCase().startsWith(term.toLowerCase()));
+                    const admission = normalizeAdmissionNumber(student.admissionNumber || student.studentId || '');
+                    const admissionMatches = admissionPrefixes.some((prefix) => admission.startsWith(prefix));
+                    if ((matchType !== 'name' && admissionMatches) || (matchType !== 'admission' && nameMatches)) {
+                        byId.set(d.id, student);
+                    }
+                }
+            });
+        }
+
+        const results = [...byId.values()].filter((student) => {
+            if ((level && student.level !== level) || (cls && student.class !== cls)) return false;
+            const matchesName = [student.firstName, student.lastName].some(
+                (name) => String(name || '').toLowerCase().startsWith(term.toLowerCase())
+            );
+            const admission = normalizeAdmissionNumber(student.admissionNumber || student.studentId || '');
+            const matchesAdmission = admissionPrefixes.some((prefix) => admission.startsWith(prefix));
+            return (matchType !== 'name' && matchesAdmission) || (matchType !== 'admission' && matchesName);
+        });
         results.sort((a, b) => {
-            const aAdm = (a.admissionNumber || a.studentId || '').toUpperCase();
-            const bAdm = (b.admissionNumber || b.studentId || '').toUpperCase();
+            const aAdm = normalizeAdmissionNumber(a.admissionNumber || a.studentId || '');
+            const bAdm = normalizeAdmissionNumber(b.admissionNumber || b.studentId || '');
+            const aAdmissionMatch = admissionPrefixes.some((prefix) => aAdm.startsWith(prefix));
+            const bAdmissionMatch = admissionPrefixes.some((prefix) => bAdm.startsWith(prefix));
+            if (admissionFirst && aAdmissionMatch !== bAdmissionMatch) return aAdmissionMatch ? -1 : 1;
             if (aAdm === normalizedUpper && bAdm !== normalizedUpper) return -1;
             if (bAdm === normalizedUpper && aAdm !== normalizedUpper) return 1;
             return (a.firstName || '').localeCompare(b.firstName || '');
@@ -1122,7 +1161,7 @@ export async function searchStudentsLive(schoolId, searchTerm, opts = {}) {
         return results.slice(0, maxResults);
     } catch (err) {
         console.error('searchStudentsLive failed:', err);
-        return [];
+        throw err;
     }
 }
 
@@ -1131,13 +1170,15 @@ export async function searchStudentsLive(schoolId, searchTerm, opts = {}) {
  */
 export async function getStudentByAdmission(schoolId, admissionNumber) {
     if (!schoolId || !admissionNumber) return null;
-    const normalized = String(admissionNumber).trim().toUpperCase();
-    for (const field of ['admissionNumber', 'studentId']) {
+    const normalized = normalizeAdmissionNumber(admissionNumber);
+    const candidates = [...new Set([normalized, String(admissionNumber).trim().toUpperCase()])];
+    for (const candidate of candidates) {
+      for (const field of ['admissionNumber', 'studentId']) {
         try {
             const q = query(
                 collection(db, 'students'),
                 where('schoolId', '==', schoolId),
-                where(field, '==', normalized),
+                where(field, '==', candidate),
                 limit(1)
             );
             const snap = await getDocs(q);
@@ -1145,6 +1186,7 @@ export async function getStudentByAdmission(schoolId, admissionNumber) {
         } catch (err) {
             console.warn(`getStudentByAdmission (${field}) failed:`, err.message);
         }
+      }
     }
     return null;
 }

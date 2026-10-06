@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-student-report.js
 //
 // Generates student PDFs in two modes:
@@ -1184,3 +1185,5 @@ async function buildPDF({
         doc.end();
     });
 }
+
+exports.handler = withCors(exports.handler);

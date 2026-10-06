@@ -13,6 +13,7 @@ import {
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 } from '../services/feeService';
 import { setMemory } from '../services/cache';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
 
 const FeeContext = createContext();
 export function useFee() {
@@ -559,9 +560,13 @@ export function FeeProvider({ children }) {
 
     const sendInvoiceReminder = useCallback(async (invoiceId) => {
         try {
-            const res = await fetch('/api/send-invoice-reminder', {
+            const token = await currentUser?.getIdToken();
+            const res = await fetchNetlifyFunction('send-invoice-reminder', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
                 body: JSON.stringify({ invoiceId, schoolId: userData?.schoolId })
             });
             const data = await res.json();
@@ -569,7 +574,7 @@ export function FeeProvider({ children }) {
         } catch (err) {
             return { success: false, error: err.message };
         }
-    }, [userData]);
+    }, [userData, currentUser]);
 
     const saveFeeStructureAction = useCallback(async (targetKey, year, structure, term = 'all') => {
         const schoolId = requireSchoolId(userData);

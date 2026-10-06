@@ -15,6 +15,7 @@ import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { LEVEL_SUBJECTS, LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/constants';
 
+import { showAppNotice } from '../utils/appNotice';
 // ---------------------------------------------------------------------------
 // Ordered list of school levels — mirrors SchoolProfile's order.
 // The school's `highestLevel` slices this list.
@@ -1071,19 +1072,8 @@ export default function Teachers() {
   };
 
   const showNotification = (message, type = 'info') => {
-    const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
-    const iconMap = { success: 'check-circle', error: 'exclamation-circle', warning: 'exclamation-triangle', info: 'info-circle' };
-
-    const el = document.createElement('div');
-    el.className = 'custom-notification';
-    el.style.backgroundColor = colors[type] || colors.info;
-    el.innerHTML = `<i class="fas fa-${iconMap[type] || 'info-circle'}"></i><span>${message}</span>`;
-    document.body.appendChild(el);
-    setTimeout(() => {
-      el.style.animation = 'slideOut 0.3s ease';
-      setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 300);
-    }, 5000);
-  };
+        showAppNotice(message, type);
+    };
 
   if (loading) {
     return <LoadingSpinner fullScreen text="Loading teachers..." />;

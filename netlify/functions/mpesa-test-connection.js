@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/mpesa-test-connection.js
 const axios = require('axios');
 
@@ -108,3 +109,5 @@ exports.handler = async (event) => {
         };
     }
 };
+
+exports.handler = withCors(exports.handler);

@@ -77,7 +77,6 @@ export default function Reports() {
     // ---------- notifications ----------
     const notify = useCallback((message, type = 'success') => {
         setFeedback({ message, type });
-        setTimeout(() => setFeedback({ message: '', type: '' }), 4000);
     }, []);
 
     // ---------- data loading ----------
@@ -414,12 +413,13 @@ export default function Reports() {
 
                 {/* Feedback */}
                 {feedback.message && (
-                    <div className={`rp-feedback rp-feedback-${feedback.type}`}>
+                    <div className={`rp-feedback rp-feedback-${feedback.type}`} role={feedback.type === 'error' ? 'alert' : 'status'}>
                         <i className={`fas ${
                             feedback.type === 'error' ? 'fa-circle-exclamation' :
                             feedback.type === 'warning' ? 'fa-triangle-exclamation' : 'fa-circle-check'
                         }`}></i>
                         <span>{feedback.message}</span>
+                        <button type="button" aria-label="Dismiss message" onClick={() => setFeedback({ message: '', type: '' })}>×</button>
                     </div>
                 )}
 

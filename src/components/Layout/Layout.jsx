@@ -5,8 +5,11 @@ import Sidebar from './Sidebar';
 import SyncStatus from '../Common/SyncStatus';
 import EduprivaChatbot from '../Common/EduprivaChatbot';
 import { useAuth } from '../../context/AuthContext';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useNotifications } from '../../context/NotificationContext';
+import { signOut } from 'firebase/auth';
+import { auth } from '../../firebase';
+import { fetchNetlifyFunction } from '../../services/netlifyApi';
 import './Layout.css';
 
 export default function Layout({ children, title = 'Dashboard Overview' }) {
@@ -15,8 +18,74 @@ export default function Layout({ children, title = 'Dashboard Overview' }) {
     const [chatbotVisible, setChatbotVisible] = useState(true);
     const { currentUser, userData } = useAuth();
     const location = useLocation();
+    const navigate = useNavigate();
     const { notifications, unreadCount, markAsRead, markAllAsRead, formatTimeAgo } = useNotifications();
     const notificationRef = useRef(null);
+    const [deletionRequests, setDeletionRequests] = useState([]);
+    const [approvingDeletion, setApprovingDeletion] = useState(false);
+
+    useEffect(() => {
+        if (!currentUser || !userData?.schoolId) {
+            setDeletionRequests([]);
+            return undefined;
+        }
+        let active = true;
+        const checkRequests = async () => {
+            if (!navigator.onLine) return;
+            try {
+                const token = await currentUser.getIdToken();
+                const response = await fetchNetlifyFunction('manage-school-admins', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({ action: 'list-approval-requests' }),
+                });
+                const result = await response.json();
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || 'Unable to check deletion requests.');
+                }
+                if (active) setDeletionRequests(result.requests || []);
+            } catch (error) {
+                console.error('Administrator deletion approval check failed:', error);
+            }
+        };
+        checkRequests();
+        const intervalId = window.setInterval(checkRequests, 30000);
+        window.addEventListener('online', checkRequests);
+        return () => {
+            active = false;
+            window.clearInterval(intervalId);
+            window.removeEventListener('online', checkRequests);
+        };
+    }, [currentUser, userData?.schoolId]);
+
+    const approveDeletion = async (requestId) => {
+        setApprovingDeletion(true);
+        try {
+            const token = await currentUser.getIdToken();
+            const response = await fetchNetlifyFunction('manage-school-admins', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ action: 'approve-deletion', requestId }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'Deletion approval failed.');
+            }
+            await signOut(auth);
+            navigate('/login', { replace: true });
+        } catch (error) {
+            console.error('Administrator deletion approval failed:', error);
+            window.alert(`Could not approve account deletion: ${error.message}`);
+        } finally {
+            setApprovingDeletion(false);
+        }
+    };
 
     // Close notification dropdown when clicking outside
     useEffect(() => {
@@ -251,6 +320,41 @@ export default function Layout({ children, title = 'Dashboard Overview' }) {
                         </div>
                     </div>
                 </div>
+
+                {deletionRequests.length > 0 && (
+                    <section
+                        role="alert"
+                        aria-live="assertive"
+                        style={{
+                            margin: '12px 20px 0',
+                            padding: 16,
+                            border: '1px solid #f0ad4e',
+                            borderRadius: 10,
+                            background: '#fff8e6',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 14,
+                            flexWrap: 'wrap',
+                        }}
+                    >
+                        <div>
+                            <strong>Administrator deletion approval required</strong>
+                            <div style={{ marginTop: 4 }}>
+                                {deletionRequests[0].requestedByName || 'A school administrator'} requested deletion
+                                of your account. Approval permanently removes your sign-in credentials.
+                            </div>
+                        </div>
+                        <button
+                            className="btn btn-danger"
+                            type="button"
+                            disabled={approvingDeletion}
+                            onClick={() => approveDeletion(deletionRequests[0].id)}
+                        >
+                            {approvingDeletion ? 'Processing…' : 'Approve Account Deletion'}
+                        </button>
+                    </section>
+                )}
 
                 {/* CONTENT AREA */}
                 <main className="content-area">

@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/chatbot-cache-invalidate.js
 //
 // Small endpoint the client can call after a write to clear
@@ -38,3 +39,5 @@ exports.handler = async (event) => {
         return errorResponse(err);
     }
 };
+
+exports.handler = withCors(exports.handler);

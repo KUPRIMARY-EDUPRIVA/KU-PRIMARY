@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-report.js
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
@@ -443,3 +444,5 @@ function generateStudentPDF(student, scores, meta) {
         });
     });
 }
+
+exports.handler = withCors(exports.handler);

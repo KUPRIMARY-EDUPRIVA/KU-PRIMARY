@@ -130,6 +130,12 @@
 #   FIREBASE_CLIENT_EMAIL
 #   FIREBASE_PRIVATE_KEY       (with literal \n newlines)
 #
+# SMS delivery functions also use these Netlify environment variables:
+#
+#   AT_USERNAME
+#   AT_API_KEY
+#   AT_SENDER_ID                (optional approved sender ID)
+#
 # And for the callback auth (once you enable it):
 #
 #   MPESA_ALLOWED_IPS

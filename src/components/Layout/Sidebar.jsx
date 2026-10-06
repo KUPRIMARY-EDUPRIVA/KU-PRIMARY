@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useBadges } from '../../context/BadgeContext';
+import { normalizeRole } from '../../utils/roles';
 import { db } from '../../firebase';
 import {
     doc,
@@ -316,18 +317,15 @@ export default function Sidebar({ isOpen, onClose }) {
     // --------------------------------------------------
 
     const getNavGroups = () => {
-        const role =
-            userRole ||
-            (userData && userData.role) ||
-            'user';
+        const role = normalizeRole(userRole || userData?.role || 'user');
 
-        const isAdmin =
-            role === 'admin' ||
-            role === 'user' ||
-            role === 'school_admin';
+        const isAdmin = ['admin', 'user', 'school-admin', 'principal', 'headteacher'].includes(role);
+        const isHeadteacher = role === 'headteacher';
+        const isDeputyHeadteacher = role === 'deputy-headteacher';
+        const isAccountant = role === 'accountant';
 
-        const isTeacher =
-            role === 'teacher';
+        const isTeacher = role === 'teacher';
+        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
 
         const isStudent =
             role === 'student';
@@ -380,18 +378,24 @@ export default function Sidebar({ isOpen, onClose }) {
                 show: isAdmin
             },
             {
+                path: '/discipline',
+                icon: 'fa-scale-balanced',
+                label: 'Discipline',
+                show: isHeadteacher
+            },
+            {
                 path: '/fees',
                 icon: 'fa-coins',
                 label: 'Fee Management',
                 badge: feeBadge,
                 badgeClass: 'danger',
-                show: isAdmin
+                show: isAdmin || isAccountant
             },
             {
                 path: '/communications',
                 icon: 'fa-comment-sms',
                 label: 'Communications',
-                show: isAdmin
+                show: isHeadteacher
             },
             {
                 path: '/reports',
@@ -434,31 +438,43 @@ export default function Sidebar({ isOpen, onClose }) {
                 path: '/mydashboard',
                 icon: 'fa-chalkboard-teacher',
                 label: 'Dashboard',
-                show: isTeacher
+                show: isTeacherOrDeputy
             },
             {
                 path: '/my-students',
                 icon: 'fa-user-graduate',
                 label: 'My Students',
-                show: isTeacher
+                show: isTeacherOrDeputy
             },
             {
                 path: '/results',
                 icon: 'fa-chart-line',
                 label: 'Results',
-                show: isTeacher
+                show: isTeacherOrDeputy
             },
             {
                 path: '/attendance',
                 icon: 'fa-clipboard-check',
                 label: 'Attendance',
-                show: isTeacher
+                show: isTeacherOrDeputy
             },
             {
                 path: '/myreports',
                 icon: 'fa-file-alt',
                 label: 'My Reports',
-                show: isTeacher
+                show: isTeacherOrDeputy
+            },
+            {
+                path: '/studentreports',
+                icon: 'fa-file-alt',
+                label: 'Student Reports',
+                show: isDeputyHeadteacher
+            },
+            {
+                path: '/discipline',
+                icon: 'fa-scale-balanced',
+                label: 'Discipline',
+                show: isDeputyHeadteacher
             }
         ];
 
@@ -496,13 +512,13 @@ export default function Sidebar({ isOpen, onClose }) {
                 path: '/timetable',
                 icon: 'fa-calendar-alt',
                 label: 'Timetable',
-                show: true
+                show: !isAccountant
             },
             {
                 path: '/settings',
                 icon: 'fa-user-cog',
                 label: 'My Profile',
-                show: true
+                show: !isAccountant
             }
         ];
 

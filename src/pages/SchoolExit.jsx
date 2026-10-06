@@ -10,6 +10,7 @@ import { collection,
   where,doc, getDoc,getDocs, onSnapshot } from 'firebase/firestore';
 import { activeDb } from '../firebase';
 
+import { showAppNotice } from '../utils/appNotice';
 export default function SchoolExit() {
   const { currentUser, userData } = useAuth();
   const navigate = useNavigate();
@@ -110,26 +111,8 @@ export default function SchoolExit() {
   };
 
   const showNotification = (message, type = 'info') => {
-    const colors = {
-      success: '#27ae60',
-      error: '#e74c3c',
-      warning: '#f39c12',
-      info: '#3498db'
+        showAppNotice(message, type);
     };
-    
-    const notificationEl = document.createElement('div');
-    notificationEl.className = 'custom-notification';
-    notificationEl.style.backgroundColor = colors[type] || colors.info;
-    notificationEl.innerHTML = `<span>${message}</span>`;
-    document.body.appendChild(notificationEl);
-    
-    setTimeout(() => {
-      notificationEl.style.animation = 'slideOut 0.3s ease';
-      setTimeout(() => {
-        if (notificationEl.parentNode) notificationEl.parentNode.removeChild(notificationEl);
-      }, 300);
-    }, 4000);
-  };
 
   if (loading) {
     return <LoadingSpinner fullScreen text="Checking exit status..." />;

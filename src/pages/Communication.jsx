@@ -14,7 +14,9 @@ import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { AuditLogService } from '../services/auditService';
 import { LEVEL_DISPLAY_NAMES } from '../utils/constants';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
 
+import { showAppNotice } from '../utils/appNotice';
 // ============================================================
 // Constants
 // ============================================================
@@ -189,7 +191,7 @@ export default function Communication() {
     // ============================================================
     // Role
     // ============================================================
-    const isAdmin = userRole === 'admin' || userRole === 'user' || userRole === 'school_admin' || userRole === 'super-admin';
+    const isAdmin = userRole === 'admin' || userRole === 'user' || userRole === 'school_admin' || userRole === 'super-admin' || userRole === 'headteacher';
     const isSuperAdmin = userRole === 'super-admin';
 
     // ============================================================
@@ -306,7 +308,7 @@ export default function Communication() {
     // ---------- Modem status check (desktop only) ----------
     const checkModemStatus = async () => {
         try {
-            const res = await fetch('/api/send-sms-modem', {
+            const res = await fetchNetlifyFunction('send-sms-modem', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'status' })
@@ -463,7 +465,7 @@ export default function Communication() {
      * Returns { sent, failed, results }.
      */
     const sendBatchViaModem = async (numbers, message, subject) => {
-        const res = await fetch('/api/send-sms-modem', {
+        const res = await fetchNetlifyFunction('send-sms-modem', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -487,8 +489,8 @@ export default function Communication() {
      * (the previous mobile-first behaviour).
      */
     const sendBatchViaGateway = async (numbers, message, subject) => {
-        const endpoint = gatewayForm.apiUrl || '/.netlify/functions/send-sms';
-        const res = await fetch(endpoint, {
+        const endpoint = gatewayForm.apiUrl;
+        const options = {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -503,7 +505,13 @@ export default function Communication() {
                 sender: gatewayForm.defaultSender,
                 priority: 'normal'
             })
-        });
+        };
+        if (!endpoint && currentUser) {
+            options.headers.Authorization = `Bearer ${await currentUser.getIdToken()}`;
+        }
+        const res = endpoint
+            ? await fetch(endpoint, options)
+            : await fetchNetlifyFunction('send-sms', options);
         const result = await res.json().catch(() => ({ success: false }));
         return result;
     };
@@ -820,17 +828,7 @@ export default function Communication() {
     // Notification
     // ============================================================
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
-        const icons = { success: 'check-circle', error: 'exclamation-circle', warning: 'exclamation-triangle', info: 'info-circle' };
-        const el = document.createElement('div');
-        el.className = 'custom-notification';
-        el.style.backgroundColor = colors[type] || colors.info;
-        el.innerHTML = `<i class="fas fa-${icons[type] || 'info-circle'}"></i><span>${message}</span>`;
-        document.body.appendChild(el);
-        setTimeout(() => {
-            el.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => el.parentNode && el.parentNode.removeChild(el), 300);
-        }, 4000);
+        showAppNotice(message, type);
     }, []);
 
     // ============================================================

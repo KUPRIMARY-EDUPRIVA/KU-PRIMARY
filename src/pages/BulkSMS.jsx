@@ -6,6 +6,7 @@ import Layout from '../components/Layout/Layout';
 import SMSAnalytics from '../components/Communication/SMSAnalytics';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
+import { showAppNotice } from '../utils/appNotice';
 export default function BulkSMS() {
     const { currentUser, userData } = useAuth();
 
@@ -22,7 +23,6 @@ export default function BulkSMS() {
     const [simSlot, setSimSlot] = useState('SIM 1');
     const [sending, setSending] = useState(false);
     const [activeTab, setActiveTab] = useState('compose');
-    const [messageNotification, setMessageNotification] = useState({ text: '', type: '' });
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     
     // Template Management State
@@ -121,8 +121,7 @@ export default function BulkSMS() {
     };
     
     const showNotification = (text, type = 'info') => {
-        setMessageNotification({ text, type });
-        setTimeout(() => setMessageNotification({ text: '', type: '' }), 4000);
+        showAppNotice(text, type);
     };
 
     // Computed filtered students
@@ -319,12 +318,6 @@ export default function BulkSMS() {
                 </div>
             </div>
             
-            {messageNotification.text && (
-                <div className={`alert alert-${messageNotification.type}`} style={{ marginBottom: '20px', padding: '15px', borderRadius: '8px', background: messageNotification.type === 'error' ? '#ffebee' : '#e8f5e9', color: messageNotification.type === 'error' ? '#c62828' : '#2e7d32' }}>
-                    {messageNotification.text}
-                </div>
-            )}
-
             <div className="grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: '24px' }}>
                 
                 {/* Compose Section */}

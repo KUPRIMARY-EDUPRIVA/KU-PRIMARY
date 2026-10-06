@@ -22,6 +22,7 @@ import {
 } from '../utils/constants';
 import { downloadFeeReportPDF } from '../services/pdf';
 
+import { showAppNotice } from '../utils/appNotice';
 export default function FeesReports() {
     const navigate = useNavigate();
     const { currentUser, userData } = useAuth();
@@ -598,7 +599,7 @@ export default function FeesReports() {
                     status: item.status || 'Active'
                 }))
             }, userData);
-            showNotification(`PDF saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+            showNotification(`PDF saved${result?.location ? ` to ${result.location}` : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (error) {
             console.error('Fee report PDF export failed:', error);
             showNotification(`PDF export failed: ${error.message || 'Unable to save the report.'}`, 'error');
@@ -608,36 +609,7 @@ export default function FeesReports() {
     };
 
     const showNotification = (message, type = 'info') => {
-        const colors = {
-            success: '#27ae60',
-            error: '#e74c3c',
-            warning: '#f39c12',
-            info: '#3498db'
-        };
-        const iconMap = {
-            success: 'check-circle',
-            error: 'exclamation-circle',
-            warning: 'exclamation-triangle',
-            info: 'info-circle'
-        };
-
-        const notificationEl = document.createElement('div');
-        notificationEl.className = 'custom-notification';
-        notificationEl.style.backgroundColor = colors[type] || colors.info;
-        notificationEl.innerHTML = `
-            <i class="fas fa-${iconMap[type] || 'info-circle'}"></i>
-            <span>${message}</span>
-        `;
-        document.body.appendChild(notificationEl);
-
-        setTimeout(() => {
-            notificationEl.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => {
-                if (notificationEl.parentNode) {
-                    notificationEl.parentNode.removeChild(notificationEl);
-                }
-            }, 300);
-        }, 4000);
+        showAppNotice(message, type);
     };
 
     if (loading) {

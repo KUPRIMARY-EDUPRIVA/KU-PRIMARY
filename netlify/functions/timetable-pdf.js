@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/timetable-pdf.js
 // A4 landscape timetable renderer (PDFKit).
 // Supports: class | teacher | master | duty.
@@ -1025,3 +1026,5 @@ async function handle(event) {
     isBase64Encoded: true,
   };
 }
+
+exports.handler = withCors(exports.handler);

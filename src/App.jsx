@@ -7,6 +7,7 @@ import { SchoolProvider } from './context/SchoolContext';
 import { BadgeProvider } from './context/BadgeContext';
 import { NotificationProvider } from './context/NotificationContext';
 import { FeeProvider } from './context/FeeContext';
+import { normalizeRole } from './utils/roles';
 import LoadingSpinner from './components/Common/LoadingSpinner';
 import ErrorBoundary from './components/Common/ErrorBoundary';
 
@@ -54,6 +55,7 @@ const Exit = lazyWithRetry(() => import('./pages/SchoolExit'));
 const AuditLogs = lazyWithRetry(() => import('./pages/AuditLogs'));
 const Transcripts = lazyWithRetry(() => import('./pages/Transcripts'));
 const Attendance = lazyWithRetry(() => import('./pages/Attendance'));
+const Discipline = lazyWithRetry(() => import('./pages/Discipline'));
 
 
 // Teacher pages
@@ -79,7 +81,7 @@ const PlatformSettings = lazyWithRetry(() => import('./pages/PlatformAdmin/Setti
  * Must be used inside AuthProvider.
  */
 function AuthWrapper({ children, allowedRoles }) {
-    const { currentUser, userRole, loading } = useAuth();
+    const { currentUser, userRole, loading, sessionLocked } = useAuth();
 
     if (loading) {
         return <LoadingSpinner fullScreen text="Authenticating..." />;
@@ -89,22 +91,27 @@ function AuthWrapper({ children, allowedRoles }) {
         return <Navigate to="/login" replace />;
     }
 
+    if (sessionLocked) {
+        return <Navigate to="/login" replace />;
+    }
+
     if (allowedRoles && allowedRoles.length > 0) {
         if (!userRole) {
             return <LoadingSpinner fullScreen text="Loading user role..." />;
         }
 
-        if (!allowedRoles.includes(userRole)) {
-            if (userRole === 'admin' || userRole === 'user' || userRole === 'school_admin') {
+        const role = normalizeRole(userRole);
+        if (!allowedRoles.map(normalizeRole).includes(role)) {
+            if (['admin', 'user', 'school-admin', 'principal', 'headteacher'].includes(role)) {
                 return <Navigate to="/dashboard" replace />;
             }
-            if (userRole === 'teacher') {
+            if (role === 'teacher' || role === 'deputy-headteacher') {
                 return <Navigate to="/mydashboard" replace />;
             }
-            if (userRole === 'student') {
+            if (role === 'student') {
                 return <Navigate to="/student-dashboard" replace />;
             }
-            if (userRole === 'super-admin') {
+            if (role === 'super-admin') {
                 return <Navigate to="/platformtower" replace />;
             }
             return <Navigate to="/login" replace />;
@@ -134,7 +141,7 @@ function AppRoutes() {
                 <Route path="/students" element={<AuthWrapper><Students /></AuthWrapper>} />
                 <Route path="/student-analytics" element={<AuthWrapper><StudentAnalytics /></AuthWrapper>} />
                 <Route path="/communications" element={
-                    <AuthWrapper allowedRoles={['admin', 'user', 'school_admin']}><Communications /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['headteacher']}><Communications /></AuthWrapper>
                 } />
                 <Route path="/sms" element={<Navigate to="/communications" replace />} />
                 <Route path="/teachers" element={<AuthWrapper><Teachers /></AuthWrapper>} />
@@ -156,20 +163,23 @@ function AppRoutes() {
 
                 {/* Teacher routes */}
                 <Route path="/mydashboard" element={
-                    <AuthWrapper allowedRoles={['teacher']}><TeacherDashboard /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><TeacherDashboard /></AuthWrapper>
                 } />
                 <Route path="/my-students" element={
-                    <AuthWrapper allowedRoles={['teacher']}><MyStudents /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><MyStudents /></AuthWrapper>
                 } />
                 <Route path="/my-results" element={
-                    <AuthWrapper allowedRoles={['teacher']}><MyResults /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><MyResults /></AuthWrapper>
                 } />
                 <Route path="/myreports" element={
-                    <AuthWrapper allowedRoles={['teacher']}><MyReports /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><MyReports /></AuthWrapper>
                 } />
                <Route path="/attendance" element={
-                    <AuthWrapper allowedRoles={['teacher']}><Attendance /></AuthWrapper>
+                   <AuthWrapper allowedRoles={['admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher', 'teacher']}><Attendance /></AuthWrapper>
                 } />
+               <Route path="/discipline" element={
+                   <AuthWrapper allowedRoles={['headteacher', 'deputy-headteacher']}><Discipline /></AuthWrapper>
+               } />
 
                 {/* Student routes */}
                 <Route path="/student-dashboard" element={

@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-teacher-reports.js
 //
 // Generates teacher assessment PDFs in two modes:
@@ -712,3 +713,5 @@ function generateAllRecordsPDF(records, meta, teacher, logoBuffer) {
         doc.end();
     });
 }
+
+exports.handler = withCors(exports.handler);

@@ -1,15 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 
-export default function Notification({ message, type = 'info', duration = 4000 }) {
+export default function Notification({ message, type = 'info' }) {
     const [visible, setVisible] = useState(true);
-
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            setVisible(false);
-        }, duration);
-
-        return () => clearTimeout(timer);
-    }, [duration]);
 
     if (!visible) return null;
 
@@ -45,9 +37,17 @@ export default function Notification({ message, type = 'info', duration = 4000 }
     };
 
     return (
-        <div style={style}>
+        <div style={style} role={type === 'error' ? 'alert' : 'status'}>
             <i className={`fas ${icons[type] || icons.info}`}></i>
             <span>{message}</span>
+            <button
+                type="button"
+                aria-label="Dismiss notification"
+                onClick={() => setVisible(false)}
+                style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'white', fontSize: 20, cursor: 'pointer' }}
+            >
+                ×
+            </button>
         </div>
     );
 }

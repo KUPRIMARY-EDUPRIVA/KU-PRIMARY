@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/attendance-summary.js
 const admin = require('firebase-admin');
 
@@ -67,3 +68,5 @@ exports.handler = async (event) => {
         return { statusCode: 500, body: `Error: ${e.message}` };
     }
 };
+
+exports.handler = withCors(exports.handler);

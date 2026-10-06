@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { useSchool } from '../context/SchoolContext';
+import { normalizeRole } from '../utils/roles';
 import {
     getStudents, getScores, saveScoresBatch, publishScoresBatch,
     saveAssessmentConfig, requireSchoolId, findStudentByAdmission,
@@ -12,27 +13,31 @@ import {
 import { idbGet, idbSet } from '../services/cache';
 import { downloadStudentReportCardPDF, downloadStudentReportPDF, downloadRankingPDF } from '../services/pdf';
 import { db } from '../firebase';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
+import { normalizeAdmissionNumber } from '../services/admissionNumberService';
 import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
 import { collection, query, where, getDocs, doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
+import { showAppNotice } from '../utils/appNotice';
 import ResultsTable from '../components/Results/ResultsTable';
 import ReportModal from '../components/Results/ReportsModal';
 import RankingModal from '../components/Results/RankingModal';
 import ScoreHistoryModal from '../components/Results/ScoreHistoryModal';
 import PaperConfigModal from '../components/Results/PaperConfigModal';
 import {
-    LEVEL_CLASSES, LEVEL_DISPLAY_NAMES, LEVEL_SUBJECTS, getCBCGrade, ASSESSMENT_TYPES,
+    LEVEL_CLASSES, LEVEL_DISPLAY_NAMES, LEVEL_ORDER, LEVEL_SUBJECTS, getCBCGrade, ASSESSMENT_TYPES,
     computeScorePercentage
 } from '../utils/constants';
 
 const MAX_IMPORT_SIZE = 5 * 1024 * 1024;
+const EMPTY_LEVELS = [];
 
 async function invalidatePerformanceCache({ currentUser, schoolId }) {
     try {
         if (!currentUser || !schoolId) return;
         const token = await currentUser.getIdToken();
-        await fetch('/api/chatbot-cache-invalidate', {
+        await fetchNetlifyFunction('chatbot-cache-invalidate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ prefixes: [`perf:${schoolId}:`] })
@@ -49,6 +54,8 @@ export default function Results() {
         configs: assessmentConfigs,
         isDeadlinePassed: checkSchoolDeadline,
         getLevelClasses,
+        schoolData: schoolProfileData,
+        loaded: schoolProfileLoaded,
         refresh: refreshConfigs
     } = useSchool();
 
@@ -66,7 +73,6 @@ export default function Results() {
     const [studentScores, setStudentScores] = useState({});
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [usingCachedData, setUsingCachedData] = useState(false);
 
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
@@ -89,12 +95,6 @@ export default function Results() {
 
     const [isAdmin, setIsAdmin] = useState(false);
     const [levelPermissions, setLevelPermissions] = useState({});
-    const [showRoleAlert, setShowRoleAlert] = useState(true);
-
-    useEffect(() => {
-        const timer = setTimeout(() => setShowRoleAlert(false), 10000);
-        return () => clearTimeout(timer);
-    }, []);
 
     useEffect(() => {
         async function fetchLevelPermissions() {
@@ -152,18 +152,13 @@ export default function Results() {
     const [reportStudent, setReportStudent] = useState(null);
 
     const showNotification = useCallback((message, type = 'info') => {
-        const colors = { success: '#27ae60', error: '#e74c3c', warning: '#f39c12', info: '#3498db' };
-        const n = document.createElement('div');
-        n.style.cssText = `position:fixed;top:20px;right:20px;background:${colors[type] || colors.info};color:#fff;padding:14px 18px;border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,.2);z-index:10000;max-width:400px;font-size:14px;`;
-        n.textContent = message;
-        document.body.appendChild(n);
-        setTimeout(() => n.remove(), 3500);
+        showAppNotice(message, type);
     }, []);
 
     useEffect(() => {
-        const role = userRole || userData?.role || 'teacher';
-        setIsAdmin(role === 'admin' || role === 'school_admin' || role === 'super-admin');
-        if (role === 'teacher' && currentUser?.uid) loadTeacherAccess();
+        const role = normalizeRole(userRole || userData?.role || 'teacher');
+        setIsAdmin(['admin', 'user', 'school-admin', 'principal', 'super-admin', 'headteacher'].includes(role));
+        if (['teacher', 'deputy-headteacher'].includes(role) && currentUser?.uid) loadTeacherAccess();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userData, userRole, currentUser]);
 
@@ -239,13 +234,38 @@ export default function Results() {
         [isAdmin, teacherAccess]
     );
 
+    const schoolLevelAliases = {
+        'lower-secondary': 'junior-school',
+        'upper-secondary': 'senior-school',
+        senior: 'senior-school',
+    };
+    const configuredHighestLevel = schoolProfileData?.highestLevel
+        || userData?.highestLevel
+        || userData?.school?.highestLevel;
+    const highestSchoolLevel = schoolLevelAliases[configuredHighestLevel]
+        || configuredHighestLevel;
+    const schoolLevelIndex = LEVEL_ORDER.indexOf(highestSchoolLevel);
+    const schoolLevels = schoolLevelIndex < 0
+        ? (schoolProfileLoaded ? LEVEL_ORDER : EMPTY_LEVELS)
+        : LEVEL_ORDER.slice(0, schoolLevelIndex + 1);
+
     const availableLevels = useMemo(() => (
         isAdmin
-            ? ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school']
+            ? schoolLevels
             : (teacherAccess.levels && teacherAccess.levels.length
-                ? teacherAccess.levels
-                : [teacherAccess.level].filter(Boolean))
-    ), [isAdmin, teacherAccess]);
+                ? teacherAccess.levels.filter((level) => schoolLevels.includes(level))
+                : [teacherAccess.level].filter((level) => schoolLevels.includes(level)))
+    ), [isAdmin, teacherAccess, schoolLevels]);
+
+    useEffect(() => {
+        if (selectedLevel && !availableLevels.includes(selectedLevel)) {
+            setSelectedLevel('');
+            setSelectedClass('');
+            setSelectedSubject('');
+            setStudents([]);
+            setStudentScores({});
+        }
+    }, [availableLevels, selectedLevel]);
 
     const availableClasses = useMemo(() => {
         const levelClasses = getLevelClasses ? getLevelClasses(selectedLevel) : (LEVEL_CLASSES[selectedLevel] || []);
@@ -330,7 +350,7 @@ export default function Results() {
         try {
             const cacheKey = `students_${schoolId}_${selectedLevel}_${selectedClass}`;
             const cached = await idbGet(cacheKey);
-            if (cached && cached.length) { setStudents(cached); setUsingCachedData(true); }
+            if (cached && cached.length) { setStudents(cached); }
 
             const [studentsData, scoresMap] = await Promise.all([
                 getStudents(schoolId, selectedLevel, selectedClass),
@@ -358,7 +378,6 @@ export default function Results() {
 
             setStudents(enriched);
             setStudentScores(scoresMap);
-            setUsingCachedData(false);
             await idbSet(cacheKey, enriched);
             showNotification(`Loaded ${enriched.length} students`, 'success');
         } catch (err) {
@@ -756,7 +775,7 @@ export default function Results() {
 
         const byAdmission = new Map();
         classStudents.forEach(s => {
-            const key = (s.admissionNumber || s.studentId || '').toUpperCase();
+            const key = normalizeAdmissionNumber(s.admissionNumber || s.studentId || '');
             if (key) byAdmission.set(key, s);
         });
 
@@ -765,7 +784,7 @@ export default function Results() {
 
         for (let i = 1; i < lines.length; i++) {
             const cols = lines[i].split(',').map(c => c.trim());
-            const admNo = iAdm !== -1 ? (cols[iAdm] || '').toUpperCase() : '';
+            const admNo = iAdm !== -1 ? normalizeAdmissionNumber(cols[iAdm]) : '';
             const score = parseInt(cols[iScore], 10);
             const maxScore = iMax !== -1 ? parseInt(cols[iMax], 10) : 100;
             if (isNaN(score) || score < 0) { errors++; continue; }
@@ -831,23 +850,6 @@ export default function Results() {
 
     return (
         <Layout title="Results (CBC)">
-            {showRoleAlert && (
-                <div style={{
-                    background: isAdmin ? '#d4edda' : '#d1ecf1',
-                    color: isAdmin ? '#155724' : '#0c5460',
-                    padding: '8px 16px', borderRadius: '8px', marginBottom: '20px',
-                    display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px',
-                    border: `1px solid ${isAdmin ? '#c3e6cb' : '#bee5eb'}`
-                }}>
-                    <i className={`fas ${isAdmin ? 'fa-user-shield' : 'fa-user-tag'}`}></i>
-                    <span>
-                        {isAdmin
-                            ? 'Admin Access - Full control over all classes and subjects'
-                            : `Teacher Access - You can only view and manage ${teacherAccess.classes.join(', ') || 'no assigned'} classes and ${teacherAccess.subjects.join(', ') || 'no assigned'} subjects`}
-                    </span>
-                </div>
-            )}
-
             {!isLevelOpen && (
                 <div style={{
                     background: '#f8d7da', color: '#721c24', padding: '10px 20px',
@@ -856,17 +858,6 @@ export default function Results() {
                 }}>
                     <i className="fas fa-lock"></i>
                     <span><strong>Level Closed for Entry!</strong> Result entry is currently closed for this level. Scores are read-only.</span>
-                </div>
-            )}
-
-            {usingCachedData && isOnline && (
-                <div style={{
-                    background: '#d1ecf1', color: '#0c5460', padding: '8px 16px',
-                    borderRadius: '8px', marginBottom: '20px', display: 'flex',
-                    alignItems: 'center', gap: '10px', fontSize: '13px', border: '1px solid #bee5eb'
-                }}>
-                    <i className="fas fa-database"></i>
-                    <span>Showing cached data. Syncing in background...</span>
                 </div>
             )}
 
@@ -995,7 +986,7 @@ export default function Results() {
                         </select>
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-                        {['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school'].map(lvl => {
+                        {schoolLevels.map(lvl => {
                             const isOpen = levelPermissions[lvl]?.[controlAssessmentType] !== false;
                             return (
                                 <div key={lvl} style={{

@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/chatbot-school-info.js
 //
 // Returns structured school facts for the chatbot.
@@ -278,3 +279,5 @@ function describeCurriculum(c) {
     };
     return map[c] || 'national';
 }
+
+exports.handler = withCors(exports.handler);

@@ -11,7 +11,7 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firest
 import { useSync } from '../../context/SyncContext';
 import {
     authenticateWithBiometrics, getBiometricLoginStatus, isDeviceBiometricAvailable,
-    saveBiometricCredentials
+    enableBiometricUnlock
 } from '../../services/deviceSecurity';
 
 // ---- Cloudinary config (from env) ----
@@ -45,7 +45,7 @@ async function uploadToCloudinary(file) {
 
 export default function Login() {
     const navigate = useNavigate();
-    const { login } = useAuth();
+    const { currentUser, userRole, userCollection, unlockSession } = useAuth();
     const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
 
     const auth = getAuth();
@@ -72,7 +72,6 @@ export default function Login() {
     const [verificationTimer, setVerificationTimer] = useState(30);
     const [showRegister, setShowRegister] = useState(false);
     const [biometricReady, setBiometricReady] = useState(false);
-    const [biometricAvailable, setBiometricAvailable] = useState(false);
 
     // ---- Upload state (File objects + previews) ----
     const [logoFile, setLogoFile] = useState(null);
@@ -95,10 +94,9 @@ export default function Login() {
     useEffect(() => {
         let active = true;
         getBiometricLoginStatus()
-            .then(({ available, enabled }) => {
+            .then(({ enabled }) => {
                 if (!active) return;
-                setBiometricAvailable(available);
-                setBiometricReady(available && enabled);
+                setBiometricReady(enabled);
             })
             .catch((error) => {
                 console.warn('Could not check biometric login status:', error.message);
@@ -191,9 +189,6 @@ export default function Login() {
     // ---- Message helpers ----
     const showMessage = (text, type = 'info') => {
         setMessage({ text, type });
-        if (type === 'success' && !text.includes('Redirecting')) {
-            setTimeout(() => setMessage({ text: '', type: '' }), 5000);
-        }
     };
     const clearMessages = () => setMessage({ text: '', type: '' });
 
@@ -361,14 +356,16 @@ export default function Login() {
     };
 
     // ---- Login ----
-    const setupBiometricLogin = async (email, password) => {
-        if (!biometricAvailable || biometricReady || !isDeviceBiometricAvailable()) return;
-        if (!window.confirm('Would you like to enable fingerprint or biometric login on this device? Your sign-in details will be encrypted and stored securely on this device.')) return;
+    const setupBiometricLogin = async () => {
+        if (biometricReady || !isDeviceBiometricAvailable()) return;
+        const status = await getBiometricLoginStatus();
+        if (!status.available || status.enabled) return;
+        if (!window.confirm('Enable biometric protection for offline access on this device? Your password will not be stored.')) return;
         try {
             await authenticateWithBiometrics();
-            await saveBiometricCredentials(email, password);
+            await enableBiometricUnlock();
             setBiometricReady(true);
-            showMessage('Biometric login enabled for this device.', 'success');
+            showMessage('Biometric offline access enabled. Your password is not stored on this device.', 'success');
         } catch (error) {
             console.warn('Biometric login was not enabled:', error.message);
             showMessage('Biometric login was not enabled. You can continue with your password.', 'warning');
@@ -378,11 +375,17 @@ export default function Login() {
     const handleBiometricLogin = async () => {
         setLoading(true);
         try {
-            const credentials = await authenticateWithBiometrics();
-            if (!credentials.email || !credentials.password) {
-                throw new Error('Biometric sign-in has not been set up on this device.');
+            if (!currentUser) {
+                throw new Error('No saved sign-in session is available. Connect to the internet and sign in first.');
             }
-            await handleLogin(null, credentials);
+            await authenticateWithBiometrics();
+            unlockSession();
+            const collection = userCollection || (
+                userRole === 'teacher' ? 'teachers'
+                    : userRole === 'student' ? 'students'
+                        : 'users'
+            );
+            navigateToDashboard(collection);
         } catch (error) {
             console.warn('Biometric sign-in failed:', error.message);
             showMessage(error.message || 'Unable to sign in with biometrics.', 'error');
@@ -444,7 +447,7 @@ export default function Login() {
                 });
                 sessionStorage.setItem('userRole', collection);
                 sessionStorage.setItem('userId', docId);
-                await setupBiometricLogin(email, password);
+                await setupBiometricLogin();
                 const roleDisplay =
                     collection === 'users' ? 'Admin' :
                     collection === 'teachers' ? 'Teacher' : 'Student';
@@ -467,7 +470,7 @@ export default function Login() {
                 });
                 sessionStorage.setItem('userRole', 'users');
                 sessionStorage.setItem('userId', user.uid);
-                await setupBiometricLogin(email, password);
+                await setupBiometricLogin();
                 showMessage('Welcome! Redirecting to dashboard...', 'success');
                 setTimeout(() => navigateToDashboard('users'), 2000);
             }
@@ -733,7 +736,10 @@ export default function Login() {
                                     <h2 className="form-title">{showRegister ? 'Register School' : 'School Portal'}</h2>
 
                                     {message.text && (
-                                        <div className={`message ${message.type}`}>{message.text}</div>
+                                        <div className={`message ${message.type}`} role={message.type === 'error' ? 'alert' : 'status'}>
+                                            <span>{message.text}</span>
+                                            <button type="button" aria-label="Dismiss message" onClick={clearMessages}>×</button>
+                                        </div>
                                     )}
 
                                     {!showRegister && (
@@ -764,16 +770,16 @@ export default function Login() {
 
                                             {!isOnline && (
                                                 <div style={{ padding: '10px', marginBottom: '15px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '8px', fontSize: '13px', color: '#856404' }}>
-                                                    <i className="fas fa-info-circle"></i> Offline mode: Login with cached credentials
+                                                    <i className="fas fa-info-circle"></i> Offline mode: a saved session needs biometric setup and unlock. First sign-in and biometric setup require internet.
                                                 </div>
                                             )}
 
                                             <button type="submit" className="btn" disabled={loading}>
                                                 {loading ? (<><div className="loading"></div><span>Logging in...</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Login to Dashboard</span></>)}
                                             </button>
-                                            {biometricReady && (
+                                            {biometricReady && currentUser && (
                                                 <button type="button" className="btn" onClick={handleBiometricLogin} disabled={loading}>
-                                                    <i className="fas fa-fingerprint"></i><span>Sign in with biometrics</span>
+                                                    <i className="fas fa-fingerprint"></i><span>Unlock saved session with biometrics</span>
                                                 </button>
                                             )}
 

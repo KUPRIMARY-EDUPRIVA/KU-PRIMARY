@@ -18,13 +18,15 @@ export default function StudentPicker({
     onChange,
     level,
     cls,
-    placeholder = 'Type name or admission number...',
+    admissionFirst = false,
+    placeholder = 'Search admission number, or enter 2+ letters of a name...',
     autoFocus = false
 }) {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState([]);
     const [open, setOpen] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [searchError, setSearchError] = useState('');
     const [highlight, setHighlight] = useState(0);
     const wrapRef = useRef(null);
     const debounceRef = useRef(null);
@@ -43,19 +45,37 @@ export default function StudentPicker({
         if (!schoolId) return;
         if (query.trim().length < 2) {
             setResults([]);
+            setSearchError('');
+            setLoading(false);
             return;
         }
+        let cancelled = false;
         setLoading(true);
+        setSearchError('');
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(async () => {
-            const r = await searchStudentsLive(schoolId, query, { level, cls, limit: 15 });
-            setResults(r);
-            setHighlight(0);
-            setLoading(false);
-            setOpen(true);
+            try {
+                const r = await searchStudentsLive(schoolId, query, {
+                    level, cls, limit: 15, admissionFirst,
+                });
+                if (cancelled) return;
+                setResults(r);
+                setHighlight(0);
+                setOpen(true);
+            } catch (error) {
+                if (cancelled) return;
+                console.error('Student picker search failed:', error);
+                setResults([]);
+                setSearchError(error.message || 'Student search failed.');
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
         }, 250);
-        return () => clearTimeout(debounceRef.current);
-    }, [query, schoolId, level, cls]);
+        return () => {
+            cancelled = true;
+            clearTimeout(debounceRef.current);
+        };
+    }, [query, schoolId, level, cls, admissionFirst]);
 
     const selectStudent = useCallback((student) => {
         onChange(student);
@@ -154,7 +174,7 @@ export default function StudentPicker({
                 }}>
                     {results.length === 0 && !loading && (
                         <div style={{ padding: '14px', color: 'var(--gray)', fontSize: '13px', textAlign: 'center' }}>
-                            No students found for "{query}"
+                            {searchError || `No students found for "${query}"`}
                         </div>
                     )}
                     {results.map((s, idx) => (

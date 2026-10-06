@@ -1,3 +1,4 @@
+const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-attendance-pdf.js
 const PDFDocument = require('pdfkit');
 const admin = require('firebase-admin');
@@ -501,3 +502,5 @@ exports.handler = async (event) => {
         return { statusCode: 500, body: `Error: ${e.message}` };
     }
 };
+
+exports.handler = withCors(exports.handler);

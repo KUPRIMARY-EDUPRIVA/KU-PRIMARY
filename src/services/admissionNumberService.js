@@ -8,7 +8,14 @@ import { db } from '../firebase';
 const PAD = 4;
 
 export function formatAdmissionNumber(n, padding = PAD) {
-    return String(n).padStart(padding, '0');
+    return normalizeAdmissionNumber(n, padding);
+}
+
+export function normalizeAdmissionNumber(value, padding = PAD) {
+    const admission = String(value ?? '').trim();
+    return /^\d+$/.test(admission)
+        ? admission.padStart(padding, '0')
+        : admission.toUpperCase();
 }
 
 /**
