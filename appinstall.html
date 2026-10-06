@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EduPriva KU · Download APK</title>
+  <style>
+    /* ---------- RESET & GLOBAL ---------- */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none; /* extra layer to prevent text selection/right-click */
+    }
+
+    body {
+      font-family: system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: radial-gradient(circle at 20% 20%, #0a1230, #0f1a44 90%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      color: #f0f4ff;
+      line-height: 1.5;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    /* deep navy + gold palette */
+    :root {
+      --navy: #0f1a44;
+      --navy-mid: #1e2d73;
+      --navy-deep: #070c1f;
+      --gold: #d4a017;
+      --gold-soft: #e6bf55;
+      --gold-dark: #a67c00;
+      --slate-light: #cbd5e1;
+    }
+
+    /* ---------- CARD ---------- */
+    .card {
+      background: rgba(18, 28, 65, 0.9);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(212, 160, 23, 0.35);
+      border-radius: 2.5rem;
+      padding: 2.5rem 2rem;
+      max-width: 780px;
+      width: 100%;
+      box-shadow: 0 30px 50px -20px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(212, 160, 23, 0.2) inset;
+      text-align: center;
+      transition: transform 0.3s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+    }
+
+    /* ---------- LOGO / HEADER ---------- */
+    .logo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.6rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .logo-icon {
+      font-size: 2.8rem;
+      filter: drop-shadow(0 0 8px rgba(212, 160, 23, 0.6));
+    }
+
+    h1 {
+      font-size: 2.2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #f5e7b2, #d4a017 80%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      margin-bottom: 0.2rem;
+      text-shadow: 0 2px 10px rgba(212, 160, 23, 0.3);
+    }
+
+    .subhead {
+      font-size: 0.95rem;
+      color: #b0c0dd;
+      letter-spacing: 0.3px;
+      border-bottom: 1px solid rgba(212, 160, 23, 0.3);
+      padding-bottom: 1.2rem;
+      margin-bottom: 1.8rem;
+    }
+
+    .subhead i {
+      color: var(--gold);
+      margin-right: 4px;
+    }
+
+    /* ---------- DOWNLOAD BUTTON ---------- */
+    .btn-download {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: linear-gradient(145deg, #d4a017, #a67c00);
+      border: none;
+      border-radius: 60px;
+      padding: 1.1rem 2.8rem;
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #0a0f1f;
+      cursor: pointer;
+      box-shadow: 0 12px 25px -8px rgba(212, 160, 23, 0.6), 0 0 0 1px rgba(255, 220, 120, 0.4) inset;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      width: 100%;
+      max-width: 420px;
+      margin: 0 auto 1rem;
+      position: relative;
+      overflow: hidden;
+      letter-spacing: 0.5px;
+    }
+
+    .btn-download i {
+      font-size: 1.6rem;
+      color: #1a1f2e;
+    }
+
+    .btn-download:hover {
+      background: linear-gradient(145deg, #e6b83b, #c4901a);
+      box-shadow: 0 16px 30px -6px rgba(212, 160, 23, 0.8), 0 0 0 2px rgba(255, 220, 120, 0.6) inset;
+      transform: scale(1.01);
+    }
+
+    .btn-download:active {
+      transform: scale(0.98);
+      box-shadow: 0 6px 12px -4px rgba(212, 160, 23, 0.5);
+    }
+
+    .btn-download::after {
+      content: "";
+      position: absolute;
+      top: -50%;
+      left: -60%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, rgba(255, 255, 200, 0.25) 0%, transparent 70%);
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+    }
+
+    .btn-download:hover::after {
+      opacity: 1;
+    }
+
+    .file-meta {
+      font-size: 0.8rem;
+      color: #9fb0d0;
+      margin-bottom: 1.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .file-meta span {
+      background: rgba(212, 160, 23, 0.15);
+      border-radius: 30px;
+      padding: 0.2rem 0.9rem;
+      border: 1px solid rgba(212, 160, 23, 0.25);
+    }
+
+    /* ---------- STEPS SECTION ---------- */
+    .steps-title {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #d4a017;
+      margin: 1.5rem 0 1.2rem;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .steps-title i {
+      font-size: 1.4rem;
+    }
+
+    .steps-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      text-align: left;
+      margin-bottom: 2rem;
+    }
+
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      background: rgba(30, 45, 115, 0.35);
+      border-radius: 1.2rem;
+      padding: 1rem 1.3rem;
+      border-left: 4px solid var(--gold);
+      transition: background 0.2s;
+    }
+
+    .step:hover {
+      background: rgba(30, 45, 115, 0.6);
+    }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #d4a017, #b38b0e);
+      color: #0a0f1f;
+      font-weight: 800;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+
+    .step-text {
+      color: #e0e8ff;
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+
+    .step-text strong {
+      color: #f5e7b2;
+      font-weight: 600;
+    }
+
+    .step-text .highlight {
+      background: rgba(212, 160, 23, 0.2);
+      padding: 0.1rem 0.5rem;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      color: #f5d98c;
+      border: 1px solid rgba(212, 160, 23, 0.4);
+      white-space: nowrap;
+    }
+
+    /* ---------- FOOTER / SAFETY NOTE ---------- */
+    .safety-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-size: 0.8rem;
+      color: #8fa0c5;
+      background: rgba(15, 26, 68, 0.8);
+      padding: 0.7rem 1.2rem;
+      border-radius: 50px;
+      border: 1px solid rgba(212, 160, 23, 0.2);
+      margin-top: 1rem;
+    }
+
+    .safety-note i {
+      color: var(--gold-soft);
+    }
+
+    /* ---------- RESPONSIVE ---------- */
+    @media (max-width: 550px) {
+      .card {
+        padding: 1.8rem 1.2rem;
+        border-radius: 2rem;
+      }
+
+      h1 {
+        font-size: 1.8rem;
+      }
+
+      .btn-download {
+        font-size: 1.2rem;
+        padding: 1rem 1.5rem;
+      }
+
+      .step {
+        padding: 0.8rem 1rem;
+      }
+
+      .file-meta {
+        flex-direction: column;
+        gap: 6px;
+      }
+    }
+
+    /* ---------- UTILITY ---------- */
+    .hidden {
+      display: none;
+    }
+
+    .noselect {
+      user-select: none;
+      -webkit-user-select: none;
+      -ms-user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="appCard">
+    <div class="logo">
+      <span class="logo-icon"></span>
+    </div>
+    <h1>EduPriva KU</h1>
+    <div class="subhead">
+      <i>📱</i> School Management · Android App <i></i>
+    </div>
+
+    <!-- DOWNLOAD BUTTON -->
+    <a
+      href="https://github.com/KUPRIMARY-EDUPRIVA/KU-PRIMARY/raw/main/EDUPRIVA%20KU%20.apk"
+      class="btn-download"
+      id="downloadBtn"
+      download
+      rel="noopener noreferrer"
+      target="_blank"
+    >
+      <i>⬇️</i> Download APK (v2.1)
+    </a>
+
+    <div class="file-meta">
+      <span> ~28 MB</span>
+      <span>Android 8.0+</span>
+      <span>Safe &amp; direct</span>
+    </div>
+
+    <!-- STEP-BY-STEP GUIDE -->
+    <div class="steps-title">
+      <i>📋</i> How to install
+    </div>
+
+    <div class="steps-grid">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-text">
+          <strong>Tap the download button</strong> above. The APK file will
+          start downloading. If you see a warning, tap
+          <span class="highlight">“Download anyway”</span>.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-text">
+          <strong>Open the downloaded file</strong>. You’ll find it in your
+          notification bar or in the <span class="highlight">Downloads</span>
+          folder of your phone.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-text">
+          <strong>Enable “Install unknown apps”</strong> if prompted. Go to
+          <span class="highlight">Settings → Security → Install unknown apps</span>
+          and allow your browser or file manager.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-text">
+          <strong>Tap “Install”</strong> on the pop-up. The app will install
+          in a few seconds.
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-text">
+          <strong>Open the app</strong> and sign in with your school
+          credentials. You’re all set! 🎉
+        </div>
+      </div>
+    </div>
+
+    <!-- SAFETY NOTE -->
+    <div class="safety-note">
+      <i>🛡️</i> Official release  for Kenyatta University  Comprehensive school · 
+    </div>
+  </div>
+
+  <!-- EMBEDDED SCRIPTS -->
+  <script>
+    (function() {
+      'use strict';
+
+      // ---------- DISABLE RIGHT-CLICK (context menu) ----------
+      document.addEventListener('contextmenu', function(e) {
+        e.preventDefault();
+        // Optional: subtle feedback (avoid alert spam)
+        // alert('Right-click is disabled on this page.');
+      });
+
+      // ---------- DISABLE TEXT SELECTION (extra layer) ----------
+      document.addEventListener('selectstart', function(e) {
+        e.preventDefault();
+      });
+
+      // ---------- DISABLE DRAG on images & links ----------
+      document.addEventListener('dragstart', function(e) {
+        e.preventDefault();
+      });
+
+      // ---------- DISABLE COMMON DEVTOOLS SHORTCUTS ----------
+      document.addEventListener('keydown', function(e) {
+        // F12
+        if (e.key === 'F12' || e.keyCode === 123) {
+          e.preventDefault();
+          return false;
+        }
+        // Ctrl+Shift+I / J / C  (Windows/Linux)
+        if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' ||
+                                        e.key === 'J' || e.key === 'j' ||
+                                        e.key === 'C' || e.key === 'c')) {
+          e.preventDefault();
+          return false;
+        }
+        // Ctrl+U (view source)
+        if (e.ctrlKey && (e.key === 'U' || e.key === 'u')) {
+          e.preventDefault();
+          return false;
+        }
+        // Cmd+Option+I / J / C  (Mac)
+        if (e.metaKey && e.altKey && (e.key === 'I' || e.key === 'i' ||
+                                      e.key === 'J' || e.key === 'j' ||
+                                      e.key === 'C' || e.key === 'c')) {
+          e.preventDefault();
+          return false;
+        }
+        // Cmd+U (Mac view source)
+        if (e.metaKey && (e.key === 'U' || e.key === 'u')) {
+          e.preventDefault();
+          return false;
+        }
+      }, false);
+
+      // ---------- SMOOTH SCROLL TO STEPS AFTER CLICK (UX) ----------
+      const downloadBtn = document.getElementById('downloadBtn');
+      if (downloadBtn) {
+        downloadBtn.addEventListener('click', function() {
+          // Scroll the step-by-step guide into view for convenience
+          const steps = document.querySelector('.steps-title');
+          if (steps) {
+            setTimeout(() => {
+              steps.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 300);
+          }
+        });
+      }
+
+      // ---------- OPTIONAL: PREVENT IFRAME EMBED ----------
+      if (window.self !== window.top) {
+        // If this page is embedded in an iframe, break out.
+        try {
+          window.top.location = window.self.location;
+        } catch (e) {
+          // Cross-origin — just hide everything.
+          document.body.innerHTML = '';
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
