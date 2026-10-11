@@ -19,13 +19,17 @@ import {
     formatAdmissionNumber,
 } from '../services/admissionNumberService';
 import {
-    loadAllStudents,
     createStudent,
     updateStudent,
     softDeleteStudent,
     restoreStudent,
     bulkUpdateStudents,
 } from '../services/studentService';
+import {
+    loadStudentRoster,
+    saveStudentRoster,
+    studentRosterCacheKey,
+} from '../services/studentRosterService';
 import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
 
 import { showAppNotice } from '../utils/appNotice';
@@ -344,30 +348,32 @@ export default function Students() {
     // ============================================================
     // Loaders
     // ============================================================
-    const loadFirstPage = useCallback(async (sid) => {
-        const cached = await getFromIndexedDB(`students_${sid}`);
+    const loadFirstPage = useCallback(async (sid, forceRefresh = false) => {
+        const teacherScope = isTeacher ? teacherClasses : [];
+        if (isTeacher && teacherScope.length === 0) return;
+        const cacheKey = studentRosterCacheKey(sid, teacherScope);
+        const cached = await getFromIndexedDB(cacheKey);
         if (cached && cached.length > 0) {
             setStudents(sortStudentsByAdmission(cached));
             setUsingCachedData(true);
+            if (!forceRefresh) return;
         }
 
-        if (!isOnline) return;
-
-        // loadAllStudents accepts a `classes` filter. When it's the
-        // teacher's effective class list, the server returns only
-        // students in those classes.
-        const teacherScope = isTeacher ? teacherClasses : [];
-        const page = await loadAllStudents(sid, teacherScope);
+        if (!isOnline && cached?.length) return;
+        const page = await loadStudentRoster(sid, {
+            assignedClasses: teacherScope,
+            refresh: forceRefresh,
+        });
 
         const sorted = sortStudentsByAdmission(page);
         setStudents(sorted);
         setUsingCachedData(false);
-        await saveToIndexedDB(`students_${sid}`, sorted);
-    }, [isOnline, getFromIndexedDB, saveToIndexedDB, isTeacher, teacherClasses]);
+        await saveStudentRoster(sid, sorted, { assignedClasses: teacherScope });
+    }, [isOnline, getFromIndexedDB, isTeacher, teacherClasses]);
 
     const refresh = useCallback(async () => {
         if (!schoolId) return;
-        await loadFirstPage(schoolId);
+        await loadFirstPage(schoolId, true);
         showNotification('Refreshed', 'success');
     }, [schoolId, loadFirstPage, showNotification]);
 
@@ -574,10 +580,10 @@ export default function Students() {
                 setStudents((prev) => sortStudentsByAdmission(prev.map((s) =>
                     s.id === editingStudent.id ? { ...s, ...base } : s
                 )));
-                await saveToIndexedDB(`students_${schoolId}`,
+                await saveStudentRoster(schoolId,
                     sortStudentsByAdmission(students.map((s) =>
                         s.id === editingStudent.id ? { ...s, ...base } : s
-                    )));
+                    )), { assignedClasses: isTeacher ? teacherClasses : [] });
                 showNotification('Student updated', 'success');
                 setShowStudentModal(false);
             } catch (err) {
@@ -628,8 +634,9 @@ export default function Students() {
             );
 
             setStudents((prev) => sortStudentsByAdmission([created, ...prev]));
-            await saveToIndexedDB(`students_${schoolId}`,
-                sortStudentsByAdmission([created, ...students]));
+            await saveStudentRoster(schoolId,
+                sortStudentsByAdmission([created, ...students]),
+                { assignedClasses: isTeacher ? teacherClasses : [] });
 
             showNotification(`Student added — Admission No ${studentId}`, 'success');
             setShowStudentModal(false);
@@ -841,7 +848,7 @@ export default function Students() {
                 s.id === student.id ? { ...s, ...updateData } : s
             ));
             setStudents(next);
-            await saveToIndexedDB(`students_${schoolId}`, next);
+            await saveStudentRoster(schoolId, next, { assignedClasses: isTeacher ? teacherClasses : [] });
             showNotification(
                 terminal
                     ? `Promoted to ${chosen.label}. Marked as graduated.`
@@ -951,7 +958,7 @@ export default function Students() {
                 byId.has(s.id) ? { ...s, ...byId.get(s.id) } : s
             ));
             setStudents(next);
-            await saveToIndexedDB(`students_${schoolId}`, next);
+            await saveStudentRoster(schoolId, next, { assignedClasses: isTeacher ? teacherClasses : [] });
             showNotification(`Promoted ${updates.length} students.`, 'success');
             setShowBulkPromoteModal(false);
         } catch (err) {
@@ -1177,7 +1184,7 @@ export default function Students() {
 
             const next = sortStudentsByAdmission([...created, ...students]);
             setStudents(next);
-            await saveToIndexedDB(`students_${schoolId}`, next);
+            await saveStudentRoster(schoolId, next, { assignedClasses: isTeacher ? teacherClasses : [] });
 
             setImportResults({ added, errors });
             setShowImportResults(true);

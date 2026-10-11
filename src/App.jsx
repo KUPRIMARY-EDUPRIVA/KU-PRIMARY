@@ -141,7 +141,7 @@ function AppRoutes() {
                 <Route path="/students" element={<AuthWrapper><Students /></AuthWrapper>} />
                 <Route path="/student-analytics" element={<AuthWrapper><StudentAnalytics /></AuthWrapper>} />
                 <Route path="/communications" element={
-                    <AuthWrapper allowedRoles={['headteacher']}><Communications /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><Communications /></AuthWrapper>
                 } />
                 <Route path="/sms" element={<Navigate to="/communications" replace />} />
                 <Route path="/teachers" element={<AuthWrapper><Teachers /></AuthWrapper>} />
@@ -163,22 +163,22 @@ function AppRoutes() {
 
                 {/* Teacher routes */}
                 <Route path="/mydashboard" element={
-                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><TeacherDashboard /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><TeacherDashboard /></AuthWrapper>
                 } />
                 <Route path="/my-students" element={
-                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><MyStudents /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><MyStudents /></AuthWrapper>
                 } />
                 <Route path="/my-results" element={
-                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><MyResults /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><MyResults /></AuthWrapper>
                 } />
                 <Route path="/myreports" element={
-                    <AuthWrapper allowedRoles={['teacher', 'deputy-headteacher']}><MyReports /></AuthWrapper>
+                    <AuthWrapper allowedRoles={['teacher', 'admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><MyReports /></AuthWrapper>
                 } />
                <Route path="/attendance" element={
                    <AuthWrapper allowedRoles={['admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher', 'teacher']}><Attendance /></AuthWrapper>
                 } />
                <Route path="/discipline" element={
-                   <AuthWrapper allowedRoles={['headteacher', 'deputy-headteacher']}><Discipline /></AuthWrapper>
+                   <AuthWrapper allowedRoles={['admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><Discipline /></AuthWrapper>
                } />
 
                 {/* Student routes */}

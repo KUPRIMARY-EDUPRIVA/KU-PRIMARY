@@ -1,8 +1,10 @@
 const { requireAuth, json, errorResponse } = require('./_lib/chatbotAuth');
 const { initAdmin } = require('./_lib/firebaseAdmin');
 const { withCors } = require('./_lib/cors');
+const { cacheGet, cacheSet } = require('./_lib/blobCache');
 
 const REPORT_ROLES = new Set(['admin', 'school_admin', 'user', 'principal', 'finance', 'headteacher', 'deputy-headteacher']);
+const CACHE_TTL_SECONDS = 60;
 
 function nairobiDate(date) {
     const parts = new Intl.DateTimeFormat('en-CA', {
@@ -38,9 +40,13 @@ exports.handler = async (event) => {
             return json(403, { success: false, error: 'School access denied.' });
         }
 
-        const admin = initAdmin();
         const todayParts = nairobiDate(new Date());
         const today = dateString(todayParts);
+        const cacheKey = `daily_collections:${user.schoolId}:${today}`;
+        const cached = await cacheGet(cacheKey);
+        if (cached) return json(200, cached);
+
+        const admin = initAdmin();
         const weekStartDate = new Date(`${today}T00:00:00+03:00`);
         weekStartDate.setDate(weekStartDate.getDate() - 6);
         const weekStart = dateString(nairobiDate(weekStartDate));
@@ -64,12 +70,14 @@ exports.handler = async (event) => {
             if (data.paymentDate === today) todayTotal += amount;
         });
 
-        return json(200, {
+        const payload = {
             success: true,
             today: formatKES(todayTotal),
             week: formatKES(weekTotal),
             asOf: today,
-        });
+        };
+        await cacheSet(cacheKey, payload, CACHE_TTL_SECONDS);
+        return json(200, payload);
     } catch (error) {
         console.error('reports-rollup failed:', error.message);
         return errorResponse(error);

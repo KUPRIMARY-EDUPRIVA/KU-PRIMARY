@@ -1,6 +1,9 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
-const NETLIFY_FUNCTIONS_ORIGIN = 'https://kupri.netlify.app/.netlify/functions';
+const NETLIFY_FUNCTIONS_ORIGIN = (
+    process.env.REACT_APP_NETLIFY_FUNCTIONS_ORIGIN
+    || 'https://kiwanjapri.netlify.app/.netlify/functions'
+).replace(/\/+$/, '');
 
 const FUNCTION_ALIASES = {
     '/api/': '',

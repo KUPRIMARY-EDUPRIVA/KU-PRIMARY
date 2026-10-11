@@ -1,0 +1,68 @@
+{
+  "project_info": {
+    "project_number": "997723863054",
+    "project_id": "ku-primary-edupriva",
+    "storage_bucket": "ku-primary-edupriva.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:997723863054:android:4beb6b2c778a4b6659a45f",
+        "android_client_info": {
+          "package_name": "com.eduprivakiwanja"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBM-ZTOS2F8fLYi_bXJlJkOEWHU_7nm5w0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:997723863054:android:26dd69bae284079059a45f",
+        "android_client_info": {
+          "package_name": "com.eduprivakiwanjasms"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBM-ZTOS2F8fLYi_bXJlJkOEWHU_7nm5w0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

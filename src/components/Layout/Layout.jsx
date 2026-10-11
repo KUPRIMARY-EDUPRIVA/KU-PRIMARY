@@ -15,7 +15,7 @@ import './Layout.css';
 export default function Layout({ children, title = 'Dashboard Overview' }) {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [showNotifications, setShowNotifications] = useState(false);
-    const [chatbotVisible, setChatbotVisible] = useState(true);
+    const [chatbotVisible, setChatbotVisible] = useState(false);
     const { currentUser, userData } = useAuth();
     const location = useLocation();
     const navigate = useNavigate();
@@ -568,76 +568,6 @@ export default function Layout({ children, title = 'Dashboard Overview' }) {
                     }
                 }
 
-                /* Dark mode support */
-                @media (prefers-color-scheme: dark) {
-                    .subheader-notification-dropdown {
-                        background: #1a1a2e;
-                    }
-
-                    .subheader-notification-header {
-                        border-bottom-color: #2d2d44;
-                    }
-
-                    .subheader-notification-header h3 {
-                        color: #e0e0e0;
-                    }
-
-                    .subheader-mark-all-read {
-                        color: #5c6bc0;
-                    }
-
-                    .subheader-mark-all-read:hover {
-                        background: #2d2d44;
-                    }
-
-                    .subheader-notification-item {
-                        border-bottom-color: #2d2d44;
-                    }
-
-                    .subheader-notification-item:hover {
-                        background: #2d2d44;
-                    }
-
-                    .subheader-notification-item.unread {
-                        background: #1a1a3e;
-                    }
-
-                    .subheader-notification-item.unread:hover {
-                        background: #252545;
-                    }
-
-                    .subheader-notification-title {
-                        color: #e0e0e0;
-                    }
-
-                    .subheader-notification-message {
-                        color: #aaa;
-                    }
-
-                    .subheader-notification-time {
-                        color: #666;
-                    }
-
-                    .subheader-notification-empty {
-                        color: #666;
-                    }
-
-                    .subheader-notification-empty i {
-                        color: #444;
-                    }
-
-                    .subheader-notification-footer {
-                        border-top-color: #2d2d44;
-                    }
-
-                    .subheader-view-all-btn {
-                        color: #5c6bc0;
-                    }
-
-                    .subheader-view-all-btn:hover {
-                        background: #2d2d44;
-                    }
-                }
             `}</style>
         </div>
     );

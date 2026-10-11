@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
+import { isSchoolAdminRole } from '../utils/roles';
 import { db } from '../firebase';
 import { 
   collection, query, where, getDocs, onSnapshot, doc, getDoc, 
@@ -211,7 +212,7 @@ export default function HealthRecords() {
   }, [currentUser, userData, isOnline]);
 
   // Role-based access
-  const isAdmin = userRole === 'admin' || userRole === 'super_admin' || userRole === 'user';
+  const isAdmin = isSchoolAdminRole(userRole || userData?.role);
   const isMedicalStaff = userRole === 'nurse' || userRole === 'doctor' || userRole === 'health_worker';
   const isTeacher = userRole === 'teacher';
   const isStudent = userRole === 'student';

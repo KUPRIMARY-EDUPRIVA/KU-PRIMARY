@@ -5,19 +5,20 @@ import { useAuth } from '../../context/AuthContext';
 import { useSync } from '../../context/SyncContext';
 import { db } from '../../firebase';
 import { 
-    collection, query, where, getDocs, onSnapshot, 
+    collection, query, where, getDocs,
     doc, getDoc, updateDoc, orderBy, limit, 
     serverTimestamp, writeBatch
 } from 'firebase/firestore';
 import Layout from '../../components/Layout/Layout';
 import LoadingSpinner from '../../components/Common/LoadingSpinner';
 import { LEVEL_DISPLAY_NAMES, LEVEL_CLASSES } from '../../utils/constants';
+import { loadStudentRoster } from '../../services/studentRosterService';
 
 import { showAppNotice } from '../../utils/appNotice';
 export default function TeacherDashboard() {
     const navigate = useNavigate();
     const { currentUser, userData } = useAuth();
-    const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
+    const { isOnline } = useSync();
     
     // State
     const [loading, setLoading] = useState(true);
@@ -79,9 +80,6 @@ export default function TeacherDashboard() {
             // Load upcoming exams
             await loadUpcomingExams();
             
-            // Setup realtime listeners
-            setupRealtimeListeners();
-
         } catch (error) {
             console.error('Error loading teacher data:', error);
             showNotification('Failed to load dashboard data', 'error');
@@ -98,16 +96,8 @@ export default function TeacherDashboard() {
             const classes = teacherData?.classes || [];
             if (classes.length === 0) return;
 
-            // Get students from assigned classes
-            const studentsQuery = query(
-                collection(db, 'students'),
-                where('schoolId', '==', schoolId),
-                where('class', 'in', classes)
-            );
-            const snapshot = await getDocs(studentsQuery);
-            const studentsData = [];
-            snapshot.forEach(doc => {
-                studentsData.push({ id: doc.id, ...doc.data() });
+            const studentsData = await loadStudentRoster(schoolId, {
+                assignedClasses: classes,
             });
             setStudents(studentsData);
             setFilteredStudents(studentsData);
@@ -173,35 +163,6 @@ export default function TeacherDashboard() {
             }));
         } catch (error) {
             console.error('Error loading upcoming exams:', error);
-        }
-    };
-
-    const setupRealtimeListeners = () => {
-        const schoolId = userData?.schoolId;
-        if (!schoolId) return;
-
-        // Listen to student changes
-        if (assignedClasses.length > 0) {
-            const studentsQuery = query(
-                collection(db, 'students'),
-                where('schoolId', '==', schoolId),
-                where('class', 'in', assignedClasses)
-            );
-            const unsubscribe = onSnapshot(studentsQuery, async (snapshot) => {
-                const studentsData = [];
-                snapshot.forEach(doc => {
-                    studentsData.push({ id: doc.id, ...doc.data() });
-                });
-                setStudents(studentsData);
-                setFilteredStudents(studentsData);
-                setStats(prev => ({
-                    ...prev,
-                    totalStudents: studentsData.length
-                }));
-            }, (error) => {
-                console.error('Students listener error:', error);
-            });
-            return () => unsubscribe();
         }
     };
 

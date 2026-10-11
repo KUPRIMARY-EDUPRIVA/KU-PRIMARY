@@ -56,34 +56,39 @@ async function requireAuth(event, options = {}) {
     // Mirrors AuthContext.resolveUser() so the chatbot works for the same
     // users the rest of the app works for.
     // ----------------------------------------------------------------
-    let userDoc = {};
+    let userDoc = {
+        schoolId: decoded.schoolId || decoded.school_id || null,
+        role: decoded.role || null,
+        fullName: decoded.name || '',
+    };
     let resolvedCollection = null;
 
-    for (const name of USER_COLLECTIONS) {
-        try {
-            const snap = await db.collection(name).doc(decoded.uid).get();
-            if (snap.exists) {
-                const data = snap.data() || {};
-                // Prefer the first doc we find, but keep looking if it has
-                // no schoolId — a `users` stub without schoolId is useless
-                // here, and the actual record may live in `teachers`.
-                if (!resolvedCollection) {
-                    userDoc = data;
-                    resolvedCollection = name;
+    // Most school users already carry their tenant and role in the verified
+    // Firebase token. Avoid profile-document reads on every chatbot request.
+    if (!userDoc.schoolId || !userDoc.role) {
+        for (const name of USER_COLLECTIONS) {
+            try {
+                const snap = await db.collection(name).doc(decoded.uid).get();
+                if (snap.exists) {
+                    const data = snap.data() || {};
+                    if (!resolvedCollection) {
+                        userDoc = { ...userDoc, ...data };
+                        resolvedCollection = name;
+                    }
+                    if (data.schoolId || data.school_id) {
+                        userDoc = { ...userDoc, ...data };
+                        resolvedCollection = name;
+                        break;
+                    }
                 }
-                if (data.schoolId || data.school_id) {
-                    userDoc = data;
-                    resolvedCollection = name;
-                    break;
-                }
+            } catch (dbErr) {
+                console.error('[chatbotAuth] Firestore read failed', {
+                    collection: name,
+                    uid: decoded.uid,
+                    code: dbErr.code,
+                    message: dbErr.message,
+                });
             }
-        } catch (dbErr) {
-            console.error('[chatbotAuth] Firestore read failed', {
-                collection: name,
-                uid: decoded.uid,
-                code: dbErr.code,
-                message: dbErr.message,
-            });
         }
     }
 
@@ -116,10 +121,11 @@ async function requireAuth(event, options = {}) {
     // Fire-and-forget: never blocks the request, and any failure is
     // logged but not surfaced.
     // ----------------------------------------------------------------
-    const needsHeal =
+    const needsHeal = !!resolvedCollection && (
         resolvedCollection !== 'users' ||
         !userDoc.schoolId ||
-        !userDoc.fullName;
+        !userDoc.fullName
+    );
 
     if (needsHeal && options.healProfile !== false) {
         setImmediate(() => {

@@ -3,6 +3,7 @@ import {
     collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc,
     query, where, orderBy, limit, serverTimestamp, writeBatch
 } from 'firebase/firestore';
+import { getCachedStudentRoster, saveStudentRoster } from './studentRosterService';
 import { db } from '../firebase';
 
 // ------------------------------------------------------------
@@ -108,6 +109,15 @@ export async function deleteAttendanceRecord(id) {
 // ------------------------------------------------------------
 export async function getClassRoster(schoolId, cls, level) {
     if (!schoolId || !cls) return [];
+    const cached = await getCachedStudentRoster(schoolId, {
+        assignedClasses: [sanitizeClass(cls)],
+    });
+    if (cached) {
+        return cached
+            .filter((student) => !student.isDeleted && (!level || student.level === level))
+            .sort(compareStudents);
+    }
+
     const constraints = [
         where('schoolId', '==', schoolId),
         where('class', '==', sanitizeClass(cls)),
@@ -119,17 +129,22 @@ export async function getClassRoster(schoolId, cls, level) {
     const students = snap.docs
         .map((d) => ({ id: d.id, ...d.data() }))
         .filter((s) => !s.isDeleted);
+    await saveStudentRoster(schoolId, students, {
+        assignedClasses: [sanitizeClass(cls)],
+    });
 
     // Sort by admissionNumber then name
-    students.sort((a, b) => {
+    students.sort(compareStudents);
+    return students;
+}
+
+function compareStudents(a, b) {
         const aId = a.admissionNumber || a.studentId || '';
         const bId = b.admissionNumber || b.studentId || '';
         if (aId && bId) return String(aId).localeCompare(String(bId), undefined, { numeric: true });
         const aN = `${a.firstName || ''} ${a.lastName || ''}`.toLowerCase();
         const bN = `${b.firstName || ''} ${b.lastName || ''}`.toLowerCase();
         return aN.localeCompare(bN);
-    });
-    return students;
 }
 
 // ------------------------------------------------------------

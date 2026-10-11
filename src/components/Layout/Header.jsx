@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import { isSchoolAdminRole } from '../../utils/roles';
 import { db } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import './Layout.css';
@@ -163,7 +164,9 @@ const Header = ({ toggleSideNav }) => {
             {/* Right — User Profile & Role */}
             <div className="user-menu">
                 {isSuperAdmin && <span className="admin-badge platform">PLATFORM</span>}
-                {userRole === 'admin' && <span className="admin-badge admin">ADMIN</span>}
+                {isSchoolAdminRole(userRole || userData?.role) && userRole !== 'super-admin' && (
+                    <span className="admin-badge admin">ADMIN</span>
+                )}
                 {userRole === 'teacher' && <span className="admin-badge teacher">TEACHER</span>}
                 {userRole === 'student' && <span className="admin-badge student">STUDENT</span>}
 

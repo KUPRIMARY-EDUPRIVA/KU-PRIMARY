@@ -3,7 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useBadges } from '../../context/BadgeContext';
-import { normalizeRole } from '../../utils/roles';
+import { normalizeRole, isSchoolAdminRole } from '../../utils/roles';
+import { getCachedStudentRoster } from '../../services/studentRosterService';
 import { db } from '../../firebase';
 import { doc, getDoc } from 'firebase/firestore';
 
@@ -90,12 +91,14 @@ export default function MobileNav() {
                 collection(db, 'students'),
                 where('schoolId', '==', userData.schoolId)
             );
-            const studentsSnapshot = await getDocs(studentsQuery);
+            const cachedStudents = await getCachedStudentRoster(userData.schoolId);
+            const studentsSnapshot = cachedStudents ? null : await getDocs(studentsQuery);
             
             // Count students with outstanding balance
             let overdueCount = 0;
-            studentsSnapshot.forEach(doc => {
-                const student = doc.data();
+            const students = cachedStudents
+                || studentsSnapshot.docs.map((studentDoc) => studentDoc.data());
+            students.forEach((student) => {
                 if (student.feeBalance && student.feeBalance > 0) {
                     overdueCount++;
                 }
@@ -163,12 +166,12 @@ export default function MobileNav() {
     // Get role-based navigation items (same as Sidebar with feature checks)
     const getNavItems = () => {
         const role = normalizeRole(userRole || userData?.role || 'user');
-        const isAdmin = ['admin', 'user', 'school-admin', 'principal', 'headteacher'].includes(role);
+        const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
         const isHeadteacher = role === 'headteacher';
         const isDeputyHeadteacher = role === 'deputy-headteacher';
         const isAccountant = role === 'accountant';
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
+        const isTeacherOrDeputy = isTeacher || isHeadteacher || isDeputyHeadteacher;
         const isStudent = role === 'student';
         const isSuperAdmin = role === 'super-admin';
 
@@ -227,13 +230,13 @@ export default function MobileNav() {
                 path: '/discipline',
                 icon: 'fa-scale-balanced',
                 label: 'Discipline',
-                show: isHeadteacher && !isSuperAdmin
+                show: isAdmin && !isSuperAdmin
             },
             {
                 path: '/communications',
                 icon: 'fa-comment-sms',
                 label: 'Communications',
-                show: isHeadteacher && !isSuperAdmin
+                show: isAdmin && !isSuperAdmin
             },
             {
                 path: '/reports',

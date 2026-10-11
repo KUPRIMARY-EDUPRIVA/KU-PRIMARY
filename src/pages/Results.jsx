@@ -4,13 +4,14 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { useSchool } from '../context/SchoolContext';
-import { normalizeRole } from '../utils/roles';
+import { normalizeRole, isSchoolAdminRole } from '../utils/roles';
 import {
     getStudents, getScores, saveScoresBatch, publishScoresBatch,
     saveAssessmentConfig, requireSchoolId, findStudentByAdmission,
     getPaperConfig, savePaperConfig, getAllPaperConfigsForLevel
 } from '../services/firestore';
 import { idbGet, idbSet } from '../services/cache';
+import { getCachedStudentRoster } from '../services/studentRosterService';
 import { downloadStudentReportCardPDF, downloadStudentReportPDF, downloadRankingPDF } from '../services/pdf';
 import { db } from '../firebase';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
@@ -157,8 +158,8 @@ export default function Results() {
 
     useEffect(() => {
         const role = normalizeRole(userRole || userData?.role || 'teacher');
-        setIsAdmin(['admin', 'user', 'school-admin', 'principal', 'super-admin', 'headteacher'].includes(role));
-        if (['teacher', 'deputy-headteacher'].includes(role) && currentUser?.uid) loadTeacherAccess();
+        setIsAdmin(isSchoolAdminRole(role));
+        if (role === 'teacher' && currentUser?.uid) loadTeacherAccess();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [userData, userRole, currentUser]);
 
@@ -349,11 +350,19 @@ export default function Results() {
 
         try {
             const cacheKey = `students_${schoolId}_${selectedLevel}_${selectedClass}`;
-            const cached = await idbGet(cacheKey);
+            let cached = await idbGet(cacheKey);
+            if (!cached?.length) {
+                const roster = await getCachedStudentRoster(schoolId);
+                cached = roster?.filter((student) =>
+                    student.level === selectedLevel && student.class === selectedClass
+                );
+            }
             if (cached && cached.length) { setStudents(cached); }
 
             const [studentsData, scoresMap] = await Promise.all([
-                getStudents(schoolId, selectedLevel, selectedClass),
+                cached?.length
+                    ? Promise.resolve(cached)
+                    : getStudents(schoolId, selectedLevel, selectedClass),
                 getScores(schoolId, selectedLevel, selectedClass, selectedSubject, selectedTerm, assessmentType)
             ]);
 

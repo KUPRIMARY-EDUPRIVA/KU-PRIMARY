@@ -4,7 +4,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useBadges } from '../../context/BadgeContext';
-import { normalizeRole } from '../../utils/roles';
+import { normalizeRole, isSchoolAdminRole } from '../../utils/roles';
+import { getCachedStudentRoster } from '../../services/studentRosterService';
 import { db } from '../../firebase';
 import {
     doc,
@@ -223,14 +224,14 @@ export default function Sidebar({ isOpen, onClose }) {
                 )
             );
 
-            const studentsSnapshot =
-                await getDocs(studentsQuery);
+            const cachedStudents = await getCachedStudentRoster(userData.schoolId);
+            const studentsSnapshot = cachedStudents ? null : await getDocs(studentsQuery);
 
             let overdueCount = 0;
 
-            studentsSnapshot.forEach((studentDoc) => {
-                const student =
-                    studentDoc.data();
+            const students = cachedStudents
+                || studentsSnapshot.docs.map((studentDoc) => studentDoc.data());
+            students.forEach((student) => {
 
                 if (
                     student.feeBalance &&
@@ -319,13 +320,13 @@ export default function Sidebar({ isOpen, onClose }) {
     const getNavGroups = () => {
         const role = normalizeRole(userRole || userData?.role || 'user');
 
-        const isAdmin = ['admin', 'user', 'school-admin', 'principal', 'headteacher'].includes(role);
+        const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
         const isHeadteacher = role === 'headteacher';
         const isDeputyHeadteacher = role === 'deputy-headteacher';
         const isAccountant = role === 'accountant';
 
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
+        const isTeacherOrDeputy = isTeacher || isHeadteacher || isDeputyHeadteacher;
 
         const isStudent =
             role === 'student';
@@ -381,7 +382,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 path: '/discipline',
                 icon: 'fa-scale-balanced',
                 label: 'Discipline',
-                show: isHeadteacher
+                show: isAdmin
             },
             {
                 path: '/fees',
@@ -395,7 +396,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 path: '/communications',
                 icon: 'fa-comment-sms',
                 label: 'Communications',
-                show: isHeadteacher
+                show: isAdmin
             },
             {
                 path: '/reports',

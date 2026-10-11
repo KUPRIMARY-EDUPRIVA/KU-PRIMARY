@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useFee } from '../context/FeeContext';
-import { loadAllStudents } from '../services/studentService';
+import { loadStudentRoster } from '../services/studentRosterService';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import {
@@ -23,7 +23,7 @@ export default function StudentAnalytics() {
     
     useEffect(() => {
         if (!userData?.schoolId) return;
-        loadAllStudents(userData.schoolId).then(data => {
+        loadStudentRoster(userData.schoolId).then(data => {
             setStudents(data);
             setLoading(false);
         }).catch(err => {

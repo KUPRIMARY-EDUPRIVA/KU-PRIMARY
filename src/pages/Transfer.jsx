@@ -24,6 +24,7 @@ import {
 
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
+import { getCachedStudentRoster, saveStudentRoster } from '../services/studentRosterService';
 
 
 // ============================================================
@@ -720,6 +721,14 @@ export default function Transfer() {
 
 
       await batch.commit();
+      const cachedRoster = await getCachedStudentRoster(userData.schoolId);
+      if (cachedRoster) {
+        await saveStudentRoster(userData.schoolId, cachedRoster.map((student) =>
+          student.id === releaseStudent.id
+            ? { ...student, transferStatus: 'released', activeTransferId: releaseTransfer.id, transferReleasedAt: now }
+            : student
+        ));
+      }
 
 
       // --------------------------------------------------------
@@ -1035,6 +1044,13 @@ export default function Transfer() {
 
 
       await batch.commit();
+      const cachedRoster = await getCachedStudentRoster(userData.schoolId);
+      if (cachedRoster) {
+        await saveStudentRoster(userData.schoolId, [
+          ...cachedRoster.filter((student) => student.id !== newStudentRef.id),
+          { id: newStudentRef.id, ...newStudentData },
+        ]);
+      }
 
 
       // --------------------------------------------------------

@@ -184,7 +184,7 @@ export default function EduprivaChatbot({ onClose }) {
     const isTeacher = role === 'teacher';
     const myFirst = firstNameOf(userData, currentUser);
 
-    const [isOpen, setIsOpen] = useState(false);
+    const [isOpen, setIsOpen] = useState(true);
     const [input, setInput] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
     const [botState, setBotState] = useState({ step: 'IDLE', context: {} });
@@ -343,7 +343,6 @@ export default function EduprivaChatbot({ onClose }) {
             // Step 3 — wait for the callback by polling the pending doc.
             const outcome = await checkMpesaStatus(res.checkoutRequestID, {
                 timeoutMs: 90_000,
-                intervalMs: 3_000,
             });
 
             // Step 4 — report the final outcome.
@@ -718,7 +717,7 @@ export default function EduprivaChatbot({ onClose }) {
                             </div>
                         </div>
                         <button
-                            onClick={() => setIsOpen(false)}
+                            onClick={onClose}
                             style={{ background: 'transparent', border: 'none', color: 'white', fontSize: 18, cursor: 'pointer', padding: 4 }}
                         >
                             <i className="fas fa-times"></i>

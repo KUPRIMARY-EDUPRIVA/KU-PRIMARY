@@ -5,7 +5,7 @@ import { useSync } from '../context/SyncContext';
 import { LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/constants';
 import { db } from '../firebase';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
-import { normalizeRole } from '../utils/roles';
+import { normalizeRole, isSchoolAdminRole } from '../utils/roles';
 import {
     doc, getDoc, updateDoc, collection, query, where, getDocs,
     setDoc, serverTimestamp
@@ -131,6 +131,100 @@ async function uploadToCloudinary(file, folder) {
     return json.secure_url;
 }
 
+function loadImage(file) {
+    const objectUrl = URL.createObjectURL(file);
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve({ image, objectUrl });
+        image.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error('The selected image could not be opened.'));
+        };
+        image.src = objectUrl;
+    });
+}
+
+function removeLightBackground(imageData) {
+    const { data, width, height } = imageData;
+    const queue = new Uint32Array(width * height);
+    let queueEnd = 0;
+
+    const addIfBackground = (index) => {
+        const offset = index * 4;
+        if (data[offset + 3] === 0) return;
+        const red = data[offset];
+        const green = data[offset + 1];
+        const blue = data[offset + 2];
+        if (
+            Math.min(red, green, blue) > 205
+            && Math.max(red, green, blue) - Math.min(red, green, blue) < 48
+        ) {
+            data[offset + 3] = 0;
+            queue[queueEnd++] = index;
+        }
+    };
+
+    for (let x = 0; x < width; x += 1) {
+        addIfBackground(x);
+        addIfBackground((height - 1) * width + x);
+    }
+    for (let y = 1; y < height - 1; y += 1) {
+        addIfBackground(y * width);
+        addIfBackground(y * width + width - 1);
+    }
+
+    for (let cursor = 0; cursor < queueEnd; cursor += 1) {
+        const pixel = queue[cursor];
+        const x = pixel % width;
+        if (x > 0) addIfBackground(pixel - 1);
+        if (x + 1 < width) addIfBackground(pixel + 1);
+        if (pixel >= width) addIfBackground(pixel - width);
+        if (pixel + width < width * height) addIfBackground(pixel + width);
+    }
+}
+
+async function prepareBrandingImage(file, removeBackground) {
+    const maxBytes = 1.8 * 1024 * 1024;
+    const { image, objectUrl } = await loadImage(file);
+    try {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d', { willReadFrequently: removeBackground });
+        if (!context) throw new Error('Image processing is not supported on this device.');
+
+        const preservePng = file.type === 'image/png' && !removeBackground;
+        const mimeType = removeBackground || preservePng ? 'image/png' : 'image/jpeg';
+        const baseName = file.name.replace(/\.[^.]+$/, '') || 'school-branding';
+        let scale = Math.min(1, 2000 / Math.max(image.naturalWidth, image.naturalHeight));
+
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            if (removeBackground) {
+                const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+                removeLightBackground(pixels);
+                context.putImageData(pixels, 0, 0);
+            }
+
+            const qualities = mimeType === 'image/jpeg' ? [0.88, 0.78, 0.68, 0.58] : [undefined];
+            for (const quality of qualities) {
+                const blob = await new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
+                if (!blob) throw new Error('The selected image could not be processed.');
+                if (blob.size <= maxBytes) {
+                    const extension = mimeType === 'image/png' ? 'png' : 'jpg';
+                    return new File([blob], `${baseName}.${extension}`, { type: mimeType });
+                }
+            }
+            scale *= 0.8;
+        }
+
+        throw new Error('The image could not be resized below the 1.8 MB upload limit.');
+    } finally {
+        URL.revokeObjectURL(objectUrl);
+    }
+}
+
 async function manageSchoolAdmins(currentUser, action, details = {}) {
     const token = await currentUser.getIdToken();
     const response = await fetchNetlifyFunction('manage-school-admins', {
@@ -150,9 +244,7 @@ async function manageSchoolAdmins(currentUser, action, details = {}) {
 
 export default function SchoolProfile() {
     const { currentUser, userData, userRole } = useAuth();
-    const canManageProfile = ['admin', 'headteacher'].includes(
-        normalizeRole(userRole || userData?.role)
-    );
+    const canManageProfile = isSchoolAdminRole(userRole || userData?.role);
     const {
         isOnline,
         saveToIndexedDB,
@@ -234,6 +326,10 @@ export default function SchoolProfile() {
     const fileInputRef = useRef(null);
     const stampInputRef = useRef(null);
     const principalSignatureInputRef = useRef(null);
+    const stampCameraInputRef = useRef(null);
+    const principalSignatureCameraInputRef = useRef(null);
+    const [removeStampBackground, setRemoveStampBackground] = useState(true);
+    const [removeSignatureBackground, setRemoveSignatureBackground] = useState(true);
 
     const availableLevels = [
         { value: 'pre-primary', label: 'Pre-Primary' },
@@ -318,7 +414,7 @@ export default function SchoolProfile() {
 
     const populateFormData = (data) => {
         setFormData({
-            name: data.name || '',
+            name: data.schoolName || data.name || '',
             schoolType: data.schoolType || 'secondary',
             curriculum: data.curriculum || 'cbc',
             highestLevel: data.highestLevel || data.level || 'lower-secondary',
@@ -620,27 +716,23 @@ export default function SchoolProfile() {
     // ============================================================
     // Stamp upload (Cloudinary)
     // ============================================================
-    const handleStampUpload = () => {
+    const handleStampUpload = (inputRef = stampInputRef) => {
         if (!isOnline) {
             showNotification('You must be online to upload a stamp.', 'warning');
             return;
         }
-        stampInputRef.current.click();
+        inputRef.current?.click();
     };
 
     const handleStampFileChange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        if (file.size > 2 * 1024 * 1024) {
-            showNotification('Stamp image must be less than 2MB', 'error');
-            e.target.value = '';
-            return;
-        }
         const schoolId = userData?.schoolId;
         if (!schoolId) return;
         setSaving(true);
         try {
-            const secureUrl = await uploadToCloudinary(file, `schools/${schoolId}/branding`);
+            const preparedFile = await prepareBrandingImage(file, removeStampBackground);
+            const secureUrl = await uploadToCloudinary(preparedFile, `schools/${schoolId}/branding`);
             await updateDoc(doc(db, 'schools', schoolId), {
                 stampUrl: secureUrl,
                 updatedAt: new Date().toISOString()
@@ -659,27 +751,23 @@ export default function SchoolProfile() {
     // ============================================================
     // Principal signature upload (Cloudinary)
     // ============================================================
-    const handlePrincipalSignatureUpload = () => {
+    const handlePrincipalSignatureUpload = (inputRef = principalSignatureInputRef) => {
         if (!isOnline) {
             showNotification('You must be online to upload a signature.', 'warning');
             return;
         }
-        principalSignatureInputRef.current.click();
+        inputRef.current?.click();
     };
 
     const handlePrincipalSignatureFileChange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        if (file.size > 2 * 1024 * 1024) {
-            showNotification('Signature image must be less than 2MB', 'error');
-            e.target.value = '';
-            return;
-        }
         const schoolId = userData?.schoolId;
         if (!schoolId) return;
         setSaving(true);
         try {
-            const secureUrl = await uploadToCloudinary(file, `schools/${schoolId}/branding`);
+            const preparedFile = await prepareBrandingImage(file, removeSignatureBackground);
+            const secureUrl = await uploadToCloudinary(preparedFile, `schools/${schoolId}/branding`);
             await updateDoc(doc(db, 'schools', schoolId), {
                 principalSignatureUrl: secureUrl,
                 updatedAt: new Date().toISOString()
@@ -1023,6 +1111,22 @@ export default function SchoolProfile() {
                 style={{ display: 'none' }}
                 onChange={handlePrincipalSignatureFileChange}
             />
+            <input
+                type="file"
+                ref={stampCameraInputRef}
+                accept="image/*"
+                capture="environment"
+                style={{ display: 'none' }}
+                onChange={handleStampFileChange}
+            />
+            <input
+                type="file"
+                ref={principalSignatureCameraInputRef}
+                accept="image/*"
+                capture="environment"
+                style={{ display: 'none' }}
+                onChange={handlePrincipalSignatureFileChange}
+            />
 
             <div className="profile-card">
                 <div className="profile-header">
@@ -1036,7 +1140,7 @@ export default function SchoolProfile() {
                         </button>
                     </div>
                     <div className="profile-info">
-                        <h2>{schoolData?.name || 'Unnamed School'}</h2>
+                        <h2>{schoolData?.schoolName || schoolData?.name || 'Unnamed School'}</h2>
                         <div className="school-id">School ID: {schoolData?.schoolId || schoolData?.id || 'N/A'}</div>
                         <span className={`school-status ${schoolData?.subscriptionStatus || 'pending'}`}>
                             {schoolData?.subscriptionStatus
@@ -1134,17 +1238,36 @@ export default function SchoolProfile() {
                                         )}
                                     </div>
                                     <div>
-                                        <button
-                                            type="button"
-                                            className="btn btn-primary"
-                                            onClick={handleStampUpload}
-                                            disabled={saving || !isOnline}
-                                            style={{ padding: '8px 16px', fontSize: 13 }}
-                                        >
-                                            <i className="fas fa-upload"></i> Upload Stamp
-                                        </button>
+                                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-primary"
+                                                onClick={() => handleStampUpload()}
+                                                disabled={saving || !isOnline}
+                                                style={{ padding: '8px 12px', fontSize: 13 }}
+                                            >
+                                                <i className="fas fa-upload"></i> Choose Image
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline"
+                                                onClick={() => handleStampUpload(stampCameraInputRef)}
+                                                disabled={saving || !isOnline}
+                                                style={{ padding: '8px 12px', fontSize: 13 }}
+                                            >
+                                                <i className="fas fa-camera"></i> Take Photo
+                                            </button>
+                                        </div>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, fontSize: 12 }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={removeStampBackground}
+                                                onChange={(event) => setRemoveStampBackground(event.target.checked)}
+                                            />
+                                            Remove light background
+                                        </label>
                                         <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
-                                            PNG with transparent background recommended. Rotated 45° on the report form.
+                                            Resized automatically for upload. Light paper background is made transparent.
                                         </p>
                                     </div>
                                 </div>
@@ -1170,17 +1293,36 @@ export default function SchoolProfile() {
                                         )}
                                     </div>
                                     <div>
-                                        <button
-                                            type="button"
-                                            className="btn btn-primary"
-                                            onClick={handlePrincipalSignatureUpload}
-                                            disabled={saving || !isOnline}
-                                            style={{ padding: '8px 16px', fontSize: 13 }}
-                                        >
-                                            <i className="fas fa-upload"></i> Upload Signature
-                                        </button>
+                                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                            <button
+                                                type="button"
+                                                className="btn btn-primary"
+                                                onClick={() => handlePrincipalSignatureUpload()}
+                                                disabled={saving || !isOnline}
+                                                style={{ padding: '8px 12px', fontSize: 13 }}
+                                            >
+                                                <i className="fas fa-upload"></i> Choose Image
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline"
+                                                onClick={() => handlePrincipalSignatureUpload(principalSignatureCameraInputRef)}
+                                                disabled={saving || !isOnline}
+                                                style={{ padding: '8px 12px', fontSize: 13 }}
+                                            >
+                                                <i className="fas fa-camera"></i> Take Photo
+                                            </button>
+                                        </div>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, fontSize: 12 }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={removeSignatureBackground}
+                                                onChange={(event) => setRemoveSignatureBackground(event.target.checked)}
+                                            />
+                                            Remove light background
+                                        </label>
                                         <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
-                                            PNG with transparent background. Placed above the principal's name.
+                                            Resized automatically for upload. Light paper background is made transparent.
                                         </p>
                                     </div>
                                 </div>

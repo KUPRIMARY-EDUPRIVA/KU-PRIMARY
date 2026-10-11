@@ -924,11 +924,9 @@ export default function Fees() {
 
             const result = await response.json();
             if (result.success) {
-                refreshData();
                 showNotification('M-Pesa STK push sent! Check the phone to complete payment.', 'success');
                 setShowMpesaModal(false);
                 setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
-                invalidateRosterCache();
             } else {
                 showNotification('Failed to send M-Pesa STK push: ' + (result.message || 'unknown error'), 'error');
             }
@@ -1654,7 +1652,6 @@ export default function Fees() {
                                 <StudentPicker
                                     schoolId={userData?.schoolId}
                                     value={feeForm.student}
-                                    admissionFirst
                                     onChange={(student) => {
                                         setFeeForm(prev => ({
                                             ...prev,
@@ -1665,10 +1662,11 @@ export default function Fees() {
                                             level: student?.level || ''
                                         }));
                                     }}
+                                    admissionFirst
                                     autoFocus
                                 />
                                 <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
-                                    Type at least 2 characters to search across all students (any page).
+                                    Searches the saved student roster locally. Refresh the list when student records change.
                                 </div>
                             </div>
 
@@ -1933,10 +1931,11 @@ export default function Fees() {
                                             studentAdmission: student?.admissionNumber || student?.studentId || ''
                                         }));
                                     }}
+                                    admissionFirst
                                     autoFocus
                                 />
                                 <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
-                                    Type at least 2 characters to search across all students (any page).
+                                    Searches the saved student roster locally. Refresh the list when student records change.
                                 </div>
                             </div>
 

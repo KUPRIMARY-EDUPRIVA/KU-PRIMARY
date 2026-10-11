@@ -87,13 +87,6 @@ exports.handler = async (event) => {
         let daraja = {};
         if (db && schoolId) {
             try {
-                const schoolDoc = await db.doc(`schools/${schoolId}`).get();
-                if (schoolDoc.exists) {
-                    const sData = schoolDoc.data();
-                    if (sData?.name) {
-                        schoolName = sData.name;
-                    }
-                }
                 const darajaDoc = await db
                     .doc(`schools/${schoolId}/private/daraja`)
                     .get();

@@ -21,6 +21,8 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebase';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
+import { loadStudentRoster } from '../services/studentRosterService';
+import { isSchoolAdminRole } from '../utils/roles';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import {
@@ -32,7 +34,6 @@ import './Communications.css';
    Constants
    ============================================================ */
 
-const SCHOOL_ADMIN_ROLES = new Set(['admin', 'user', 'school_admin', 'super-admin', 'headteacher']);
 const MAX_RECIPIENTS_PER_CAMPAIGN = 100;
 
 const SMS_BATCH_SIZE = 30;
@@ -157,7 +158,7 @@ const detectEnvironment = () => {
 export default function Communication() {
     const { currentUser, userData, userRole } = useAuth();
     const schoolId = userData?.schoolId;
-    const isAdmin = SCHOOL_ADMIN_ROLES.has(userRole || userData?.role);
+    const isAdmin = isSchoolAdminRole(userRole || userData?.role);
 
     /* ---------- Core state ---------- */
     const [loading, setLoading] = useState(true);
@@ -232,12 +233,12 @@ export default function Communication() {
         setLoadError('');
         try {
             const [
-                schoolSnap, studentSnap, teacherSnap,
+                schoolSnap, loadedStudents, teacherSnap,
                 balanceSnap, scoreSnap, historySnap,
                 templateSnap, gatewaySnap
             ] = await Promise.all([
                 getDoc(doc(db, 'schools', schoolId)),
-                getDocs(query(collection(db, 'students'), where('schoolId', '==', schoolId))),
+                loadStudentRoster(schoolId),
                 getDocs(query(collection(db, 'teachers'), where('schoolId', '==', schoolId))),
                 getDocs(query(collection(db, 'student_balances'), where('schoolId', '==', schoolId))),
                 getDocs(query(collection(db, 'student_scores'), where('schoolId', '==', schoolId))),
@@ -247,9 +248,8 @@ export default function Communication() {
             ]);
 
             const schoolData = schoolSnap.exists() ? schoolSnap.data() : {};
-            const activeStudents = studentSnap.docs
-                .map((item) => ({ id: item.id, ...item.data() }))
-                .filter((s) => s.status !== 'archived' && s.isDeleted !== true);
+            const activeStudents = loadedStudents
+                .filter((student) => student.status !== 'archived' && student.isDeleted !== true);
             const activeTeachers = teacherSnap.docs
                 .map((item) => ({ id: item.id, ...item.data() }))
                 .filter((t) => t.status !== 'inactive' && t.isDeleted !== true);

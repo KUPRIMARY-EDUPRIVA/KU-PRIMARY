@@ -13,7 +13,7 @@ android {
     namespace "com.edupriva.sms"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.EDUPRIVAKU"
+        applicationId "com.eduprivakiwanja"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

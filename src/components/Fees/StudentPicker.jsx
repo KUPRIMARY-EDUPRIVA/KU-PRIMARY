@@ -1,14 +1,16 @@
 // src/components/Fees/StudentPicker.jsx
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { searchStudentsLive } from '../../services/feeService';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSync } from '../../context/SyncContext';
+import { loadAllStudents } from '../../services/studentService';
+import { normalizeAdmissionNumber } from '../../services/admissionNumberService';
 
 /**
- * Live student search picker.
+ * Offline-first student search picker backed by the Students page roster.
  * Props:
  *   schoolId      - required
  *   value         - selected student object | null
  *   onChange      - (student | null) => void
- *   level, cls    - optional server-side filters
+ * level, cls    - optional local filters
  *   placeholder   - input placeholder
  *   autoFocus     - boolean
  */
@@ -22,14 +24,14 @@ export default function StudentPicker({
     placeholder = 'Search admission number, or enter 2+ letters of a name...',
     autoFocus = false
 }) {
+    const { isOnline, getFromIndexedDB, saveToIndexedDB } = useSync();
     const [query, setQuery] = useState('');
-    const [results, setResults] = useState([]);
+    const [roster, setRoster] = useState([]);
     const [open, setOpen] = useState(false);
     const [loading, setLoading] = useState(false);
     const [searchError, setSearchError] = useState('');
     const [highlight, setHighlight] = useState(0);
     const wrapRef = useRef(null);
-    const debounceRef = useRef(null);
 
     // Close on outside click
     useEffect(() => {
@@ -40,54 +42,83 @@ export default function StudentPicker({
         return () => document.removeEventListener('mousedown', onDocClick);
     }, []);
 
-    // Debounced server search
-    useEffect(() => {
+    const loadRoster = useCallback(async (forceRefresh = false) => {
         if (!schoolId) return;
-        if (query.trim().length < 2) {
-            setResults([]);
-            setSearchError('');
-            setLoading(false);
-            return;
-        }
-        let cancelled = false;
         setLoading(true);
         setSearchError('');
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(async () => {
-            try {
-                const r = await searchStudentsLive(schoolId, query, {
-                    level, cls, limit: 15, admissionFirst,
-                });
-                if (cancelled) return;
-                setResults(r);
-                setHighlight(0);
-                setOpen(true);
-            } catch (error) {
-                if (cancelled) return;
-                console.error('Student picker search failed:', error);
-                setResults([]);
-                setSearchError(error.message || 'Student search failed.');
-            } finally {
-                if (!cancelled) setLoading(false);
+        try {
+            const cacheKey = `students_${schoolId}`;
+            const cached = await getFromIndexedDB(cacheKey);
+            if (Array.isArray(cached)) {
+                setRoster(cached.filter((student) => !student.isDeleted));
+                if (!forceRefresh || !isOnline) return;
             }
-        }, 250);
-        return () => {
-            cancelled = true;
-            clearTimeout(debounceRef.current);
-        };
-    }, [query, schoolId, level, cls, admissionFirst]);
+            if (!isOnline) {
+                if (!Array.isArray(cached)) setSearchError('Student list is not available offline yet. Open Students while online to cache the roster.');
+                return;
+            }
+            const students = await loadAllStudents(schoolId);
+            const activeStudents = students.filter((student) => !student.isDeleted);
+            setRoster(activeStudents);
+            await saveToIndexedDB(cacheKey, students);
+        } catch (error) {
+            console.error('Student roster load failed:', error);
+            setSearchError(error.message || 'Student list could not be loaded.');
+        } finally {
+            setLoading(false);
+        }
+    }, [schoolId, getFromIndexedDB, saveToIndexedDB, isOnline]);
+
+    useEffect(() => {
+        loadRoster();
+    }, [loadRoster]);
+
+    const results = useMemo(() => {
+        const term = query.trim().toLowerCase();
+        if (term.length < 2) return [];
+        const normalizedTerm = normalizeAdmissionNumber(term).toLowerCase();
+        const matched = roster.filter((student) => {
+            if (level && student.level !== level) return false;
+            if (cls && student.class !== cls) return false;
+            const admission = normalizeAdmissionNumber(
+                student.admissionNumber || student.studentId || ''
+            ).toLowerCase();
+            const name = [
+                student.firstName,
+                student.lastName,
+                student.fullName,
+                student.name
+            ].filter(Boolean).join(' ').toLowerCase();
+            return admission.startsWith(normalizedTerm)
+                || admission.startsWith(term)
+                || name.includes(term);
+        });
+        if (admissionFirst) {
+            matched.sort((a, b) => {
+                const aAdmission = normalizeAdmissionNumber(a.admissionNumber || a.studentId || '').toLowerCase();
+                const bAdmission = normalizeAdmissionNumber(b.admissionNumber || b.studentId || '').toLowerCase();
+                return Number(bAdmission.startsWith(normalizedTerm)) - Number(aAdmission.startsWith(normalizedTerm));
+            });
+        }
+        return matched.slice(0, 15);
+    }, [query, roster, level, cls, admissionFirst]);
+
+    useEffect(() => {
+        if (query.trim().length >= 2) {
+            setHighlight(0);
+            setOpen(true);
+        }
+    }, [query]);
 
     const selectStudent = useCallback((student) => {
         onChange(student);
         setQuery('');
-        setResults([]);
         setOpen(false);
     }, [onChange]);
 
     const clearSelection = () => {
         onChange(null);
         setQuery('');
-        setResults([]);
     };
 
     const onKeyDown = (e) => {
@@ -147,7 +178,7 @@ export default function StudentPicker({
                 type="text"
                 value={query}
                 onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
-                onFocus={() => { if (results.length) setOpen(true); }}
+                onFocus={() => { if (query.trim().length >= 2) setOpen(true); }}
                 onKeyDown={onKeyDown}
                 placeholder={placeholder}
                 autoFocus={autoFocus}
@@ -174,7 +205,7 @@ export default function StudentPicker({
                 }}>
                     {results.length === 0 && !loading && (
                         <div style={{ padding: '14px', color: 'var(--gray)', fontSize: '13px', textAlign: 'center' }}>
-                            {searchError || `No students found for "${query}"`}
+                            {searchError || (roster.length ? `No students found for "${query}"` : 'No cached student roster found.')}
                         </div>
                     )}
                     {results.map((s, idx) => (
@@ -199,6 +230,17 @@ export default function StudentPicker({
                     ))}
                 </div>
             )}
+            <button
+                type="button"
+                onClick={() => loadRoster(true)}
+                disabled={!isOnline || loading}
+                style={{
+                    marginTop: 6, padding: 0, border: 0, background: 'transparent',
+                    color: 'var(--primary)', fontSize: 12, cursor: isOnline ? 'pointer' : 'not-allowed'
+                }}
+            >
+                {loading ? 'Loading student list…' : 'Refresh student list'}
+            </button>
         </div>
     );
 }

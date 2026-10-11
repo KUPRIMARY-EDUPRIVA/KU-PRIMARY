@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { db } from '../firebase';
+import { getCachedStudentRoster, loadStudentRoster } from '../services/studentRosterService';
+import { isSchoolAdminRole, normalizeRole } from '../utils/roles';
 import { collection, query, where, getDocs, onSnapshot, doc, orderBy, limit, getDoc } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
@@ -102,7 +104,8 @@ const getMotivationalMessage = (userRole, schoolData) => {
     const schoolName = schoolData?.name || schoolData?.schoolName || 'your school';
     
     // Get user role display
-    const roleDisplay = userRole === 'admin' ? 'administrator' : 
+    const roleDisplay = isSchoolAdminRole(userRole)
+        && normalizeRole(userRole) !== 'super-admin' ? 'administrator' :
                        userRole === 'teacher' ? 'educator' : 
                        userRole === 'student' ? 'student' : 'user';
     
@@ -254,13 +257,12 @@ const getTermStatusDisplay = () => {
 export default function Dashboard() {
     const navigate = useNavigate();
     const { currentUser, userData, userRole } = useAuth();
+    const isSchoolAdmin = isSchoolAdminRole(userRole || userData?.role)
+        && normalizeRole(userRole || userData?.role) !== 'super-admin';
     const { 
         isOnline, 
-        isSyncing, 
-        pendingCount,
         saveToIndexedDB,
-        getFromIndexedDB,
-        processSyncQueue
+        getFromIndexedDB
     } = useSync();
     
     // State for stats
@@ -679,7 +681,7 @@ export default function Dashboard() {
             let subscriptionStatus = schoolData?.subscriptionStatus || 'inactive';
 
             // If user is admin, get full stats
-            if (userRole === 'admin') {
+            if (isSchoolAdmin) {
                 const [
                     studentsCount,
                     teachersCount,
@@ -737,6 +739,11 @@ export default function Dashboard() {
     // Get collection count with offline fallback
     const getCollectionCount = async (collectionName, schoolId) => {
         try {
+            if (collectionName === 'students') {
+                const cached = await getCachedStudentRoster(schoolId);
+                if (cached) return cached.length;
+                return (await loadStudentRoster(schoolId)).length;
+            }
             const q = query(collection(db, collectionName), where('schoolId', '==', schoolId));
             const snapshot = await getDocs(q);
             return snapshot.size;
@@ -800,8 +807,11 @@ export default function Dashboard() {
     // Get storage usage
     const getStorageUsage = async (schoolId) => {
         try {
+            const cachedStudents = await getCachedStudentRoster(schoolId);
             const [studentCount, teacherCount, examCount, scoreCount] = await Promise.all([
-                getDocs(query(collection(db, 'students'), where('schoolId', '==', schoolId))),
+                cachedStudents
+                    ? Promise.resolve({ size: cachedStudents.length })
+                    : getDocs(query(collection(db, 'students'), where('schoolId', '==', schoolId))),
                 getDocs(query(collection(db, 'teachers'), where('schoolId', '==', schoolId))),
                 getDocs(query(collection(db, 'exams'), where('schoolId', '==', schoolId))),
                 getDocs(query(collection(db, 'student_scores'), where('schoolId', '==', schoolId)))
@@ -936,21 +946,7 @@ export default function Dashboard() {
         realtimeListeners.current = [];
 
         // Only admin gets full realtime stats
-        if (userRole === 'admin') {
-            // Students listener
-            const studentsListener = onSnapshot(
-                query(collection(db, 'students'), where('schoolId', '==', schoolId)),
-                async (snapshot) => {
-                    const count = snapshot.size;
-                    setStats(prev => ({ ...prev, totalStudents: count }));
-                    updateBadges();
-                    const studentsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    await saveToIndexedDB('students', studentsData);
-                },
-                (error) => console.error('Students listener error:', error)
-            );
-            realtimeListeners.current.push(() => studentsListener());
-            
+        if (isSchoolAdmin) {
             // Teachers listener
             const teachersListener = onSnapshot(
                 query(collection(db, 'teachers'), where('schoolId', '==', schoolId)),
@@ -1075,23 +1071,6 @@ export default function Dashboard() {
         }
     };
     
-    // Handle manual sync
-    const handleManualSync = async () => {
-        if (!isOnline) {
-            showNotification('Cannot sync while offline', 'error');
-            return;
-        }
-        
-        try {
-            await processSyncQueue();
-            await loadDashboardData();
-            showNotification('Sync completed successfully!', 'success');
-        } catch (error) {
-            console.error('Sync error:', error);
-            showNotification('Sync failed: ' + error.message, 'error');
-        }
-    };
-    
     // Handle filter activities
     const handleFilterActivities = () => {
         showNotification('Filter functionality coming soon!', 'info');
@@ -1137,7 +1116,7 @@ export default function Dashboard() {
 
     // Render role-specific stats grid
     const renderStatsGrid = () => {
-        if (userRole === 'admin') {
+        if (isSchoolAdmin) {
             return (
                 <>
                     <div className="stat-card">
@@ -1151,7 +1130,7 @@ export default function Dashboard() {
                         <div className="stat-footer">
                             <div className="status-indicator">
                                 <span className="status-dot status-active"></span>
-                                <span>Active</span>
+                                <span>Enrolled</span>
                             </div>
                             <button className="stat-more" onClick={() => navigate('/students')}>View All</button>
                         </div>
@@ -1168,7 +1147,7 @@ export default function Dashboard() {
                         <div className="stat-footer">
                             <div className="status-indicator">
                                 <span className="status-dot status-active"></span>
-                                <span>Active</span>
+                                <span>On staff</span>
                             </div>
                             <button className="stat-more" onClick={() => navigate('/teachers')}>Manage</button>
                         </div>
@@ -1185,7 +1164,7 @@ export default function Dashboard() {
                         <div className="stat-footer">
                             <div className="status-indicator">
                                 <span className="status-dot status-warning"></span>
-                                <span>Active</span>
+                                <span>In progress</span>
                             </div>
                             <button className="stat-more" onClick={() => navigate('/exams')}>Schedule</button>
                         </div>
@@ -1202,7 +1181,7 @@ export default function Dashboard() {
                         <div className="stat-footer">
                             <div className="stat-change positive">
                                 <i className="fas fa-arrow-up"></i>
-                                <span>Pending</span>
+                                <span>To grade</span>
                             </div>
                             <button className="stat-more" onClick={() => navigate('/exams')}>Review</button>
                         </div>
@@ -1217,10 +1196,6 @@ export default function Dashboard() {
                         </div>
                         <div className="stat-value">{stats.resultsPublished}</div>
                         <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className="status-dot status-info"></span>
-                                <span>{stats.resultsPublished}</span>
-                            </div>
                             <button className="stat-more" onClick={() => navigate('/results')}>Publish</button>
                         </div>
                     </div>
@@ -1235,43 +1210,10 @@ export default function Dashboard() {
                         </div>
                         <div className="stat-value">{stats.storageUsage}</div>
                         <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className="status-dot status-warning"></span>
-                                <span>{stats.storageUsage}</span>
-                            </div>
                             <button className="stat-more" onClick={() => navigate('/school-profile')}>Manage</button>
                         </div>
                     </div>
 
-                    <div className="stat-card">
-                        <div className="stat-header">
-                            <div className="stat-title">Sync Status</div>
-                            <div className="stat-icon sync">
-                                <i className="fas fa-sync-alt"></i>
-                            </div>
-                        </div>
-                        <div className="stat-value">
-                            {isSyncing ? 'Syncing...' : (isOnline ? 'Online' : 'Offline')}
-                        </div>
-                        <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className={`status-dot ${isOnline ? 'status-active' : 'status-danger'}`}></span>
-                                <span>{isOnline ? 'Online' : 'Offline'}</span>
-                                {pendingCount > 0 && (
-                                    <span style={{ marginLeft: '8px', color: 'var(--warning)' }}>
-                                        ({pendingCount} pending)
-                                    </span>
-                                )}
-                            </div>
-                            <button 
-                                className="stat-more" 
-                                onClick={handleManualSync}
-                                disabled={!isOnline || isSyncing}
-                            >
-                                {isSyncing ? 'Syncing...' : 'Sync Now'}
-                            </button>
-                        </div>
-                    </div>
                 </>
             );
         }
@@ -1307,7 +1249,7 @@ export default function Dashboard() {
                         <div className="stat-footer">
                             <div className="status-indicator">
                                 <span className="status-dot status-warning"></span>
-                                <span>Total</span>
+                                <span>Scheduled</span>
                             </div>
                             <button className="stat-more" onClick={() => handleQuickAction('view-exams')}>View</button>
                         </div>
@@ -1347,35 +1289,6 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-                    <div className="stat-card">
-                        <div className="stat-header">
-                            <div className="stat-title">Sync Status</div>
-                            <div className="stat-icon sync">
-                                <i className="fas fa-sync-alt"></i>
-                            </div>
-                        </div>
-                        <div className="stat-value">
-                            {isSyncing ? 'Syncing...' : (isOnline ? 'Online' : 'Offline')}
-                        </div>
-                        <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className={`status-dot ${isOnline ? 'status-active' : 'status-danger'}`}></span>
-                                <span>{isOnline ? 'Online' : 'Offline'}</span>
-                                {pendingCount > 0 && (
-                                    <span style={{ marginLeft: '8px', color: 'var(--warning)' }}>
-                                        ({pendingCount} pending)
-                                    </span>
-                                )}
-                            </div>
-                            <button 
-                                className="stat-more" 
-                                onClick={handleManualSync}
-                                disabled={!isOnline || isSyncing}
-                            >
-                                {isSyncing ? 'Syncing...' : 'Sync Now'}
-                            </button>
-                        </div>
-                    </div>
                 </>
             );
         }
@@ -1435,52 +1348,6 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-                    <div className="stat-card">
-                        <div className="stat-header">
-                            <div className="stat-title">Exam Progress</div>
-                            <div className="stat-icon progress">
-                                <i className="fas fa-tasks"></i>
-                            </div>
-                        </div>
-                        <div className="stat-value">{stats.resultsPublished}</div>
-                        <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className="status-dot status-active"></span>
-                                <span>Completed</span>
-                            </div>
-                            <button className="stat-more" onClick={() => navigate('/scores')}>Details</button>
-                        </div>
-                    </div>
-
-                    <div className="stat-card">
-                        <div className="stat-header">
-                            <div className="stat-title">Sync Status</div>
-                            <div className="stat-icon sync">
-                                <i className="fas fa-sync-alt"></i>
-                            </div>
-                        </div>
-                        <div className="stat-value">
-                            {isSyncing ? 'Syncing...' : (isOnline ? 'Online' : 'Offline')}
-                        </div>
-                        <div className="stat-footer">
-                            <div className="status-indicator">
-                                <span className={`status-dot ${isOnline ? 'status-active' : 'status-danger'}`}></span>
-                                <span>{isOnline ? 'Online' : 'Offline'}</span>
-                                {pendingCount > 0 && (
-                                    <span style={{ marginLeft: '8px', color: 'var(--warning)' }}>
-                                        ({pendingCount} pending)
-                                    </span>
-                                )}
-                            </div>
-                            <button 
-                                className="stat-more" 
-                                onClick={handleManualSync}
-                                disabled={!isOnline || isSyncing}
-                            >
-                                {isSyncing ? 'Syncing...' : 'Sync Now'}
-                            </button>
-                        </div>
-                    </div>
                 </>
             );
         }
@@ -1490,7 +1357,7 @@ export default function Dashboard() {
 
     // Render role-specific quick actions
     const renderQuickActions = () => {
-        if (userRole === 'admin') {
+        if (isSchoolAdmin) {
             return (
                 <>
                     <div className="quick-action-card" onClick={() => handleQuickAction('add-student')}>
@@ -1636,7 +1503,7 @@ export default function Dashboard() {
         else if (hour >= 17 && hour < 21) emoji = '';
         else emoji = '';
         
-        if (userRole === 'admin') {
+        if (isSchoolAdmin) {
             return (
                 <div className="welcome-content">
                     <h1>{emoji} Welcome back, <span>{firstName}</span>!</h1>
@@ -1703,7 +1570,7 @@ export default function Dashboard() {
 
     // Render role-specific welcome actions
     const renderWelcomeActions = () => {
-        if (userRole === 'admin') {
+        if (isSchoolAdmin) {
             return (
                 <>
                     <button className="btn btn-primary" onClick={() => navigate('/students?action=add')}>
@@ -1747,7 +1614,7 @@ export default function Dashboard() {
 
     // Render role-specific recent activity section
     const renderRecentActivity = () => {
-        if (userRole === 'admin') {
+        if (isSchoolAdmin) {
             return (
                 <section className="recent-activity">
                     <div className="section-header">
@@ -2087,7 +1954,7 @@ export default function Dashboard() {
             {/* Quick Actions */}
             <section className="mt-30">
                 <h2 className="section-title mb-20">
-                    {userRole === 'admin' ? 'Quick Actions' : 
+                    {isSchoolAdmin ? 'Quick Actions' :
                      userRole === 'teacher' ? 'Teaching Tools' : 
                      'Student Tools'}
                 </h2>

@@ -72,6 +72,7 @@ export default function Login() {
     const [verificationTimer, setVerificationTimer] = useState(30);
     const [showRegister, setShowRegister] = useState(false);
     const [biometricReady, setBiometricReady] = useState(false);
+    const [pendingBiometricRole, setPendingBiometricRole] = useState('');
 
     // ---- Upload state (File objects + previews) ----
     const [logoFile, setLogoFile] = useState(null);
@@ -83,6 +84,7 @@ export default function Login() {
     const verificationIntervalRef = useRef(null);
     const timerIntervalRef = useRef(null);
     const fileInputRef = useRef(null);
+    const biometricAttemptRef = useRef(false);
 
     // ---- Lifecycle / network ----
     useEffect(() => {
@@ -356,29 +358,52 @@ export default function Login() {
     };
 
     // ---- Login ----
-    const setupBiometricLogin = async () => {
-        if (biometricReady || !isDeviceBiometricAvailable()) return;
-        const status = await getBiometricLoginStatus();
-        if (!status.available || status.enabled) return;
-        if (!window.confirm('Enable biometric protection for offline access on this device? Your password will not be stored.')) return;
+    const offerBiometricSetup = async (role) => {
+        if (biometricReady || !isDeviceBiometricAvailable()) return false;
         try {
-            await authenticateWithBiometrics();
-            await enableBiometricUnlock();
-            setBiometricReady(true);
-            showMessage('Biometric offline access enabled. Your password is not stored on this device.', 'success');
+            const status = await getBiometricLoginStatus();
+            if (!status.available || status.enabled) return false;
+            setPendingBiometricRole(role);
+            return true;
         } catch (error) {
-            console.warn('Biometric login was not enabled:', error.message);
-            showMessage('Biometric login was not enabled. You can continue with your password.', 'warning');
+            console.warn('Could not check biometric setup availability:', error.message);
+            return false;
+        }
+    };
+
+    const finishBiometricSetup = async (enable) => {
+        const role = pendingBiometricRole;
+        if (!role) return;
+        setLoading(true);
+        try {
+            if (enable) {
+                await authenticateWithBiometrics();
+                await enableBiometricUnlock();
+                setBiometricReady(true);
+                showMessage('Biometric unlock is enabled for this device.', 'success');
+            }
+            unlockSession();
+            setPendingBiometricRole('');
+            navigateToDashboard(role);
+        } catch (error) {
+            console.warn('Biometric unlock setup failed:', error.message);
+            showMessage(error.message || 'Biometric setup failed. You can continue without it.', 'error');
+        } finally {
+            setLoading(false);
         }
     };
 
     const handleBiometricLogin = async () => {
+        if (biometricAttemptRef.current) return;
+        biometricAttemptRef.current = true;
+
+        const biometricPromise = authenticateWithBiometrics();
         setLoading(true);
         try {
-            if (!currentUser) {
+            await biometricPromise;
+            if (!currentUser && !auth.currentUser) {
                 throw new Error('No saved sign-in session is available. Connect to the internet and sign in first.');
             }
-            await authenticateWithBiometrics();
             unlockSession();
             const collection = userCollection || (
                 userRole === 'teacher' ? 'teachers'
@@ -389,6 +414,8 @@ export default function Login() {
         } catch (error) {
             console.warn('Biometric sign-in failed:', error.message);
             showMessage(error.message || 'Unable to sign in with biometrics.', 'error');
+        } finally {
+            biometricAttemptRef.current = false;
             setLoading(false);
         }
     };
@@ -447,10 +474,11 @@ export default function Login() {
                 });
                 sessionStorage.setItem('userRole', collection);
                 sessionStorage.setItem('userId', docId);
-                await setupBiometricLogin();
-                const roleDisplay =
-                    collection === 'users' ? 'Admin' :
-                    collection === 'teachers' ? 'Teacher' : 'Student';
+                unlockSession();
+                if (await offerBiometricSetup(collection)) {
+                    setLoading(false);
+                    return;
+                }
                 showMessage(`Welcome ! Redirecting to dashboard...`, 'success');
                 setTimeout(() => navigateToDashboard(collection), 2000);
             } else {
@@ -470,7 +498,11 @@ export default function Login() {
                 });
                 sessionStorage.setItem('userRole', 'users');
                 sessionStorage.setItem('userId', user.uid);
-                await setupBiometricLogin();
+                unlockSession();
+                if (await offerBiometricSetup('users')) {
+                    setLoading(false);
+                    return;
+                }
                 showMessage('Welcome! Redirecting to dashboard...', 'success');
                 setTimeout(() => navigateToDashboard('users'), 2000);
             }
@@ -768,19 +800,69 @@ export default function Login() {
                                                 />
                                             </div>
 
-                                            {!isOnline && (
-                                                <div style={{ padding: '10px', marginBottom: '15px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '8px', fontSize: '13px', color: '#856404' }}>
-                                                    <i className="fas fa-info-circle"></i> Offline mode: a saved session needs biometric setup and unlock. First sign-in and biometric setup require internet.
-                                                </div>
-                                            )}
-
                                             <button type="submit" className="btn" disabled={loading}>
                                                 {loading ? (<><div className="loading"></div><span>Logging in...</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Login to Dashboard</span></>)}
                                             </button>
-                                            {biometricReady && currentUser && (
-                                                <button type="button" className="btn" onClick={handleBiometricLogin} disabled={loading}>
-                                                    <i className="fas fa-fingerprint"></i><span>Unlock saved session with biometrics</span>
+                                            {biometricReady && (currentUser || auth.currentUser) && (
+                                                <button
+                                                    type="button"
+                                                    className="btn"
+                                                    onPointerDown={(event) => {
+                                                        if (event.isPrimary && event.button === 0) {
+                                                            handleBiometricLogin();
+                                                        }
+                                                    }}
+                                                    onClick={handleBiometricLogin}
+                                                    disabled={loading}
+                                                >
+                                                    {loading ? <><div className="loading"></div><span>Verify your identity…</span></> : <><i className="fas fa-fingerprint"></i><span>Continue with biometrics</span></>}
                                                 </button>
+                                            )}
+                                            {pendingBiometricRole && (
+                                                <section
+                                                    role="dialog"
+                                                    aria-modal="true"
+                                                    aria-labelledby="biometricSetupTitle"
+                                                    style={{
+                                                        marginTop: 18,
+                                                        padding: 18,
+                                                        border: '1px solid #cbd5e1',
+                                                        borderRadius: 12,
+                                                        background: '#f8fafc',
+                                                        color: '#172033',
+                                                    }}
+                                                >
+                                                    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                                                        <i className="fas fa-fingerprint" aria-hidden="true" style={{ fontSize: 24, color: '#3156a3' }} />
+                                                        <div>
+                                                            <h3 id="biometricSetupTitle" style={{ margin: '0 0 6px', fontSize: 16 }}>
+                                                                Enable biometric unlock?
+                                                            </h3>
+                                                            <p style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.5 }}>
+                                                                Use your device fingerprint or face recognition to reopen your saved session offline. Your password is not stored.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                                                        <button
+                                                            type="button"
+                                                            className="btn"
+                                                            onClick={() => finishBiometricSetup(true)}
+                                                            disabled={loading}
+                                                        >
+                                                            <i className="fas fa-shield-alt" aria-hidden="true" />
+                                                            <span>Enable securely</span>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-outline"
+                                                            onClick={() => finishBiometricSetup(false)}
+                                                            disabled={loading}
+                                                        >
+                                                            Continue without it
+                                                        </button>
+                                                    </div>
+                                                </section>
                                             )}
 
                                             <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>

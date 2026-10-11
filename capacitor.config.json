@@ -1,12 +1,12 @@
 {
-  "appId": "com.EDUPRIVAKU",
-  "appName": "EDUPRIVA KU",
+  "appId": "com.eduprivakiwanja",
+  "appName": "EDUPRIVA KIWANJA",
   "webDir": "build",
   "server": {
     "androidScheme": "https",
     "hostname": "localhost",
     "allowNavigation": [
-      "kupri.netlify.app"
+      "kiwanjapri.netlify.app"
     ]
   },
   "backgroundColor": "#f5f7fb",

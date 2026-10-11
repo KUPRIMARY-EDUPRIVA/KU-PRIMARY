@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
 import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
+import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { showAppNotice } from '../utils/appNotice';
@@ -15,6 +15,7 @@ import {
     downloadClassReportForms,
     downloadStudentReportForm,
 } from '../services/pdf';
+import { loadStudentRoster } from '../services/studentRosterService';
 
 const MAX_STUDENTS = 500;
 const MAX_SCORES = 4000;
@@ -139,15 +140,10 @@ export default function StudentReports() {
 
         setLoading(true);
         try {
-            const studentsSnap = await getDocs(query(
-                collection(db, 'students'),
-                where('schoolId', '==', schoolId),
-                where('level', '==', selectedLevel),
-                where('class', '==', selectedClass),
-                orderBy('firstName'),
-                limit(MAX_STUDENTS)
-            ));
-            const studentsData = studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const studentsData = (await loadStudentRoster(schoolId))
+                .filter((student) => student.level === selectedLevel && student.class === selectedClass)
+                .sort((a, b) => String(a.firstName || '').localeCompare(String(b.firstName || '')))
+                .slice(0, MAX_STUDENTS);
 
             if (studentsData.length === 0) {
                 showNotification('No students found for this class', 'warning');

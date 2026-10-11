@@ -52,32 +52,42 @@ public class DeviceSecurityPlugin extends Plugin {
             return;
         }
 
-        Executor executor = ContextCompat.getMainExecutor(getContext());
-        BiometricPrompt prompt = new BiometricPrompt(getActivity(), executor,
-            new BiometricPrompt.AuthenticationCallback() {
-                @Override
-                public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-                    JSObject response = new JSObject();
-                    response.put("authenticated", true);
-                    call.resolve(response);
-                }
+        getBridge().saveCall(call);
+        getActivity().runOnUiThread(() -> {
+            Executor executor = ContextCompat.getMainExecutor(getContext());
+            BiometricPrompt prompt = new BiometricPrompt(getActivity(), executor,
+                new BiometricPrompt.AuthenticationCallback() {
+                    @Override
+                    public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                        getBridge().releaseCall(call);
+                        JSObject response = new JSObject();
+                        response.put("authenticated", true);
+                        call.resolve(response);
+                    }
 
-                @Override
-                public void onAuthenticationError(int errorCode, CharSequence errorString) {
-                    call.reject(errorString.toString());
-                }
+                    @Override
+                    public void onAuthenticationError(int errorCode, CharSequence errorString) {
+                        getBridge().releaseCall(call);
+                        call.reject(errorString.toString());
+                    }
 
-                @Override
-                public void onAuthenticationFailed() {
-                    // The prompt remains open so the user can retry.
-                }
-            });
-        BiometricPrompt.PromptInfo promptInfo = new BiometricPrompt.PromptInfo.Builder()
-            .setTitle("Sign in to EduPriva")
-            .setSubtitle("Verify your identity to continue")
-            .setNegativeButtonText("Cancel")
-            .build();
-        prompt.authenticate(promptInfo);
+                    @Override
+                    public void onAuthenticationFailed() {
+                        // The prompt remains open so the user can retry.
+                    }
+                });
+            BiometricPrompt.PromptInfo promptInfo = new BiometricPrompt.PromptInfo.Builder()
+                .setTitle("EDUPRIVA TECHNOLOGIES")
+                .setSubtitle("Verify your identity to unlock your saved session")
+                .setNegativeButtonText("Cancel")
+                .build();
+            try {
+                prompt.authenticate(promptInfo);
+            } catch (Exception exception) {
+                getBridge().releaseCall(call);
+                call.reject("Could not start biometric verification.", exception);
+            }
+        });
     }
 
     @PluginMethod

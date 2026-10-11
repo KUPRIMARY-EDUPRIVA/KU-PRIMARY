@@ -1,33 +1,33 @@
 {
   "project_info": {
-    "project_number": "72742908455",
-    "project_id": "ku-primary",
-    "storage_bucket": "ku-primary.firebasestorage.app"
+    "project_number": "997723863054",
+    "project_id": "ku-primary-edupriva",
+    "storage_bucket": "ku-primary-edupriva.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:72742908455:android:3d9f58e1b987de20619402",
+        "mobilesdk_app_id": "1:997723863054:android:4beb6b2c778a4b6659a45f",
         "android_client_info": {
-          "package_name": "com.EDUPRIVAKU"
+          "package_name": "com.eduprivakiwanja"
         }
       },
       "oauth_client": [
         {
-          "client_id": "72742908455-v396mnk6rih0q8verj1kpf5epg941ng1.apps.googleusercontent.com",
+          "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyB6Fsmlu-iM3P71ChtCee-NxZ5SMD5dHeA"
+          "current_key": "AIzaSyBM-ZTOS2F8fLYi_bXJlJkOEWHU_7nm5w0"
         }
       ],
       "services": {
         "appinvite_service": {
           "other_platform_oauth_client": [
             {
-              "client_id": "72742908455-v396mnk6rih0q8verj1kpf5epg941ng1.apps.googleusercontent.com",
+              "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
               "client_type": 3
             }
           ]
@@ -36,27 +36,27 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:72742908455:android:951fad6d7aa41b49619402",
+        "mobilesdk_app_id": "1:997723863054:android:26dd69bae284079059a45f",
         "android_client_info": {
-          "package_name": "com.edupriva.sms"
+          "package_name": "com.eduprivakiwanjasms"
         }
       },
       "oauth_client": [
         {
-          "client_id": "72742908455-v396mnk6rih0q8verj1kpf5epg941ng1.apps.googleusercontent.com",
+          "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
           "client_type": 3
         }
       ],
       "api_key": [
         {
-          "current_key": "AIzaSyB6Fsmlu-iM3P71ChtCee-NxZ5SMD5dHeA"
+          "current_key": "AIzaSyBM-ZTOS2F8fLYi_bXJlJkOEWHU_7nm5w0"
         }
       ],
       "services": {
         "appinvite_service": {
           "other_platform_oauth_client": [
             {
-              "client_id": "72742908455-v396mnk6rih0q8verj1kpf5epg941ng1.apps.googleusercontent.com",
+              "client_id": "997723863054-q5f5jddlule9596j4g8p11115henav24.apps.googleusercontent.com",
               "client_type": 3
             }
           ]

@@ -10,6 +10,8 @@
    1. DESIGN TOKENS
    ============================================================ */
 :root {
+    color-scheme: light;
+
     /* ---- Brand: Navy ---- */
     --navy-900: #0a1230;
     --navy-800: #0f1a44;
@@ -173,6 +175,7 @@ input, select, textarea {
     font-family: inherit;
     font-size: inherit;
     color: inherit;
+    color-scheme: light;
 }
 
 img, svg { display: block; max-width: 100%; }
@@ -3363,64 +3366,6 @@ tbody tr:hover td { background: var(--bg); }
     }
 }
 
-/* ============================================================
-   32. DARK MODE
-   ============================================================ */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #0b1020;
-        --bg-alt: #141a30;
-        --surface: #141a30;
-        --text: #eef1f8;
-        --text-soft: #c5cbdb;
-        --text-muted: #8994b3;
-        --text-faint: #5a6688;
-        --border: #232a44;
-        --border-strong: #313a5c;
-        --divider: #1b2138;
-        --navy-50: #161d36;
-        --navy-100: #1c2547;
-        --navy-200: #2b3768;
-        --white: #141a30;
-    }
-
-    .sidebar { background: #060b1c; }
-    .top-header,
-    .page-subheader { background: var(--surface); }
-    .table-container,
-    .card,
-    .panel,
-    .stat-card,
-    .rp-chart-card,
-    .rp-kpi { background: var(--surface); }
-    thead { background: #1b2138; }
-    .modal { background: var(--surface); }
-    .filters-section { background: var(--surface); }
-    .search-input,
-    .filter-select,
-    .form-group input,
-    .form-group select,
-    .form-group textarea {
-        background: #0f1528;
-        border-color: var(--border-strong);
-        color: var(--text);
-    }
-    .btn-outline {
-        border-color: var(--border-strong);
-        color: var(--text-soft);
-    }
-    .btn-outline:hover:not(:disabled) {
-        background: var(--bg-alt);
-        color: var(--text);
-    }
-    .pagination-btns button {
-        background: #0f1528;
-        border-color: var(--border-strong);
-        color: var(--text-soft);
-    }
-    .modal-close { background: var(--bg-alt); color: var(--text-soft); }
-    .modal-close:hover { background: #2a1418; color: #f2b1ab; }
-}
 /* ============================================================
    33. AUDIT LOGS PAGE
    ============================================================ */

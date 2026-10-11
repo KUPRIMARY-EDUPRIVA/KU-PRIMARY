@@ -2,6 +2,7 @@
 import { auth, db } from '../firebase';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
 import { normalizeAdmissionNumber } from '../services/admissionNumberService';
+import { openDB } from 'idb';
 import {
     collection,
     doc,
@@ -9,9 +10,61 @@ import {
     getDocs,
     getCountFromServer,
     limit,
+    onSnapshot,
     query,
     where,
 } from 'firebase/firestore';
+
+const CHATBOT_CACHE_TTL = {
+    balance: 10_000,
+    dailyCollections: 60_000,
+    studentCount: 5 * 60_000,
+    classTeacher: 15 * 60_000,
+};
+const responseCache = new Map();
+let studentCacheDbPromise;
+
+async function getCachedResponse(key, ttlMs, fetcher) {
+    const cached = responseCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    const pending = fetcher();
+    responseCache.set(key, { value: pending, expiresAt: Date.now() + ttlMs });
+    try {
+        const value = await pending;
+        if (value?.success === false) responseCache.delete(key);
+        else responseCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+        return value;
+    } catch (error) {
+        responseCache.delete(key);
+        throw error;
+    }
+}
+
+async function getCachedStudentRoster(schoolId) {
+    try {
+        studentCacheDbPromise ||= openDB('toplink_sync', 1, {
+            upgrade(db) {
+                if (!db.objectStoreNames.contains('sync_queue')) {
+                    const queue = db.createObjectStore('sync_queue', {
+                        keyPath: 'id',
+                        autoIncrement: true,
+                    });
+                    queue.createIndex('by-createdAt', 'createdAt');
+                }
+                if (!db.objectStoreNames.contains('kv')) {
+                    db.createObjectStore('kv');
+                }
+            },
+        });
+        const idb = await studentCacheDbPromise;
+        const roster = await idb.get('kv', `students_${schoolId}`);
+        return Array.isArray(roster) ? roster : [];
+    } catch (error) {
+        console.warn('Chatbot could not read the offline student roster:', error);
+        return [];
+    }
+}
 
 /**
  * Executes API calls to the Netlify functions backing the chatbot.
@@ -41,25 +94,35 @@ export const findStudentByAdmissionNumber = async (admissionNumber, schoolId) =>
     if (!schoolId || !/^[A-Za-z0-9][A-Za-z0-9/-]{0,39}$/.test(normalizedAdmission)) {
         return null;
     }
+    const cacheKey = `chatbot:student:${schoolId}:${normalizedAdmission}`;
+    return getCachedResponse(cacheKey, 2 * 60_000, async () => {
     const candidates = [...new Set([
         normalizedAdmission,
         String(admissionNumber || '').trim().toUpperCase(),
     ])];
-    for (const candidate of candidates) {
-        for (const field of ['admissionNumber', 'studentId']) {
-            const result = await getDocs(query(
-                collection(db, 'students'),
-                where('schoolId', '==', schoolId),
-                where(field, '==', candidate),
-                limit(1)
-            ));
-            if (!result.empty) {
-                const student = result.docs[0];
-                return { id: student.id, ...student.data() };
-            }
+    const roster = await getCachedStudentRoster(schoolId);
+    const cachedStudent = roster.find((student) => {
+        if (student.isDeleted) return false;
+        return candidates.includes(normalizeAdmissionNumber(
+            student.admissionNumber || student.studentId || ''
+        ));
+    });
+    if (cachedStudent) return cachedStudent;
+
+    for (const field of ['admissionNumber', 'studentId']) {
+        const result = await getDocs(query(
+            collection(db, 'students'),
+            where('schoolId', '==', schoolId),
+            where(field, 'in', candidates),
+            limit(1)
+        ));
+        if (!result.empty) {
+            const student = result.docs[0];
+            return { id: student.id, ...student.data() };
         }
     }
     return null;
+    });
 };
 
 /* ============================================================
@@ -111,9 +174,8 @@ export const triggerSTKPush = async (phone, amount, student, schoolId) => {
 };
 
 /**
- * Poll the `mpesa_pending_transactions/{checkoutRequestID}` document that
- * mpesa-callback.js updates. Resolves as soon as the status is terminal,
- * or after `timeoutMs`.
+ * Listen to the pending transaction document that mpesa-callback.js updates.
+ * A document listener avoids repeatedly reading the same pending record.
  *
  * Terminal statuses:
  *   completed | failed | cancelled | timeout | insufficient_funds |
@@ -121,7 +183,6 @@ export const triggerSTKPush = async (phone, amount, student, schoolId) => {
  */
 export const checkMpesaStatus = async (checkoutRequestID, {
     timeoutMs = 90_000,
-    intervalMs = 3_000,
 } = {}) => {
     if (!checkoutRequestID) {
         return { success: false, status: 'unknown', message: 'Missing CheckoutRequestID.' };
@@ -134,47 +195,51 @@ export const checkMpesaStatus = async (checkoutRequestID, {
         'system_error', 'duplicate',
     ]);
 
-    const startedAt = Date.now();
+    return new Promise((resolve) => {
+        let unsubscribe;
+        let finished = false;
+        const finish = (result) => {
+            finished = true;
+            window.clearTimeout(timeout);
+            unsubscribe?.();
+            resolve(result);
+        };
+        const timeout = window.setTimeout(() => finish({
+            success: false,
+            status: 'pending',
+            message: 'Timed out waiting for M-Pesa confirmation.',
+        }), timeoutMs);
 
-    // Loop until terminal status or budget exhausted.
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-        try {
-            const snap = await getDoc(pendingRef);
-            if (snap.exists()) {
-                const data = snap.data() || {};
-                const status = String(data.status || 'pending').toLowerCase();
-
-                if (terminalStatuses.has(status)) {
-                    return {
-                        success: status === 'completed',
-                        status,
-                        receipt: data.mpesaReceiptNumber || '',
-                        amountPaid: Number(data.amountPaid || data.amount || 0),
-                        mpesaResultCode: data.mpesaResultCode ?? null,
-                        mpesaResultDesc: data.mpesaResultDesc || '',
-                        isUserCancelled: !!data.isUserCancelled,
-                    };
-                }
+        unsubscribe = onSnapshot(pendingRef, (snap) => {
+            if (!snap.exists()) return;
+            const data = snap.data() || {};
+            const status = String(data.status || 'pending').toLowerCase();
+            if (terminalStatuses.has(status)) {
+                finish({
+                    success: status === 'completed',
+                    status,
+                    receipt: data.mpesaReceiptNumber || '',
+                    amountPaid: Number(data.amountPaid || data.amount || 0),
+                    mpesaResultCode: data.mpesaResultCode ?? null,
+                    mpesaResultDesc: data.mpesaResultDesc || '',
+                    isUserCancelled: !!data.isUserCancelled,
+                });
             }
-            // else: pending doc not visible yet — keep polling.
-        } catch (err) {
-            console.warn('checkMpesaStatus: poll failed', err);
-        }
-
-        if (Date.now() - startedAt >= timeoutMs) {
-            return {
+        }, (error) => {
+            console.error('checkMpesaStatus: listener failed', error);
+            finish({
                 success: false,
-                status: 'pending',
-                message: 'Timed out waiting for M-Pesa confirmation.',
-            };
-        }
-
-        await new Promise((r) => setTimeout(r, intervalMs));
-    }
+                status: 'unknown',
+                message: 'Could not monitor payment confirmation. Check the fee records shortly.',
+            });
+        });
+        if (finished) unsubscribe();
+    });
 };
 
 export const fetchFeeBalance = async (admissionNumber, schoolId) => {
+    const key = `chatbot:balance:${schoolId}:${normalizeAdmissionNumber(admissionNumber)}`;
+    return getCachedResponse(key, CHATBOT_CACHE_TTL.balance, async () => {
     try {
         const token = await auth.currentUser.getIdToken();
         const response = await fetchNetlifyFunction('get-student-balance', {
@@ -183,7 +248,7 @@ export const fetchFeeBalance = async (admissionNumber, schoolId) => {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`,
             },
-            body: JSON.stringify({ admissionNumber, schoolId }),
+            body: JSON.stringify({ admissionNumber: normalizeAdmissionNumber(admissionNumber), schoolId }),
         });
         const data = await response.json();
         return {
@@ -195,6 +260,7 @@ export const fetchFeeBalance = async (admissionNumber, schoolId) => {
     } catch {
         return { success: false, balance: 'Error fetching balance' };
     }
+    });
 };
 
 /* ============================================================
@@ -240,6 +306,8 @@ export const fetchPerformance = async ({ scope = 'school', className, level, ter
    ============================================================ */
 
 export const fetchDailyCollections = async (schoolId) => {
+    const key = `chatbot:daily-collections:${schoolId}:${new Date().toISOString().slice(0, 10)}`;
+    return getCachedResponse(key, CHATBOT_CACHE_TTL.dailyCollections, async () => {
     try {
         const token = await auth.currentUser.getIdToken();
         const response = await fetchNetlifyFunction('reports-rollup', {
@@ -259,6 +327,7 @@ export const fetchDailyCollections = async (schoolId) => {
     } catch {
         return { success: false, today: 'Error', week: 'Error' };
     }
+    });
 };
 
 /* ============================================================
@@ -269,6 +338,21 @@ export async function fetchStudentCount({ schoolId, cls } = {}) {
     try {
         if (!schoolId) {
             return { success: false, error: 'Missing schoolId.' };
+        }
+        const cacheKey = `chatbot:student-count:${schoolId}:${normaliseClassDisplay(cls || 'all').toLowerCase()}`;
+        return await getCachedResponse(cacheKey, CHATBOT_CACHE_TTL.studentCount, async () => {
+        const roster = await getCachedStudentRoster(schoolId);
+        if (cls && roster.length > 0) {
+            const candidates = cls ? new Set(buildClassCandidates(cls).map((item) => item.toLowerCase())) : null;
+            const students = roster.filter((student) => (
+                !student.isDeleted
+                && (!candidates || candidates.has(String(student.class || '').toLowerCase()))
+            ));
+            return {
+                success: true,
+                count: students.length,
+                displayClass: cls ? normaliseClassDisplay(cls) : 'the whole school'
+            };
         }
         const studentsRef = collection(db, 'students');
         const displayClass = normaliseClassDisplay(cls);
@@ -318,6 +402,7 @@ export async function fetchStudentCount({ schoolId, cls } = {}) {
             count,
             displayClass: matchedClass
         };
+        });
     } catch (err) {
         console.error('fetchStudentCount failed:', err);
         return { success: false, error: err.message || 'Failed to count students.' };
@@ -333,6 +418,8 @@ export async function fetchClassTeacher({ schoolId, cls } = {}) {
             return { success: false, error: 'Please specify a class.' };
         }
 
+        const cacheKey = `chatbot:class-teacher:${schoolId}:${normaliseClassDisplay(cls).toLowerCase()}`;
+        return await getCachedResponse(cacheKey, CHATBOT_CACHE_TTL.classTeacher, async () => {
         const displayClass = normaliseClassDisplay(cls);
         const candidates = buildClassCandidates(cls);
 
@@ -403,6 +490,7 @@ export async function fetchClassTeacher({ schoolId, cls } = {}) {
             },
             displayClass: matchedKey
         };
+        });
     } catch (err) {
         console.error('fetchClassTeacher failed:', err);
         return { success: false, error: err.message || 'Failed to look up class teacher.' };

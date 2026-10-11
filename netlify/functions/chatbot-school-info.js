@@ -19,6 +19,7 @@ const { cacheGet, cacheSet } = require('./_lib/blobCache');
 // 12 hours. Bump down if admin edits need to reach teachers faster
 // without an explicit invalidation call.
 const CACHE_TTL_SECONDS = 12 * 60 * 60;
+const COUNT_CACHE_TTL_SECONDS = 60 * 60;
 
 const LEVEL_LABELS = {
     'pre-primary': 'Pre-Primary',
@@ -88,32 +89,50 @@ exports.handler = async (event) => {
         }
 
         // ------------------------------------------------------------
-        // CACHE: one entry per (school, topic) pair. Caching per topic
-        // keeps the payload small and lets us hit the cache even for
-        // narrower queries like "school name" without doing a full read.
-        // ------------------------------------------------------------
-        const cacheKey = `school_info:${schoolId}:${topic}`;
-        const cached = await cacheGet(cacheKey);
-        if (cached) {
-            return json(200, cached);
+        if (!['overview', 'classes', 'subjects', 'teachers', 'contact', 'levels', 'all'].includes(topic)) {
+            return json(400, { success: false, error: `Unknown topic "${topic}"` });
         }
+
+        // Cache topic responses plus the shared school record and counts.
+        // Different questions reuse one school read; only count questions
+        // trigger the separate, hourly-cached aggregation queries.
+        // ------------------------------------------------------------
+        const responseKey = `school_info:${schoolId}:${topic}`;
+        const cachedResponse = await cacheGet(responseKey);
+        if (cachedResponse) return json(200, cachedResponse);
 
         const admin = initAdmin();
         const db = admin.firestore();
-
-        const [schoolSnap, teachersCountSnap, studentsCountSnap] = await Promise.all([
-            db.collection('schools').doc(schoolId).get(),
-            db.collection('teachers').where('schoolId', '==', schoolId).count().get().catch(() => null),
-            db.collection('students').where('schoolId', '==', schoolId).count().get().catch(() => null),
-        ]);
-
-        if (!schoolSnap.exists) {
-            return json(404, { success: false, error: 'School not found' });
+        const schoolKey = `school_info:${schoolId}:school`;
+        let school = await cacheGet(schoolKey);
+        if (!school) {
+            const schoolSnap = await db.collection('schools').doc(schoolId).get();
+            if (!schoolSnap.exists) {
+                return json(404, { success: false, error: 'School not found' });
+            }
+            school = schoolSnap.data();
+            await cacheSet(schoolKey, school, CACHE_TTL_SECONDS);
         }
 
-        const school = schoolSnap.data();
-        const teacherCount = teachersCountSnap ? teachersCountSnap.data().count : null;
-        const studentCount = studentsCountSnap ? studentsCountSnap.data().count : null;
+        let teacherCount = null;
+        let studentCount = null;
+        if (['overview', 'teachers', 'all'].includes(topic)) {
+            const countsKey = `school_info:${schoolId}:counts`;
+            let counts = await cacheGet(countsKey);
+            if (!counts) {
+                const [teachersCountSnap, studentsCountSnap] = await Promise.all([
+                    db.collection('teachers').where('schoolId', '==', schoolId).count().get().catch(() => null),
+                    db.collection('students').where('schoolId', '==', schoolId).count().get().catch(() => null),
+                ]);
+                counts = {
+                    teacherCount: teachersCountSnap ? teachersCountSnap.data().count : null,
+                    studentCount: studentsCountSnap ? studentsCountSnap.data().count : null,
+                };
+                await cacheSet(countsKey, counts, COUNT_CACHE_TTL_SECONDS);
+            }
+            teacherCount = counts.teacherCount;
+            studentCount = counts.studentCount;
+        }
 
         // Classes: prefer custom classes saved on the school doc.
         const customClasses = Array.isArray(school.customClasses)
@@ -159,9 +178,6 @@ exports.handler = async (event) => {
                 },
                 summaries: summary,
             };
-        } else if (!summary[topic]) {
-            // Unknown topic — do not cache, it's a client bug.
-            return json(400, { success: false, error: `Unknown topic "${topic}"` });
         } else {
             payload = {
                 success: true,
@@ -179,7 +195,7 @@ exports.handler = async (event) => {
         }
 
         // Cache for 12 hours. Write failures are non-fatal.
-        await cacheSet(cacheKey, payload, CACHE_TTL_SECONDS);
+        await cacheSet(responseKey, payload, CACHE_TTL_SECONDS);
 
         return json(200, payload);
     } catch (err) {

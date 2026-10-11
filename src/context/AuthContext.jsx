@@ -4,6 +4,7 @@ import React, {
 } from 'react';
 import { auth, db } from '../firebase';
 import { onAuthStateChanged, signOut, getIdTokenResult } from 'firebase/auth';
+import { App } from '@capacitor/app';
 import {
     doc, getDoc, setDoc, updateDoc, serverTimestamp
 } from 'firebase/firestore';
@@ -285,12 +286,15 @@ export function AuthProvider({ children }) {
             }
 
             try {
-                if (!navigator.onLine && isDeviceBiometricAvailable()) {
+                if (isDeviceBiometricAvailable()) {
                     try {
                         const biometric = await getBiometricLoginStatus();
-                        setSessionLocked(biometric.available);
+                        setSessionLocked(true);
+                        if (!biometric.available) {
+                            console.warn('Biometric unlock is unavailable; password sign-in will be required.');
+                        }
                     } catch (biometricError) {
-                        console.warn('Could not check offline session protection:', biometricError);
+                        console.warn('Could not check session protection:', biometricError);
                         setSessionLocked(true);
                     }
                 } else {
@@ -342,6 +346,27 @@ export function AuthProvider({ children }) {
 
         return () => unsub();
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (!isDeviceBiometricAvailable()) return undefined;
+        let active = true;
+        let listener;
+        App.addListener('appStateChange', ({ isActive }) => {
+            if (active && !isActive && auth.currentUser) {
+                setSessionLocked(true);
+            }
+        }).then((handle) => {
+            if (active) listener = handle;
+            else handle.remove();
+        }).catch((listenerError) => {
+            console.error('Could not register app session-lock listener:', listenerError);
+        });
+
+        return () => {
+            active = false;
+            listener?.remove();
+        };
     }, []);
 
     const unlockSession = useCallback(() => {

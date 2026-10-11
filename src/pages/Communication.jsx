@@ -17,6 +17,7 @@ import { LEVEL_DISPLAY_NAMES } from '../utils/constants';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
 
 import { showAppNotice } from '../utils/appNotice';
+import { isSchoolAdminRole } from '../utils/roles';
 // ============================================================
 // Constants
 // ============================================================
@@ -191,7 +192,7 @@ export default function Communication() {
     // ============================================================
     // Role
     // ============================================================
-    const isAdmin = userRole === 'admin' || userRole === 'user' || userRole === 'school_admin' || userRole === 'super-admin' || userRole === 'headteacher';
+    const isAdmin = isSchoolAdminRole(userRole || userData?.role);
     const isSuperAdmin = userRole === 'super-admin';
 
     // ============================================================

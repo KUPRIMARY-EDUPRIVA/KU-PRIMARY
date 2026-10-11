@@ -2,6 +2,7 @@ const ALLOWED_ORIGINS = new Set([
     'https://localhost',
     'capacitor://localhost',
     'https://kupri.netlify.app',
+    'https://kiwanjapri.netlify.app',
     'http://localhost:3000',
     'http://localhost:8888',
 ]);

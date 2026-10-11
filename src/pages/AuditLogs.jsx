@@ -8,6 +8,7 @@ import {
   formatAuditTimestamp,
   categoryForAction,
 } from '../services/auditService';
+import { isSchoolAdminRole } from '../utils/roles';
 
 /* ============================================================
    Constants
@@ -34,7 +35,6 @@ const DATE_RANGE_OPTIONS = [
   { value: '90',  label: 'Last 90 days' },
 ];
 
-const ADMIN_ROLES = new Set(['admin', 'user', 'school_admin', 'super-admin']);
 
 /* ============================================================
    Helpers
@@ -76,7 +76,7 @@ const downloadCSV = (filename, rows) => {
 export default function AuditLogs() {
   const { userData, userRole } = useAuth();
 
-  const isAdmin = ADMIN_ROLES.has(userRole) || ADMIN_ROLES.has(userData?.role);
+  const isAdmin = isSchoolAdminRole(userRole || userData?.role);
   const schoolId = userData?.schoolId;
 
   const [logs, setLogs] = useState([]);

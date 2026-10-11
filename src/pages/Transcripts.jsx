@@ -6,10 +6,8 @@ import { db } from '../firebase';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { downloadTranscriptPDF } from '../services/pdf';
+import { isSchoolAdminRole } from '../utils/roles';
 import './Transcripts.css';
-
-const isAdminRole = (role) =>
-    ['admin', 'user', 'school_admin', 'super-admin', 'super_admin'].includes(role);
 
 const toDate = (value) => {
     if (!value) return null;
@@ -23,7 +21,7 @@ const displayName = (student) =>
 export default function Transcripts() {
     const { userData, userRole } = useAuth();
     const schoolId = userData?.schoolId;
-    const isAdmin = [userRole, userData?.role].some(isAdminRole);
+    const isAdmin = isSchoolAdminRole(userRole || userData?.role);
     const [archivedStudents, setArchivedStudents] = useState([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState('');

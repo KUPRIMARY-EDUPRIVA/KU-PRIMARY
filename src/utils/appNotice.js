@@ -1,4 +1,5 @@
 const NOTICE_ID = 'app-feedback-notice';
+let noticeTimeout;
 
 export function showAppNotice(message, type = 'info') {
     let notice = document.getElementById(NOTICE_ID);
@@ -34,7 +35,11 @@ export function showAppNotice(message, type = 'info') {
         close.setAttribute('aria-label', 'Dismiss notification');
         close.textContent = '×';
         close.style.cssText = 'border:0;background:transparent;color:#64748b;font-size:22px;line-height:1;cursor:pointer;padding:0 2px;';
-        close.addEventListener('click', () => notice.remove());
+        close.addEventListener('click', () => {
+            window.clearTimeout(noticeTimeout);
+            noticeTimeout = undefined;
+            notice.remove();
+        });
 
         notice.append(text, close);
         document.body.appendChild(notice);
@@ -46,4 +51,10 @@ export function showAppNotice(message, type = 'info') {
         { success: '#16a34a', error: '#dc2626', warning: '#d97706', info: '#2563eb' }[type] || '#2563eb'
     }`;
     notice.setAttribute('role', type === 'error' ? 'alert' : 'status');
+
+    window.clearTimeout(noticeTimeout);
+    noticeTimeout = window.setTimeout(() => {
+        notice.remove();
+        noticeTimeout = undefined;
+    }, 5000);
 }

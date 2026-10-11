@@ -14,6 +14,7 @@ import {
     PieChart, Pie, Cell, Legend, LineChart, Line
 } from 'recharts';
 import { downloadExecutiveReportsPDF } from '../services/pdf';
+import { loadStudentRoster } from '../services/studentRosterService';
 
 // ---------- constants ----------
 const LEVEL_ORDER = ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school'];
@@ -85,12 +86,7 @@ export default function Reports() {
         setLoading(true);
         setError(null);
         try {
-            const studentsSnap = await getDocs(query(
-                collection(db, 'students'),
-                where('schoolId', '==', schoolId),
-                limit(2000)
-            ));
-            const studentList = studentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            const studentList = await loadStudentRoster(schoolId);
             setStudents(studentList);
 
             const examsSnap = await getDocs(query(

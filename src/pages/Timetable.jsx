@@ -5,6 +5,7 @@ import { useSchool } from '../context/SchoolContext';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { SCHOOL_LEVELS, LEVEL_SUBJECTS } from '../utils/constants';
+import { isSchoolAdminRole } from '../utils/roles';
 import {
   DAYS, DUTY_AREAS, SUBJECT_CLASS,
   DEFAULT_PERIOD_STRUCTURES,
@@ -46,8 +47,6 @@ const TABS = [
 
 const EVENT_COLORS = ['#d4a017', '#1e3a8a', '#059669', '#dc2626', '#7c3aed', '#0891b2'];
 
-const ADMIN_ROLES = ['admin', 'school_admin', 'super-admin', 'user'];
-
 const LEVEL_DISPLAY = {
   'pre-primary': 'Pre-Primary',
   'lower-primary': 'Lower Primary',
@@ -62,7 +61,7 @@ export default function Timetable() {
 
   const schoolId = userData?.schoolId;
   const role = userRole || userData?.role || 'user';
-  const isAdmin = ADMIN_ROLES.includes(role);
+  const isAdmin = isSchoolAdminRole(role);
   const isTeacher = role === 'teacher';
 
   const teacherClassScope = useMemo(

@@ -15,3 +15,12 @@ export const isSchoolAdministrator = (role) => [
 
 export const isHeadteacher = (role) => normalizeRole(role) === 'headteacher';
 export const isDeputyHeadteacher = (role) => normalizeRole(role) === 'deputy-headteacher';
+export const isSchoolAdminRole = (role) => [
+    'admin',
+    'user',
+    'school-admin',
+    'principal',
+    'super-admin',
+    'headteacher',
+    'deputy-headteacher',
+].includes(normalizeRole(role));

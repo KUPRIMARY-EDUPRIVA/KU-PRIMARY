@@ -8,6 +8,7 @@ import {
 import { db } from '../firebase';
 import { getMemory, setMemory } from './cache';
 import { normalizeAdmissionNumber } from './admissionNumberService';
+import { getCachedStudentRoster } from './studentRosterService';
 
 // ---------- Tenant guard ----------
 export function requireSchoolId(userData) {
@@ -66,6 +67,42 @@ export async function getStudentsPage(schoolId, opts = {}) {
     } = opts;
 
     const safeSize = Math.min(Math.max(pageSize, 1), MAX_PAGE_SIZE);
+    const cachedRoster = await getCachedStudentRoster(schoolId);
+    if (cachedRoster) {
+        let all = cachedRoster.filter((student) =>
+            (!level || student.level === level) && (!cls || student.class === cls)
+        );
+        const orderField = sortField || 'firstName';
+        const directionMultiplier = sortDirection === 'desc' ? -1 : 1;
+        all.sort((a, b) => {
+            const left = a[orderField] ?? '';
+            const right = b[orderField] ?? '';
+            const compared = typeof left === 'number' && typeof right === 'number'
+                ? left - right
+                : String(left).localeCompare(String(right), undefined, { numeric: true });
+            return compared === 0
+                ? String(a.id).localeCompare(String(b.id)) * directionMultiplier
+                : compared * directionMultiplier;
+        });
+
+        const cursorIndex = cursor ? all.findIndex((student) => student.id === cursor.id) : -1;
+        const start = direction === 'prev' && cursorIndex >= 0
+            ? Math.max(0, cursorIndex - safeSize)
+            : direction === 'next' && cursorIndex >= 0
+                ? cursorIndex + 1
+                : 0;
+        const items = all.slice(start, start + safeSize);
+        const first = items[0];
+        const last = items[items.length - 1];
+        return {
+            items,
+            cursor: last ? { id: last.id, sortValue: last[orderField] ?? '' } : null,
+            cursorPrev: first ? { id: first.id, sortValue: first[orderField] ?? '' } : null,
+            hasMore: start + items.length < all.length,
+            hasPrev: start > 0,
+            total: all.length,
+        };
+    }
 
     // Build constraints
     const constraints = [where('schoolId', '==', schoolId)];
@@ -168,6 +205,12 @@ export async function getStudentsPage(schoolId, opts = {}) {
  * Get total count of students matching filters using count aggregation.
  */
 export async function getStudentsCount(schoolId, { level, cls } = {}) {
+    const cached = await getCachedStudentRoster(schoolId);
+    if (cached) {
+        return cached.filter((student) =>
+            (!level || student.level === level) && (!cls || student.class === cls)
+        ).length;
+    }
     const constraints = [where('schoolId', '==', schoolId)];
     if (level) constraints.push(where('level', '==', level));
     if (cls) constraints.push(where('class', '==', cls));
@@ -506,6 +549,15 @@ export async function getStudents(schoolId, { level, cls, maxResults = 1000 } = 
     const cacheKey = `students_${schoolId}_${level || 'all'}_${cls || 'all'}`;
     const cached = getMemory(cacheKey);
     if (cached) return cached;
+    const roster = await getCachedStudentRoster(schoolId);
+    if (roster) {
+        const list = roster
+            .filter((student) => (!level || student.level === level) && (!cls || student.class === cls))
+            .sort((a, b) => (a.firstName || '').localeCompare(b.firstName || ''))
+            .slice(0, maxResults);
+        setMemory(cacheKey, list, 5 * 60 * 1000);
+        return list;
+    }
 
     const constraints = [where('schoolId', '==', schoolId)];
     if (level) constraints.push(where('level', '==', level));
@@ -1013,9 +1065,15 @@ export async function lockTerm(schoolId, term, year, performedBy, performedByNam
 
 // ---------- Student lookup ----------
 export async function findStudentByAdmission(schoolId, admissionNumber) {
-    if (!admissionNumber) return null;
+    if (!schoolId || !admissionNumber) return null;
     const normalized = normalizeAdmissionNumber(admissionNumber);
     const candidates = [...new Set([normalized, String(admissionNumber).trim().toUpperCase()])];
+    const roster = await getCachedStudentRoster(schoolId);
+    if (roster) {
+        return roster.find((student) => candidates.includes(
+            normalizeAdmissionNumber(student.admissionNumber || student.studentId || '')
+        )) || null;
+    }
     for (const candidate of candidates) {
         for (const field of ['admissionNumber', 'studentId']) {
             const q = query(collection(db, 'students'),
@@ -1073,6 +1131,30 @@ export async function searchStudentsLive(schoolId, searchTerm, opts = {}) {
 
     const normalizedUpper = normalizeAdmissionNumber(term);
     const admissionPrefixes = [...new Set([normalizedUpper, term.toUpperCase()])];
+    const cachedRoster = await getCachedStudentRoster(schoolId);
+    if (cachedRoster) {
+        const matches = cachedRoster.filter((student) => {
+            if ((level && student.level !== level) || (cls && student.class !== cls)) return false;
+            const admission = normalizeAdmissionNumber(student.admissionNumber || student.studentId || '');
+            const matchesAdmission = admissionPrefixes.some((prefix) => admission.startsWith(prefix));
+            const matchesName = [student.firstName, student.lastName].some(
+                (name) => String(name || '').toLowerCase().startsWith(term.toLowerCase())
+            );
+            return (matchType !== 'name' && matchesAdmission)
+                || (matchType !== 'admission' && matchesName);
+        });
+        matches.sort((a, b) => {
+            const aAdmission = normalizeAdmissionNumber(a.admissionNumber || a.studentId || '');
+            const bAdmission = normalizeAdmissionNumber(b.admissionNumber || b.studentId || '');
+            const aMatch = admissionPrefixes.some((prefix) => aAdmission.startsWith(prefix));
+            const bMatch = admissionPrefixes.some((prefix) => bAdmission.startsWith(prefix));
+            if (admissionFirst && aMatch !== bMatch) return aMatch ? -1 : 1;
+            if (aAdmission === normalizedUpper && bAdmission !== normalizedUpper) return -1;
+            if (bAdmission === normalizedUpper && aAdmission !== normalizedUpper) return 1;
+            return String(a.firstName || '').localeCompare(String(b.firstName || ''));
+        });
+        return matches.slice(0, maxResults);
+    }
     const namePrefixes = [...new Set([
         term,
         term.toLowerCase(),
@@ -1172,6 +1254,12 @@ export async function getStudentByAdmission(schoolId, admissionNumber) {
     if (!schoolId || !admissionNumber) return null;
     const normalized = normalizeAdmissionNumber(admissionNumber);
     const candidates = [...new Set([normalized, String(admissionNumber).trim().toUpperCase()])];
+    const roster = await getCachedStudentRoster(schoolId);
+    if (roster) {
+        return roster.find((student) => candidates.includes(
+            normalizeAdmissionNumber(student.admissionNumber || student.studentId || '')
+        )) || null;
+    }
     for (const candidate of candidates) {
       for (const field of ['admissionNumber', 'studentId']) {
         try {

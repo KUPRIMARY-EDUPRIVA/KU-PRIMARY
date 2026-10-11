@@ -1,7 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 export default function Notification({ message, type = 'info' }) {
     const [visible, setVisible] = useState(true);
+
+    useEffect(() => {
+        setVisible(true);
+        const timeout = window.setTimeout(() => setVisible(false), 5000);
+        return () => window.clearTimeout(timeout);
+    }, [message, type]);
 
     if (!visible) return null;
 

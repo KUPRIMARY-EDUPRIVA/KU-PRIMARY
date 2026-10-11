@@ -7,13 +7,14 @@ import {
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { useAuth } from '../context/AuthContext';
-import { normalizeRole } from '../utils/roles';
+import { isSchoolAdminRole } from '../utils/roles';
 import { db } from '../firebase';
 import { isDeviceSmsAvailable, requestSmsPermissions, sendDeviceSms } from '../services/deviceSms';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
 import { savePdfBlob } from '../services/deviceSecurity';
 import { AuditLogService } from '../services/auditService';
 import StudentPicker from '../components/Fees/StudentPicker';
+import { loadStudentRoster } from '../services/studentRosterService';
 
 const CATEGORIES = [
     'Bullying', 'Classroom disruption', 'Dishonesty', 'Fighting',
@@ -21,7 +22,6 @@ const CATEGORIES = [
 ];
 const SEVERITIES = ['Low', 'Moderate', 'High', 'Critical'];
 const STATUSES = ['Open', 'Under review', 'Resolved'];
-const ADMIN_ROLES = new Set(['admin', 'user', 'school-admin', 'principal', 'super-admin', 'headteacher', 'deputy-headteacher']);
 const isoDate = () => new Date().toISOString().slice(0, 10);
 
 const inputStyle = {
@@ -36,7 +36,7 @@ const buttonStyle = (color = '#1a237e') => ({
 export default function Discipline() {
     const { currentUser, userData, userRole } = useAuth();
     const schoolId = userData?.schoolId;
-    const isAdmin = ADMIN_ROLES.has(normalizeRole(userRole || userData?.role));
+    const isAdmin = isSchoolAdminRole(userRole || userData?.role);
     const [students, setStudents] = useState([]);
     const [records, setRecords] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -64,20 +64,15 @@ export default function Discipline() {
         setLoading(true);
         setError('');
         try {
-            const [studentSnapshot, recordSnapshot] = await Promise.all([
-                getDocs(query(
-                    collection(db, 'students'),
-                    where('schoolId', '==', schoolId),
-                    limit(2000)
-                )),
+            const [students, recordSnapshot] = await Promise.all([
+                loadStudentRoster(schoolId),
                 getDocs(query(
                     collection(db, 'discipline_records'),
                     where('schoolId', '==', schoolId),
                     limit(2000)
                 )),
             ]);
-            setStudents(studentSnapshot.docs
-                .map((item) => ({ id: item.id, ...item.data() }))
+            setStudents(students
                 .filter((student) => !student.isDeleted)
                 .sort((a, b) => studentLabel(a).localeCompare(studentLabel(b))));
             setRecords(recordSnapshot.docs

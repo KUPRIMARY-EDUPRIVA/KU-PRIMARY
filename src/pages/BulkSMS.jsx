@@ -7,6 +7,7 @@ import SMSAnalytics from '../components/Communication/SMSAnalytics';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
 import { showAppNotice } from '../utils/appNotice';
+import { loadStudentRoster } from '../services/studentRosterService';
 export default function BulkSMS() {
     const { currentUser, userData } = useAuth();
 
@@ -54,16 +55,9 @@ export default function BulkSMS() {
                     });
                 }
                 
-                // Fetch Students
-                const stuQuery = query(collection(db, 'students'), where('schoolId', '==', schoolId));
-                const stuSnap = await getDocs(stuQuery);
-                const loadedStudents = [];
-                stuSnap.forEach(doc => {
-                    const data = doc.data();
-                    if (data.status !== 'archived') {
-                        loadedStudents.push({ id: doc.id, ...data });
-                    }
-                });
+                // Reuse the saved school roster instead of rereading every student.
+                const loadedStudents = (await loadStudentRoster(schoolId))
+                    .filter((student) => student.status !== 'archived' && !student.isDeleted);
                 setStudents(loadedStudents);
                 
                 // Fetch Fee Balances

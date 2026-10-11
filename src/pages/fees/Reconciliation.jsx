@@ -9,6 +9,7 @@ import {
   resolveOrphan, ignoreOrphan, markStuckAsTimeout, dismissError,
 } from '../../services/mpesaReconciliationService';
 import { SCHOOL_LEVELS } from '../../utils/constants';
+import { isSchoolAdminRole } from '../../utils/roles';
 
 const TABS = [
   { id: 'orphan', label: 'Orphan Callbacks', icon: 'fa-unlink',            tone: 'gold' },
@@ -29,7 +30,7 @@ export default function MpesaReconciliation() {
   const { userData, userRole, currentUser } = useAuth();
   const { isOnline } = useSync();
   const schoolId = userData?.schoolId;
-  const isAdmin = ['admin', 'user', 'school_admin', 'super-admin'].includes(userRole);
+  const isAdmin = isSchoolAdminRole(userRole || userData?.role);
 
   const [activeTab, setActiveTab] = useState('orphan');
   const [loading, setLoading] = useState(true);

@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { isSchoolAdminRole, normalizeRole } from '../utils/roles';
 import { useSchool } from '../context/SchoolContext';
 import { useSync } from '../context/SyncContext';
 import { db } from '../firebase';
@@ -128,8 +129,8 @@ export default function Attendance() {
                 if (cancelled) return;
                 setSchoolData(data);
 
-                const role = String(userRole || userData?.role || 'teacher').toLowerCase().replace(/[\s_]+/g, '-');
-                const admin = ['admin', 'user', 'school-admin', 'principal', 'super-admin', 'headteacher'].includes(role);
+                const role = normalizeRole(userRole || userData?.role || 'teacher');
+                const admin = isSchoolAdminRole(role);
                 setIsAdmin(admin);
                 setActiveTab(admin ? 'reports' : 'take');
 

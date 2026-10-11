@@ -2,7 +2,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { db } from '../firebase';
-import { collection, query, where, getDocs, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, getCountFromServer } from 'firebase/firestore';
+import { getCachedStudentRoster } from '../services/studentRosterService';
 
 const BadgeContext = createContext();
 
@@ -22,14 +23,22 @@ export function BadgeProvider({ children }) {
     useEffect(() => {
         if (!userData?.schoolId) return;
 
-        // Listen to students count
-        const studentsQuery = query(
-            collection(db, 'students'),
-            where('schoolId', '==', userData.schoolId)
-        );
-        const unsubscribeStudents = onSnapshot(studentsQuery, (snapshot) => {
-            setBadges(prev => ({ ...prev, students: snapshot.size }));
-        });
+        let cancelled = false;
+        const loadStudentCount = async () => {
+            try {
+                const cached = await getCachedStudentRoster(userData.schoolId);
+                const count = cached
+                    ? cached.length
+                    : (await getCountFromServer(query(
+                        collection(db, 'students'),
+                        where('schoolId', '==', userData.schoolId)
+                    ))).data().count;
+                if (!cancelled) setBadges((prev) => ({ ...prev, students: count }));
+            } catch (error) {
+                console.error('Student count load failed:', error);
+            }
+        };
+        loadStudentCount();
 
         // Listen to teachers count
         const teachersQuery = query(
@@ -62,7 +71,7 @@ export function BadgeProvider({ children }) {
         });
 
         return () => {
-            unsubscribeStudents();
+            cancelled = true;
             unsubscribeTeachers();
             unsubscribeExams();
             unsubscribeResults();

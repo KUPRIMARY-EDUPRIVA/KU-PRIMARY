@@ -19,6 +19,7 @@ import {
     downloadTeacherRecordPDF,
     downloadTeacherReportsAllPDF
 } from '../../services/pdf';
+import { getCachedStudentRoster } from '../../services/studentRosterService';
 
 // ---- Constants ----
 const PAGE_SIZE = 15;
@@ -228,12 +229,17 @@ export default function TeacherReports() {
 
             setAllScores(rawScores);
 
-            // 3. Load unique students — ONE batched read (no N+1)
+            // Reuse the local roster; retain bounded document lookups if it is
+            // unavailable so reports for students outside the cache still work.
             const uniqueIds = [...new Set(rawScores.map((s) => s.studentId).filter(Boolean))];
-
-            // Firestore 'in' operator supports max 10 at a time; chunk if needed
             const studentsMap = new Map();
-            if (uniqueIds.length > 0) {
+            const cachedRoster = await getCachedStudentRoster(schoolId);
+            if (cachedRoster) {
+                const matching = new Set(uniqueIds);
+                cachedRoster.forEach((student) => {
+                    if (matching.has(student.id)) studentsMap.set(student.id, student);
+                });
+            } else if (uniqueIds.length > 0) {
                 const chunks = [];
                 for (let i = 0; i < uniqueIds.length; i += 10) {
                     chunks.push(uniqueIds.slice(i, i + 10));
