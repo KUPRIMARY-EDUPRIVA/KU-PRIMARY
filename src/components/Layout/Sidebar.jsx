@@ -378,12 +378,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 label: 'Attendance',
                 show: isAdmin
             },
-            {
-                path: '/discipline',
-                icon: 'fa-scale-balanced',
-                label: 'Discipline',
-                show: isAdmin
-            },
+           
             {
                 path: '/fees',
                 icon: 'fa-coins',
@@ -392,12 +387,7 @@ export default function Sidebar({ isOpen, onClose }) {
                 badgeClass: 'danger',
                 show: isAdmin || isAccountant
             },
-            {
-                path: '/communications',
-                icon: 'fa-comment-sms',
-                label: 'Communications',
-                show: isAdmin
-            },
+           
             {
                 path: '/reports',
                 icon: 'fa-chart-pie',
