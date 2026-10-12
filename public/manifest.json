@@ -1,6 +1,6 @@
 {
-  "name": "EDUPRIVA KIWANJA",
-  "short_name": "EDUPRIVA KIWANJA",
+  "name": "EDUPRIVA ",
+  "short_name": "EDUPRIVA ",
   "description": "A comprehensive school management system for CBC/CBE curriculum with student management, results tracking, and reporting. Works offline!",
   "start_url": "/",
   "display": "standalone",
