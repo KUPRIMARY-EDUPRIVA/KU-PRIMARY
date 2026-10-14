@@ -420,7 +420,7 @@ export default function StudentReports() {
                 <div style={actionGridStyle}>
                     {/* Transcripts — 3 buttons */}
                     <DocButton
-                        icon="fa-scissors"
+                        icon="fa-file-alt"
                         title="Transcript — Assessment 1"
                         subtitle="4 per page"
                         disabled={!ready || generating}
@@ -428,7 +428,7 @@ export default function StudentReports() {
                         color="#f39c12"
                     />
                     <DocButton
-                        icon="fa-scissors"
+                        icon="fa-file-alt"
                         title="Transcript — Assessment 2"
                         subtitle="4 per page"
                         disabled={!ready || generating}
@@ -436,7 +436,7 @@ export default function StudentReports() {
                         color="#e67e22"
                     />
                     <DocButton
-                        icon="fa-scissors"
+                        icon="fa-file-alt"
                         title="Transcript — Assessment 3"
                         subtitle="4 per page"
                         disabled={!ready || generating}
