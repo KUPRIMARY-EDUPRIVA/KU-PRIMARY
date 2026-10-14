@@ -81,9 +81,8 @@ export default function Results() {
     const [selectedTerm, setSelectedTerm] = useState('Term 1');
     const [assessmentType, setAssessmentType] = useState('Assessment 1');
 
-    // NEW: paper config for the currently selected subject
     const [paperConfig, setPaperConfig] = useState([]);
-    const [allPaperConfigs, setAllPaperConfigs] = useState({}); // { subject: [papers] }
+    const [allPaperConfigs, setAllPaperConfigs] = useState({});
     const [showPaperConfigModal, setShowPaperConfigModal] = useState(false);
 
     const [assessmentDeadline, setAssessmentDeadline] = useState('');
@@ -153,9 +152,14 @@ export default function Results() {
     const [selectedStudent, setSelectedStudent] = useState(null);
     const [reportStudent, setReportStudent] = useState(null);
 
-    // Combined ranking data + loading flag
     const [combinedRankingData, setCombinedRankingData] = useState(null);
     const [combinedRankingLoading, setCombinedRankingLoading] = useState(false);
+
+    // Flat map { studentId: { subject: score } } for the combined preview,
+    // so RankingModal reads values the same way it does for the subject
+    // ranking (through its `studentScores` map). This is what fixes the
+    // dashes in the combined preview.
+    const [combinedPreviewScores, setCombinedPreviewScores] = useState({});
 
     const showNotification = useCallback((message, type = 'info') => {
         showAppNotice(message, type);
@@ -285,7 +289,6 @@ export default function Results() {
     const isLevelOpen = selectedLevel ? (levelPermissions[selectedLevel]?.[assessmentType] !== false) : true;
     const isReadOnly = !isLevelOpen && !isAdmin;
 
-    // ---- Load paper configs whenever level changes ----
     useEffect(() => {
         const schoolId = userData?.schoolId || userData?.school?.id;
         if (!schoolId || !selectedLevel) { setAllPaperConfigs({}); return; }
@@ -300,7 +303,6 @@ export default function Results() {
         })();
     }, [userData, selectedLevel]);
 
-    // Update the currently-displayed paper config whenever subject changes
     useEffect(() => {
         if (!selectedSubject) { setPaperConfig([]); return; }
         setPaperConfig(allPaperConfigs[selectedSubject] || []);
@@ -312,6 +314,7 @@ export default function Results() {
         setSelectedClass(''); setSelectedSubject('');
         setStudents([]); setStudentScores({}); setPendingInputs({});
         setCombinedRankingData(null);
+        setCombinedPreviewScores({});
     };
 
     const handleClassChange = (e) => {
@@ -323,6 +326,7 @@ export default function Results() {
         setSelectedClass(cls);
         setStudents([]); setStudentScores({}); setPendingInputs({});
         setCombinedRankingData(null);
+        setCombinedPreviewScores({});
     };
 
     const handleSubjectChange = (e) => {
@@ -338,6 +342,7 @@ export default function Results() {
     const handleTermChange = (e) => {
         setSelectedTerm(e.target.value);
         setCombinedRankingData(null);
+        setCombinedPreviewScores({});
     };
     const handleAssessmentTypeChange = (e) => setAssessmentType(e.target.value);
     const handleDeadlineChange = (e) => setAssessmentDeadline(e.target.value);
@@ -386,7 +391,6 @@ export default function Results() {
                 const total = scores.reduce((a, sc) => a + (sc.score || 0), 0);
                 const average = scores.length ? Math.round(total / scores.length) : null;
                 const status = scores.some(sc => sc.status === 'published') ? 'published' : 'pending';
-                // The record for the currently-selected term/subject/assessment
                 const currentRecord = scores.find(sc =>
                     sc.subject === selectedSubject &&
                     sc.term === selectedTerm &&
@@ -405,18 +409,13 @@ export default function Results() {
         } finally { setLoading(false); }
     };
 
-    // ============================================================
-    // SAVE — accepts both single-score and multi-paper entries
-    // ============================================================
     const saveAllScores = async () => {
         if (isReadOnly) { showNotification('Deadline passed — read-only', 'warning'); return; }
 
         const rawEntries = Object.entries(pendingInputs).map(([studentId, val]) => {
-            // Multi-paper entry: { papers: { 'Paper 1': {score, max, weight}, ... } }
             if (val && typeof val === 'object' && val.papers) {
                 return { studentId, papers: val.papers };
             }
-            // Single-score entry: { score, maxScore }
             const score = parseInt(val?.score ?? val, 10);
             const maxScore = parseInt(val?.maxScore ?? 100, 10);
             if (isNaN(score) || score < 0) return null;
@@ -462,7 +461,6 @@ export default function Results() {
                 showNotification(`Saved ${rawEntries.length} scores`, 'success');
             }
 
-            // Refresh local state so the table reflects the new scores
             await loadStudents();
             setPendingInputs({});
         } catch (err) {
@@ -566,7 +564,6 @@ export default function Results() {
         }
     };
 
-    // ---- Save paper config ----
     const handleSavePaperConfig = async (papers) => {
         try {
             const schoolId = requireSchoolId(userData);
@@ -591,7 +588,6 @@ export default function Results() {
         const scores = studentScores[studentId] || [];
         const hit = scores.find(s => s.subject === subject);
         if (!hit) return null;
-        // Prefer computedPercentage from multi-paper record; fall back to score
         return hit.computedPercentage != null ? hit.computedPercentage : hit.score;
     }, [studentScores]);
 
@@ -606,9 +602,6 @@ export default function Results() {
 
     /**
      * Subject ranking: single subject only.
-     * - Teachers: only the selected subject column.
-     * - Admins: still only the selected subject (we want the subject ranking
-     *   to be one column, matching the requirement).
      */
     const buildSubjectRankingRows = useCallback(() => {
         const rows = students.map((s) => {
@@ -633,10 +626,10 @@ export default function Results() {
     }, [students, selectedSubject, getSubjectScoreForStudent]);
 
     /**
-     * Combined ranking: every subject in the level, per-student mean across
-     * all subjects. Fetches fresh score data for ALL subjects in the class,
-     * so the preview always has real numbers even if only one subject was
-     * loaded into state.
+     * Combined ranking: every subject in the level. Fetches fresh score data
+     * for ALL subjects, computes per-student mean, and also flattens the
+     * per-subject map into `combinedPreviewScores` so the modal's preview
+     * table can render actual values instead of dashes.
      */
     const generateCombinedRanking = useCallback(async () => {
         if (!isAdmin) {
@@ -661,7 +654,6 @@ export default function Results() {
                 return;
             }
 
-            // Roster: prefer loaded students; otherwise fetch.
             let classStudents = students;
             if (!classStudents.length) {
                 classStudents = await getStudents(schoolId, selectedLevel, selectedClass);
@@ -672,7 +664,6 @@ export default function Results() {
                 return;
             }
 
-            // Fetch scores for every subject in parallel.
             const perSubjectMaps = await Promise.all(
                 allSubjects.map(sub =>
                     getScores(schoolId, selectedLevel, selectedClass, sub, selectedTerm, assessmentType)
@@ -684,7 +675,6 @@ export default function Results() {
                 )
             );
 
-            // Build a per-student row with a subject → score map.
             const perStudent = new Map();
             classStudents.forEach(s => {
                 perStudent.set(s.id, {
@@ -704,7 +694,6 @@ export default function Results() {
             perSubjectMaps.forEach(({ subject, map }) => {
                 classStudents.forEach(s => {
                     const arr = map[s.id] || [];
-                    // Prefer the exact term/assessment match; fall back to first.
                     const sc = arr.find(x =>
                         x.subject === subject &&
                         x.term === selectedTerm &&
@@ -724,7 +713,6 @@ export default function Results() {
                 });
             });
 
-            // Compute totals & averages
             const combined = [...perStudent.values()].map(s => {
                 let total = 0;
                 let count = 0;
@@ -744,6 +732,16 @@ export default function Results() {
             });
 
             combined.sort((a, b) => (b.average || 0) - (a.average || 0));
+
+            // Build a flat { studentId: { subject: score } } map for the
+            // preview table. RankingModal iterates `studentScores[student.id]`
+            // and expects an array OR an object — we give it an object keyed
+            // by subject so its lookup works without further changes.
+            const previewMap = {};
+            combined.forEach(s => {
+                previewMap[s.id] = s.subjectScores || {};
+            });
+            setCombinedPreviewScores(previewMap);
 
             setCombinedRankingData(combined);
             setShowCombinedRankingModal(true);
@@ -1384,11 +1382,13 @@ export default function Results() {
                 />
             )}
 
-            {/* Combined Ranking modal — all subjects, admin only */}
+            {/* Combined Ranking modal — all subjects, admin only.
+                Now passes `combinedPreviewScores` so the preview table
+                shows real scores rather than dashes. */}
             {showCombinedRankingModal && combinedRankingData && (
                 <RankingModal
                     students={combinedRankingData}
-                    studentScores={{}}
+                    studentScores={combinedPreviewScores}
                     meta={{
                         schoolName, schoolMotto,
                         level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
