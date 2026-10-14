@@ -203,9 +203,34 @@ export default function StudentReports() {
                 };
             });
 
-            setStudents(enriched);
+            // Compute per-class rank by overall average (descending).
+            // Ties get the same rank (standard competition ranking).
+            const ranked = [...enriched].sort(
+                (a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)
+            );
+            const rankMap = new Map();
+            let lastAvg = null;
+            let lastRank = 0;
+            ranked.forEach((s, idx) => {
+                const avg = s.overallAverage || 0;
+                if (lastAvg !== null && avg === lastAvg) {
+                    rankMap.set(s.id, lastRank);
+                } else {
+                    lastRank = idx + 1;
+                    rankMap.set(s.id, lastRank);
+                }
+                lastAvg = avg;
+            });
+
+            const withRank = enriched.map((s) => ({
+                ...s,
+                position: rankMap.get(s.id) || null,
+                classSize: enriched.length,
+            }));
+
+            setStudents(withRank);
             setHasLoadedOnce(true);
-            showNotification(`Loaded ${enriched.length} students`, 'success');
+            showNotification(`Loaded ${withRank.length} students`, 'success');
         } catch (err) {
             console.error('loadStudents failed:', err);
             showNotification('Failed to load: ' + err.message, 'error');
@@ -569,6 +594,9 @@ function StudentCard({ student, onPreview }) {
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                     <Pill color={PRIMARY}>Avg {avg}%</Pill>
                     <Pill color={gradeColor(grade.level)}>CBC {grade.code}</Pill>
+                    {student.position && (
+                        <Pill color="#8e44ad">Pos {student.position}/{student.classSize}</Pill>
+                    )}
                     <Pill color="#95a5a6">Assessed {coverage}</Pill>
                 </div>
             </div>
@@ -684,6 +712,9 @@ function PreviewModal({
                     <InfoCell label="Term">{term}</InfoCell>
                     <InfoCell label="Assessed">
                         {student.assessedCount} / {student.totalSubjects}
+                    </InfoCell>
+                    <InfoCell label="Overall Position">
+                        {student.position ? `${student.position} / ${student.classSize}` : '—'}
                     </InfoCell>
                     <InfoCell label="Overall">
                         <Pill color={gradeColor(overall.level)}>
