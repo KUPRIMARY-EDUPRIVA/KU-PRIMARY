@@ -149,8 +149,13 @@ export default function Results() {
     const [showHistoryModal, setShowHistoryModal] = useState(false);
     const [showReportModal, setShowReportModal] = useState(false);
     const [showRankingModal, setShowRankingModal] = useState(false);
+    const [showCombinedRankingModal, setShowCombinedRankingModal] = useState(false);
     const [selectedStudent, setSelectedStudent] = useState(null);
     const [reportStudent, setReportStudent] = useState(null);
+
+    // Combined ranking data + loading flag
+    const [combinedRankingData, setCombinedRankingData] = useState(null);
+    const [combinedRankingLoading, setCombinedRankingLoading] = useState(false);
 
     const showNotification = useCallback((message, type = 'info') => {
         showAppNotice(message, type);
@@ -306,6 +311,7 @@ export default function Results() {
         setSelectedLevel(level);
         setSelectedClass(''); setSelectedSubject('');
         setStudents([]); setStudentScores({}); setPendingInputs({});
+        setCombinedRankingData(null);
     };
 
     const handleClassChange = (e) => {
@@ -316,6 +322,7 @@ export default function Results() {
         }
         setSelectedClass(cls);
         setStudents([]); setStudentScores({}); setPendingInputs({});
+        setCombinedRankingData(null);
     };
 
     const handleSubjectChange = (e) => {
@@ -328,7 +335,10 @@ export default function Results() {
         setPendingInputs({});
     };
 
-    const handleTermChange = (e) => setSelectedTerm(e.target.value);
+    const handleTermChange = (e) => {
+        setSelectedTerm(e.target.value);
+        setCombinedRankingData(null);
+    };
     const handleAssessmentTypeChange = (e) => setAssessmentType(e.target.value);
     const handleDeadlineChange = (e) => setAssessmentDeadline(e.target.value);
 
@@ -594,42 +604,156 @@ export default function Results() {
         return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
     }, [students, selectedSubject, getSubjectScoreForStudent]);
 
-    const buildRankingRows = useCallback(() => {
-        const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
+    /**
+     * Subject ranking: single subject only.
+     * - Teachers: only the selected subject column.
+     * - Admins: still only the selected subject (we want the subject ranking
+     *   to be one column, matching the requirement).
+     */
+    const buildSubjectRankingRows = useCallback(() => {
+        const rows = students.map((s) => {
+            const score = getSubjectScoreForStudent(s.id, selectedSubject);
+            const grade = getCBCGrade(score ?? 0);
+            return {
+                ...s,
+                subjectScores: { [selectedSubject]: score },
+                subjectScore: score,
+                totalMarks: score ?? 0,
+                average: score ?? 0,
+                cbcGrade: grade,
+            };
+        });
+        return [...rows].sort((a, b) => {
+            const av = a.subjectScore, bv = b.subjectScore;
+            if (av === null && bv === null) return 0;
+            if (av === null) return 1;
+            if (bv === null) return -1;
+            return bv - av;
+        });
+    }, [students, selectedSubject, getSubjectScoreForStudent]);
 
+    /**
+     * Combined ranking: every subject in the level, per-student mean across
+     * all subjects. Fetches fresh score data for ALL subjects in the class,
+     * so the preview always has real numbers even if only one subject was
+     * loaded into state.
+     */
+    const generateCombinedRanking = useCallback(async () => {
         if (!isAdmin) {
-            const rows = students.map((s) => {
-                const score = getSubjectScoreForStudent(s.id, selectedSubject);
-                const grade = getCBCGrade(score ?? 0);
-                return { ...s, subjectScores: { [selectedSubject]: score }, subjectScore: score, totalMarks: score ?? 0, average: score ?? 0, cbcGrade: grade };
-            });
-            const sorted = [...rows].sort((a, b) => {
-                const av = a.subjectScore, bv = b.subjectScore;
-                if (av === null && bv === null) return 0;
-                if (av === null) return 1;
-                if (bv === null) return -1;
-                return bv - av;
-            });
-            return sorted;
+            showNotification('Only admins can view the combined ranking report', 'warning');
+            return;
+        }
+        if (!selectedLevel || !selectedClass) {
+            showNotification('Please select level and class first', 'warning');
+            return;
         }
 
-        const rows = students.map((s) => {
-            const scores = studentScores[s.id] || [];
-            const subjectScores = {};
-            let total = 0, count = 0;
-            allSubjects.forEach(sub => {
-                const sc = scores.find(x => x.subject === sub);
-                const val = sc
-                    ? (sc.computedPercentage != null ? sc.computedPercentage : sc.score)
-                    : null;
-                subjectScores[sub] = val;
-                if (val != null) { total += val; count++; }
+        let schoolId;
+        try { schoolId = requireSchoolId(userData); }
+        catch (e) { showNotification(e.message, 'error'); return; }
+
+        setCombinedRankingLoading(true);
+        try {
+            const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
+            if (allSubjects.length === 0) {
+                showNotification('No subjects defined for this level', 'warning');
+                setCombinedRankingLoading(false);
+                return;
+            }
+
+            // Roster: prefer loaded students; otherwise fetch.
+            let classStudents = students;
+            if (!classStudents.length) {
+                classStudents = await getStudents(schoolId, selectedLevel, selectedClass);
+            }
+            if (classStudents.length === 0) {
+                showNotification('No students found for this class', 'warning');
+                setCombinedRankingLoading(false);
+                return;
+            }
+
+            // Fetch scores for every subject in parallel.
+            const perSubjectMaps = await Promise.all(
+                allSubjects.map(sub =>
+                    getScores(schoolId, selectedLevel, selectedClass, sub, selectedTerm, assessmentType)
+                        .then(map => ({ subject: sub, map: map || {} }))
+                        .catch(err => {
+                            console.warn(`getScores failed for ${sub}:`, err?.message || err);
+                            return { subject: sub, map: {} };
+                        })
+                )
+            );
+
+            // Build a per-student row with a subject → score map.
+            const perStudent = new Map();
+            classStudents.forEach(s => {
+                perStudent.set(s.id, {
+                    id: s.id,
+                    firstName: s.firstName,
+                    lastName: s.lastName,
+                    admissionNumber: s.admissionNumber,
+                    studentId: s.studentId,
+                    class: s.class,
+                    subjectScores: {},
+                    totalMarks: 0,
+                    assessedCount: 0,
+                    average: 0,
+                });
             });
-            const average = count ? Math.round(total / count) : 0;
-            return { ...s, subjectScores, totalMarks: total, average, cbcGrade: getCBCGrade(average) };
-        });
-        return [...rows].sort((a, b) => (b.average || 0) - (a.average || 0));
-    }, [isAdmin, students, studentScores, selectedLevel, selectedSubject, getSubjectScoreForStudent]);
+
+            perSubjectMaps.forEach(({ subject, map }) => {
+                classStudents.forEach(s => {
+                    const arr = map[s.id] || [];
+                    // Prefer the exact term/assessment match; fall back to first.
+                    const sc = arr.find(x =>
+                        x.subject === subject &&
+                        x.term === selectedTerm &&
+                        x.assessmentType === assessmentType
+                    ) || arr[0];
+                    const row = perStudent.get(s.id);
+                    if (!row) return;
+                    if (sc) {
+                        const val = sc.computedPercentage != null
+                            ? sc.computedPercentage
+                            : sc.score;
+                        row.subjectScores[subject] =
+                            (val != null && !isNaN(val)) ? Number(val) : null;
+                    } else {
+                        row.subjectScores[subject] = null;
+                    }
+                });
+            });
+
+            // Compute totals & averages
+            const combined = [...perStudent.values()].map(s => {
+                let total = 0;
+                let count = 0;
+                allSubjects.forEach(sub => {
+                    const v = s.subjectScores[sub];
+                    if (v != null && !isNaN(v)) {
+                        total += v;
+                        count++;
+                    }
+                });
+                return {
+                    ...s,
+                    totalMarks: total,
+                    assessedCount: count,
+                    average: count ? Math.round(total / count) : 0,
+                };
+            });
+
+            combined.sort((a, b) => (b.average || 0) - (a.average || 0));
+
+            setCombinedRankingData(combined);
+            setShowCombinedRankingModal(true);
+        } catch (err) {
+            console.error('generateCombinedRanking failed:', err);
+            showNotification('Failed to generate combined ranking: ' + err.message, 'error');
+        } finally {
+            setCombinedRankingLoading(false);
+        }
+    }, [isAdmin, selectedLevel, selectedClass, selectedTerm, assessmentType, students, userData, showNotification]);
 
     const handleDownloadReportPDF = async (student) => {
         if (!student) return;
@@ -651,21 +775,38 @@ export default function Results() {
 
     const handleDownloadRankingPDF = async () => {
         try {
-            const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
-            const data = buildRankingRows();
-            const pdfSubjects = isAdmin ? allSubjects : [selectedSubject];
+            const data = buildSubjectRankingRows();
             const result = await downloadRankingPDF(data, {
                 schoolName, schoolMotto,
                 level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
                 cls: selectedClass, term: selectedTerm, year: new Date().getFullYear(),
                 assessmentType,
-                subjects: pdfSubjects,
-                classSubjectMean: isAdmin ? undefined : classSubjectMean,
-                scope: isAdmin ? 'all-subjects' : 'single-subject',
-                scopeSubject: isAdmin ? undefined : selectedSubject
+                subjects: [selectedSubject],
+                classSubjectMean,
+                scope: 'single-subject',
+                scopeSubject: selectedSubject,
             });
             showNotification(`Ranking saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
         } catch (e) { console.error(e); showNotification('Ranking PDF failed', 'error'); }
+    };
+
+    const handleDownloadCombinedRankingPDF = async () => {
+        try {
+            if (!combinedRankingData || combinedRankingData.length === 0) {
+                showNotification('No combined ranking data to download', 'warning');
+                return;
+            }
+            const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
+            const result = await downloadRankingPDF(combinedRankingData, {
+                schoolName, schoolMotto,
+                level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
+                cls: selectedClass, term: selectedTerm, year: new Date().getFullYear(),
+                assessmentType,
+                subjects: allSubjects,
+                scope: 'all-subjects',
+            });
+            showNotification(`Combined ranking saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+        } catch (e) { console.error(e); showNotification('Combined ranking PDF failed', 'error'); }
     };
 
     const downloadCSV = (content, filename) => {
@@ -679,64 +820,65 @@ export default function Results() {
     const exportResultsCSV = () => {
         if (students.length === 0) { showNotification('No data to export', 'warning'); return; }
 
-        if (!isAdmin) {
-            const rows = students.map((s) => {
-                const score = getSubjectScoreForStudent(s.id, selectedSubject);
-                const grade = getCBCGrade(score ?? 0);
-                return {
-                    Name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
-                    AdmissionNo: s.admissionNumber || s.studentId || '',
-                    Subject: selectedSubject, Term: selectedTerm, Assessment: assessmentType,
-                    Score: score ?? '', Mean: classSubjectMean,
-                    Grade: score != null ? grade.code : '',
-                    Points: score != null ? grade.points : ''
-                };
-            });
-            const ranked = [...rows].map((r, i) => ({ ...r, _orig: i })).sort((a, b) => {
-                if (a.Score === '' && b.Score === '') return 0;
-                if (a.Score === '') return 1;
-                if (b.Score === '') return -1;
-                return b.Score - a.Score;
-            });
-            ranked.forEach((r, i) => { r.Rank = i + 1; });
-            ranked.sort((a, b) => a._orig - b._orig);
-            const finalRows = ranked.map(({ _orig, ...r }) => r);
-            const headers = Object.keys(finalRows[0] || {});
-            const csv = [headers.join(','), ...finalRows.map(row => headers.map(h => `"${row[h] ?? ''}"`).join(','))].join('\n');
-            downloadCSV(csv, `results_${selectedSubject}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
-            showNotification(`Exported ${finalRows.length} ${selectedSubject} score(s)`, 'success');
-            return;
-        }
-
-        const rows = students.map(s => {
-            const grade = getCBCGrade(s.average || 0);
+        const rows = students.map((s) => {
+            const score = getSubjectScoreForStudent(s.id, selectedSubject);
+            const grade = getCBCGrade(score ?? 0);
             return {
                 Name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
                 AdmissionNo: s.admissionNumber || s.studentId || '',
                 Subject: selectedSubject, Term: selectedTerm, Assessment: assessmentType,
-                Average: s.average ?? '', Grade: grade.code, Points: grade.points, Status: s.status
+                Score: score ?? '', Mean: classSubjectMean,
+                Grade: score != null ? grade.code : '',
+                Points: score != null ? grade.points : ''
             };
         });
-        const headers = Object.keys(rows[0] || {});
-        const csv = [headers.join(','), ...rows.map(r => headers.map(h => `"${r[h]}"`).join(','))].join('\n');
+        const ranked = [...rows].map((r, i) => ({ ...r, _orig: i })).sort((a, b) => {
+            if (a.Score === '' && b.Score === '') return 0;
+            if (a.Score === '') return 1;
+            if (b.Score === '') return -1;
+            return b.Score - a.Score;
+        });
+        ranked.forEach((r, i) => { r.Rank = i + 1; });
+        ranked.sort((a, b) => a._orig - b._orig);
+        const finalRows = ranked.map(({ _orig, ...r }) => r);
+        const headers = Object.keys(finalRows[0] || {});
+        const csv = [headers.join(','), ...finalRows.map(row => headers.map(h => `"${row[h] ?? ''}"`).join(','))].join('\n');
         downloadCSV(csv, `results_${selectedSubject}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
-        showNotification('Results exported', 'success');
+        showNotification(`Exported ${finalRows.length} ${selectedSubject} score(s)`, 'success');
     };
 
     const exportRankingCSV = () => {
         if (!isAdmin) return;
         if (students.length === 0) { showNotification('No data to export', 'warning'); return; }
-        const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
-        const sortedStudents = [...students].sort((a, b) => (b.average || 0) - (a.average || 0));
 
-        const data = sortedStudents.map((student, index) => {
-            const scores = studentScores[student.id] || [];
+        const rows = buildSubjectRankingRows().map((student, index) => {
+            const avg = student.subjectScore ?? 0;
+            const cbcGrade = getCBCGrade(avg);
+            return {
+                Rank: index + 1,
+                Name: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+                AdmNo: student.admissionNumber || student.studentId || 'N/A',
+                Subject: selectedSubject,
+                Score: avg,
+                Grade: cbcGrade.code,
+            };
+        });
+        const headers = Object.keys(rows[0] || {});
+        const csv = [headers.join(','), ...rows.map(row => headers.map(h => `"${row[h] ?? ''}"`).join(','))].join('\n');
+        downloadCSV(csv, `subject_ranking_${selectedSubject}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
+        showNotification('Subject ranking exported', 'success');
+    };
+
+    const exportCombinedRankingCSV = () => {
+        if (!combinedRankingData || combinedRankingData.length === 0) {
+            showNotification('No combined ranking data to export', 'warning');
+            return;
+        }
+        const allSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
+        const data = combinedRankingData.map((student, index) => {
             const subjectScores = {};
             allSubjects.forEach(subject => {
-                const sc = scores.find(s => s.subject === subject);
-                subjectScores[subject] = sc
-                    ? (sc.computedPercentage != null ? sc.computedPercentage : sc.score)
-                    : '-';
+                subjectScores[subject] = student.subjectScores?.[subject] ?? '-';
             });
             const avg = student.average || 0;
             const cbcGrade = getCBCGrade(avg);
@@ -745,14 +887,15 @@ export default function Results() {
                 Name: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
                 AdmNo: student.admissionNumber || student.studentId || 'N/A',
                 ...subjectScores,
-                Total: scores.reduce((sum, s) => sum + (s.computedPercentage ?? s.score ?? 0), 0),
-                Average: avg, Grade: cbcGrade.code
+                Total: student.totalMarks || 0,
+                Average: avg,
+                Grade: cbcGrade.code
             };
         });
         const headers = Object.keys(data[0] || {});
         const csv = [headers.join(','), ...data.map(row => headers.map(h => `"${row[h]}"`).join(','))].join('\n');
-        downloadCSV(csv, `ranking_${selectedLevel}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
-        showNotification('Ranking exported', 'success');
+        downloadCSV(csv, `combined_ranking_${selectedLevel}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
+        showNotification('Combined ranking exported', 'success');
     };
 
     const handleImportResults = async (e) => {
@@ -825,9 +968,9 @@ export default function Results() {
         setShowReportModal(true);
     };
 
-    const generateClassRanking = () => {
+    const generateSubjectRanking = () => {
         if (students.length === 0) { showNotification('No students loaded. Please load students first.', 'warning'); return; }
-        if (!isAdmin && !selectedSubject) { showNotification('Please select a subject first.', 'warning'); return; }
+        if (!selectedSubject) { showNotification('Please select a subject first.', 'warning'); return; }
         setShowRankingModal(true);
     };
 
@@ -880,7 +1023,7 @@ export default function Results() {
             <div className="selection-area" style={{
                 background: 'white', borderRadius: '12px', padding: '25px',
                 boxShadow: '0 4px 6px rgba(0,0,0,0.07)', marginBottom: '25px',
-                display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr auto',
+                display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
                 gap: '15px', alignItems: 'end'
             }}>
                 <div className="form-group" style={{ marginBottom: '0' }}>
@@ -1073,12 +1216,27 @@ export default function Results() {
                         cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
                         gap: '8px', fontSize: '14px', background: 'var(--warning)', color: 'white'
                     }}
-                    onClick={generateClassRanking}
-                    disabled={students.length === 0 || (!isAdmin && !selectedSubject)}
+                    onClick={generateSubjectRanking}
+                    disabled={students.length === 0 || !selectedSubject}
                 >
                     <i className="fas fa-trophy"></i>{' '}
-                    {isAdmin ? 'Ranking Report' : `Ranking Report (${selectedSubject || 'Subject'})`}
+                    Subject Ranking{selectedSubject ? ` (${selectedSubject})` : ''}
                 </button>
+
+                {isAdmin && (
+                    <button className="btn btn-warning"
+                        style={{
+                            padding: '10px 20px', border: 'none', borderRadius: '8px', fontWeight: '600',
+                            cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+                            gap: '8px', fontSize: '14px', background: '#e67e22', color: 'white'
+                        }}
+                        onClick={generateCombinedRanking}
+                        disabled={combinedRankingLoading || !selectedLevel || !selectedClass}
+                    >
+                        <i className="fas fa-layer-group"></i>{' '}
+                        {combinedRankingLoading ? 'Loading…' : 'Combined Ranking Report'}
+                    </button>
+                )}
 
                 <button className="btn btn-info"
                     style={{
@@ -1087,11 +1245,24 @@ export default function Results() {
                         gap: '8px', fontSize: '14px', background: 'var(--info)', color: 'white'
                     }}
                     onClick={handleDownloadRankingPDF}
-                    disabled={students.length === 0 || (!isAdmin && !selectedSubject)}
+                    disabled={students.length === 0 || !selectedSubject}
                 >
                     <i className="fas fa-file-pdf"></i>{' '}
-                    {isAdmin ? 'Ranking PDF' : `Ranking PDF (${selectedSubject || 'Subject'})`}
+                    Ranking PDF{selectedSubject ? ` (${selectedSubject})` : ''}
                 </button>
+
+                {isAdmin && combinedRankingData && combinedRankingData.length > 0 && (
+                    <button className="btn btn-info"
+                        style={{
+                            padding: '10px 20px', border: 'none', borderRadius: '8px', fontWeight: '600',
+                            cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+                            gap: '8px', fontSize: '14px', background: '#6c757d', color: 'white'
+                        }}
+                        onClick={handleDownloadCombinedRankingPDF}
+                    >
+                        <i className="fas fa-file-pdf"></i> Combined Ranking PDF
+                    </button>
+                )}
 
                 {isAdmin && (
                     <button className="btn btn-info"
@@ -1103,7 +1274,20 @@ export default function Results() {
                         onClick={exportRankingCSV}
                         disabled={students.length === 0}
                     >
-                        <i className="fas fa-download"></i> Export Ranking CSV
+                        <i className="fas fa-download"></i> Export Subject Ranking CSV
+                    </button>
+                )}
+
+                {isAdmin && combinedRankingData && combinedRankingData.length > 0 && (
+                    <button className="btn btn-info"
+                        style={{
+                            padding: '10px 20px', border: 'none', borderRadius: '8px', fontWeight: '600',
+                            cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+                            gap: '8px', fontSize: '14px', background: '#6c757d', color: 'white'
+                        }}
+                        onClick={exportCombinedRankingCSV}
+                    >
+                        <i className="fas fa-download"></i> Export Combined Ranking CSV
                     </button>
                 )}
 
@@ -1118,7 +1302,7 @@ export default function Results() {
                     disabled={students.length === 0}
                 >
                     <i className="fas fa-file-csv"></i>{' '}
-                    {isAdmin ? 'Export Score Sheet' : `Export Score Sheet (${selectedSubject || 'Subject'})`}
+                    Export Score Sheet{selectedSubject ? ` (${selectedSubject})` : ''}
                 </button>
 
                 {isAdmin && (
@@ -1181,21 +1365,41 @@ export default function Results() {
                 />
             )}
 
+            {/* Subject Ranking modal — single subject only */}
             {showRankingModal && (
                 <RankingModal
-                    students={buildRankingRows()}
+                    students={buildSubjectRankingRows()}
                     studentScores={studentScores}
                     meta={{
                         schoolName, schoolMotto,
                         level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
                         cls: selectedClass, term: selectedTerm, assessmentType,
-                        subjects: isAdmin ? (LEVEL_SUBJECTS[selectedLevel] || []) : [selectedSubject],
-                        scope: isAdmin ? 'all-subjects' : 'single-subject',
-                        scopeSubject: isAdmin ? null : selectedSubject,
-                        classSubjectMean: isAdmin ? null : classSubjectMean
+                        subjects: [selectedSubject],
+                        scope: 'single-subject',
+                        scopeSubject: selectedSubject,
+                        classSubjectMean,
                     }}
                     onClose={() => setShowRankingModal(false)}
                     onDownloadPDF={handleDownloadRankingPDF}
+                />
+            )}
+
+            {/* Combined Ranking modal — all subjects, admin only */}
+            {showCombinedRankingModal && combinedRankingData && (
+                <RankingModal
+                    students={combinedRankingData}
+                    studentScores={{}}
+                    meta={{
+                        schoolName, schoolMotto,
+                        level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
+                        cls: selectedClass, term: selectedTerm,
+                        assessmentType,
+                        subjects: LEVEL_SUBJECTS[selectedLevel] || [],
+                        scope: 'all-subjects',
+                        isCombined: true,
+                    }}
+                    onClose={() => setShowCombinedRankingModal(false)}
+                    onDownloadPDF={handleDownloadCombinedRankingPDF}
                 />
             )}
 
