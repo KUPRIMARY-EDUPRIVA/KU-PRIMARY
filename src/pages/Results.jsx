@@ -155,10 +155,9 @@ export default function Results() {
     const [combinedRankingData, setCombinedRankingData] = useState(null);
     const [combinedRankingLoading, setCombinedRankingLoading] = useState(false);
 
-    // Flat map { studentId: { subject: score } } for the combined preview,
-    // so RankingModal reads values the same way it does for the subject
-    // ranking (through its `studentScores` map). This is what fixes the
-    // dashes in the combined preview.
+    // Flat map { studentId: [ { subject, score, term, assessmentType }, ... ] }
+    // so RankingModal's array logic works exactly the same way it does for
+    // the subject ranking. THIS is the fix for "t.find is not a function".
     const [combinedPreviewScores, setCombinedPreviewScores] = useState({});
 
     const showNotification = useCallback((message, type = 'info') => {
@@ -628,8 +627,8 @@ export default function Results() {
     /**
      * Combined ranking: every subject in the level. Fetches fresh score data
      * for ALL subjects, computes per-student mean, and also flattens the
-     * per-subject map into `combinedPreviewScores` so the modal's preview
-     * table can render actual values instead of dashes.
+     * per-subject map into `combinedPreviewScores` as an ARRAY OF RECORDS
+     * (same shape RankingModal reads for the subject ranking).
      */
     const generateCombinedRanking = useCallback(async () => {
         if (!isAdmin) {
@@ -733,13 +732,24 @@ export default function Results() {
 
             combined.sort((a, b) => (b.average || 0) - (a.average || 0));
 
-            // Build a flat { studentId: { subject: score } } map for the
-            // preview table. RankingModal iterates `studentScores[student.id]`
-            // and expects an array OR an object — we give it an object keyed
-            // by subject so its lookup works without further changes.
+            // Build an ARRAY-based map for the preview table so
+            // RankingModal's `.find(...)` calls work unchanged.
             const previewMap = {};
             combined.forEach(s => {
-                previewMap[s.id] = s.subjectScores || {};
+                const arr = [];
+                allSubjects.forEach(subject => {
+                    const val = s.subjectScores?.[subject];
+                    if (val != null) {
+                        arr.push({
+                            subject,
+                            term: selectedTerm,
+                            assessmentType,
+                            score: val,
+                            computedPercentage: val,
+                        });
+                    }
+                });
+                previewMap[s.id] = arr;
             });
             setCombinedPreviewScores(previewMap);
 
@@ -1363,7 +1373,6 @@ export default function Results() {
                 />
             )}
 
-            {/* Subject Ranking modal — single subject only */}
             {showRankingModal && (
                 <RankingModal
                     students={buildSubjectRankingRows()}
@@ -1382,9 +1391,6 @@ export default function Results() {
                 />
             )}
 
-            {/* Combined Ranking modal — all subjects, admin only.
-                Now passes `combinedPreviewScores` so the preview table
-                shows real scores rather than dashes. */}
             {showCombinedRankingModal && combinedRankingData && (
                 <RankingModal
                     students={combinedRankingData}
