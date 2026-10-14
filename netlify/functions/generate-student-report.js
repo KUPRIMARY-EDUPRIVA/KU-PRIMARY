@@ -17,6 +17,12 @@ const { withCors } = require('./_lib/cors');
 //   - Times New Roman typography throughout (PDFKit standard-14 Times family)
 //   - Overall position/rank is supplied by the client via `student.position`
 //     and `student.classSize` and printed on the report form's marks line.
+//   - AUTO-GENERATED Class Teacher's Remark and Principal's Remark, derived
+//     from the report data (mean score, coverage, strongest/weakest area).
+//     If the client sends `student.teacherComment` / `student.principalComment`,
+//     those override the auto-generated text.
+//   - Term Dates, Principal, and Class Teacher are shown in a small
+//     information table below the remarks.
 //
 // Size strategy:
 //   - Images (logo / stamp / signature) are fetched ONCE per request and
@@ -264,6 +270,46 @@ function buildTeacherComment(report) {
     }
 }
 
+/**
+ * Auto-generated Principal's Remark. Framed for the head of institution:
+ * brief, outcome-focused, mentions overall standing and next-term focus.
+ * The client can override with student.principalComment.
+ */
+function buildPrincipalComment(report) {
+    const { meanScore, assessedCount, totalSubjects, subjectRows, student } = report;
+    if (assessedCount === 0) {
+        return 'Awaiting assessments for the term. Please ensure learner is assessed across all learning areas.';
+    }
+    const overall = cbcGrade(meanScore);
+    const assessed = subjectRows.filter((r) => r.average != null);
+    const sorted = [...assessed].sort((a, b) => b.average - a.average);
+    const best = sorted[0];
+    const weakest = sorted[sorted.length - 1];
+
+    const position = student?.position ? `${student.position}` : null;
+    const classSize = student?.classSize ? `${student.classSize}` : null;
+    const posText = position && classSize
+        ? ` Position ${position} of ${classSize} in class.` : '';
+
+    switch (overall.level) {
+        case 'EE':
+            return `An excellent term overall.${posText}` +
+                (best ? ` Continue to nurture the strong performance in ${best.subject}.` : '') +
+                (weakest && weakest.average < 65 ? ` A little extra polish in ${weakest.subject} will complete the picture.` : '');
+        case 'ME':
+            return `A solid, consistent term.${posText}` +
+                (best ? ` The learner performs well in ${best.subject}.` : '') +
+                (weakest && weakest.average < 50 ? ` Targeted support in ${weakest.subject} will lift the overall grade.` : ' Continue the steady effort.');
+        case 'AE':
+            return `Progress is being made, but more consistency is needed.${posText}` +
+                (weakest ? ` Focus next term should be on ${weakest.subject}.` : '');
+        case 'BE':
+            return `Results are below expectations and require attention.${posText} A structured support plan for the learner is recommended for next term.`;
+        default:
+            return `Report covers ${assessedCount} of ${totalSubjects} learning areas.`;
+    }
+}
+
 function detectAssessmentCount(students) {
     let max = 0;
     for (const student of students) {
@@ -344,9 +390,11 @@ function computeReport(student, subjects, assessmentIndex) {
 
     const report = {
         student, subjectRows, assessedCount, totalSubjects,
-        meanScore, totalMarks, totalScore, totalPoints, avgPoints, overall, 
+        meanScore, totalMarks, totalScore, totalPoints, avgPoints, overall,
     };
+    // Auto-generated remarks (can be overridden per-student below)
     report.teacherComment = buildTeacherComment(report);
+    report.principalComment = buildPrincipalComment(report);
     return report;
 }
 
@@ -711,6 +759,12 @@ function drawReportForm(doc, {
     const report = computeReport(student, subjects, null);
     const assessmentAverages = computeAssessmentAverages(student, subjects, assessmentCount);
 
+    // Client-supplied comments override auto-generated ones.
+    const teacherComment = (student.teacherComment && String(student.teacherComment).trim())
+        || report.teacherComment;
+    const principalComment = (student.principalComment && String(student.principalComment).trim())
+        || report.principalComment;
+
     const headerBottom = drawLetterheadHeader(doc, {
         x: MARGIN,
         y: MARGIN,
@@ -901,17 +955,92 @@ function drawReportForm(doc, {
     doc.rect(MARGIN, tableTop, CONTENT_W, ry - tableTop - 4)
         .lineWidth(1).strokeColor('#000').stroke();
 
+    // ---- Remarks (auto-generated unless overridden) ----
     doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
         .text(`Class Teacher's Remark: `, MARGIN, ry, { continued: true });
     doc.font(FONT_REGULAR).fontSize(9)
-        .text(report.teacherComment, { width: CONTENT_W - 130 });
+        .text(teacherComment, { width: CONTENT_W - 130 });
     ry += 13;
 
     doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
         .text(`Principal's Remark: `, MARGIN, ry, { continued: true });
     doc.font(FONT_REGULAR).fontSize(9)
-        .text(student.principalComment || 'Good', { width: CONTENT_W - 110 });
+        .text(principalComment, { width: CONTENT_W - 110 });
     ry += 16;
+
+    // ---- Term dates + signatory info table ----
+    // A compact two-column info table: left column has term dates,
+    // right column has class teacher and principal names.
+    const infoTop = ry;
+    const infoRowH = 11;
+    const infoLabelW = 78;
+    const infoValueW = (CONTENT_W / 2) - infoLabelW;
+    const col2X = MARGIN + (CONTENT_W / 2);
+
+    const infoRows = [
+        {
+            left: { label: 'Term Started', value: fmtDate(meta.currentTermStart || meta.termStart) },
+            right: { label: 'Class Teacher', value: meta.classTeacherName || '—' },
+        },
+        {
+            left: { label: 'Closing Date', value: fmtDate(meta.currentTermEnd) },
+            right: { label: 'Principal', value: meta.principalName || '—' },
+        },
+        {
+            left: { label: 'Next Opening', value: fmtDate(meta.nextTermStart) },
+            right: { label: '', value: '' },
+        },
+    ];
+
+    // Header strip
+    doc.rect(MARGIN, infoTop, CONTENT_W, infoRowH).fillAndStroke('#eef2f7', '#000');
+    doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000');
+    doc.text('Term & Signatory Information', MARGIN + 4, infoTop + 2, {
+        width: CONTENT_W - 8, align: 'left',
+    });
+
+    let iy = infoTop + infoRowH;
+    infoRows.forEach((row, idx) => {
+        // Row background
+        doc.rect(MARGIN, iy, CONTENT_W, infoRowH)
+            .fillAndStroke(idx % 2 === 1 ? '#fafbfe' : '#ffffff', '#cccccc');
+
+        // Middle divider
+        doc.moveTo(col2X, iy).lineTo(col2X, iy + infoRowH)
+            .lineWidth(0.3).strokeColor('#cccccc').stroke();
+
+        // Left cell
+        if (row.left.label) {
+            doc.font(FONT_BOLD).fontSize(8.5).fillColor('#333')
+                .text(`${row.left.label}:`, MARGIN + 4, iy + 2, {
+                    width: infoLabelW - 6, align: 'left',
+                });
+            doc.font(FONT_REGULAR).fontSize(8.5).fillColor('#000')
+                .text(row.left.value || '—', MARGIN + 4 + infoLabelW, iy + 2, {
+                    width: infoValueW - 4, align: 'left', ellipsis: true,
+                });
+        }
+
+        // Right cell
+        if (row.right.label) {
+            doc.font(FONT_BOLD).fontSize(8.5).fillColor('#333')
+                .text(`${row.right.label}:`, col2X + 4, iy + 2, {
+                    width: infoLabelW - 6, align: 'left',
+                });
+            doc.font(FONT_REGULAR).fontSize(8.5).fillColor('#000')
+                .text(row.right.value || '—', col2X + 4 + infoLabelW, iy + 2, {
+                    width: infoValueW - 4, align: 'left', ellipsis: true,
+                });
+        }
+
+        iy += infoRowH;
+    });
+
+    // Outer border of the info table
+    doc.rect(MARGIN, infoTop, CONTENT_W, iy - infoTop)
+        .lineWidth(0.8).strokeColor('#000').stroke();
+
+    ry = iy + 8;
 
     const chartH = 55;
     const chartTop = ry;
@@ -953,15 +1082,6 @@ function drawReportForm(doc, {
     });
 
     ry = chartTop + chartH + 18;
-
-    doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
-        .text(
-            `Term Started: ${fmtDate(meta.currentTermStart || meta.termStart)}  |  ` +
-            `Closing Date: ${fmtDate(meta.currentTermEnd)}  |  ` +
-            `Next Opening Date: ${fmtDate(meta.nextTermStart)}`,
-            MARGIN, ry, { width: CONTENT_W, align: 'center' }
-        );
-    ry += 18;
 
     const sigY = Math.max(ry, PAGE_H - 110);
     const sigW = (CONTENT_W - 40) / 2;
