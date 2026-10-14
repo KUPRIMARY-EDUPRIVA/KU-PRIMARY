@@ -1,3 +1,4 @@
+// netlify/functions/generate-student-report.js
 const { withCors } = require('./_lib/cors');
 // netlify/functions/generate-student-report.js
 //
@@ -8,11 +9,14 @@ const { withCors } = require('./_lib/cors');
 // Features:
 //   - Letterhead-style header (logo left, school name / motto / contact stack)
 //     with a coloured underline rule, matching the printed school letterhead
+//   - Logo drawn only when present; when absent, header text is centred
 //   - Dynamic table columns based on assessments recorded (1-3 columns)
 //   - Bar chart reflects actual per-assessment averages
 //   - School logo, stamp, and principal signature embedded when available
 //   - Full printable-space utilisation on the report form
 //   - Times New Roman typography throughout (PDFKit standard-14 Times family)
+//   - Overall position/rank is supplied by the client via `student.position`
+//     and `student.classSize` and printed on the report form's marks line.
 //
 // Size strategy:
 //   - Images (logo / stamp / signature) are fetched ONCE per request and
@@ -33,40 +37,28 @@ const MAX_RESPONSE_BYTES = 5_500_000;
 const MAX_STUDENTS_PER_REQUEST = 300;
 const MAX_ASSESSMENTS = 3;
 
-// Per-student size estimate (bytes) used for the early guard.
-// Values are conservative — the client batches well below these ceilings.
 const EST_BYTES_PER_STUDENT = {
-    'transcript': 60_000,   // ~40 KB/card × 4 cards/sheet
-    'report-form': 150_000, // ~1 portrait page with tables + chart
+    'transcript': 60_000,
+    'report-form': 150_000,
 };
-const ESTIMATE_HEADROOM = 0.7; // budget only 70% of MAX_RESPONSE_BYTES
+const ESTIMATE_HEADROOM = 0.7;
 
 const PRIMARY = '#1a237e';
-const PRIMARY_SOFT = '#3949ab';
 const PRIMARY_LIGHT = '#eef2ff';
 const GRAY = '#666';
-const LIGHT = '#f5f7fb';
 const BORDER = '#e0e6ed';
 const DANGER = '#c62828';
 const SUCCESS = '#1b5e20';
 
-// Letterhead-style header colours (mirrors the HTML letterhead styling)
-const HEADER_BLUE = '#1a4e8a';        // school name + underline rule
-const HEADER_RULE_WIDTH = 1.4;         // pt — 2px equivalent on A4
+const HEADER_BLUE = '#1a4e8a';
+const HEADER_RULE_WIDTH = 1.4;
 const HEADER_MOTTO_GRAY = '#666';
 const HEADER_CONTACT_GRAY = '#333';
 
-// Times New Roman family — PDFKit's standard-14 names.
-// NOTE: PDFKit does NOT accept "Times New Roman" as a font name. The
-// standard-14 Times family is registered as Times-Roman / Times-Bold /
-// Times-Italic / Times-BoldItalic. These map to Adobe's Times core fonts,
-// which every PDF reader renders as Times New Roman.
 const FONT_REGULAR = 'Times-Roman';
 const FONT_BOLD = 'Times-Bold';
 const FONT_ITALIC = 'Times-Italic';
-const FONT_BOLD_ITALIC = 'Times-BoldItalic';
 
-// Stamp and signature footprints (PDF points)
 const STAMP_SIZE = 62;
 const SIGNATURE_W = 113;
 const SIGNATURE_H = 40;
@@ -85,7 +77,6 @@ exports.handler = async (event) => {
     }
 
     const {
-        mode = 'class',
         docType = 'report-form',
         students,
         meta,
@@ -113,9 +104,6 @@ exports.handler = async (event) => {
         return json(400, { error: 'assessmentIndex must be 0, 1, or 2' });
     }
 
-    // Early size guard — reject before any PDF work so the client can chunk.
-    // Base64 in the response inflates by ~33%, so we budget only 70% of the
-    // raw PDF ceiling here.
     const estBytes = students.length * (EST_BYTES_PER_STUDENT[docType] || 150_000);
     const safeBudget = MAX_RESPONSE_BYTES * ESTIMATE_HEADROOM;
     if (estBytes > safeBudget) {
@@ -129,21 +117,16 @@ exports.handler = async (event) => {
     }
 
     try {
-        // --- LOGO FIX ---
-        // Pull from ALL plausible field names the school doc might use.
-        // SchoolProfile writes `logoUrl`, but AuthContext may forward it
-        // as `schoolLogo`. We accept both, plus `logo`, as a safety net.
         const logoUrl = meta?.schoolLogo || meta?.logoUrl || meta?.logo || '';
         const stampUrl = meta?.schoolStamp || meta?.stampUrl || '';
         const signatureUrl = meta?.principalSignature || meta?.principalSignatureUrl || '';
 
         const [logoBuffer, stampBuffer, signatureBuffer] = await Promise.all([
-            fetchImageBuffer(logoUrl, 2 * 1024 * 1024),   // 2 MB cap for logo
+            fetchImageBuffer(logoUrl, 2 * 1024 * 1024),
             fetchImageBuffer(stampUrl, 512 * 1024),
             fetchImageBuffer(signatureUrl, 512 * 1024),
         ]);
 
-        // Debug logging — visible in Netlify function logs
         console.log('[PDF] image fetch status', {
             hasLogoUrl: !!logoUrl,
             logoBytes: logoBuffer ? logoBuffer.length : 0,
@@ -215,7 +198,7 @@ function buildFilename({ docType, students, meta, term, assessmentIndex }) {
 }
 
 // ============================================================
-// Grading — CBC levels
+// Grading
 // ============================================================
 function cbcGrade(score) {
     if (score == null || isNaN(score)) {
@@ -281,10 +264,6 @@ function buildTeacherComment(report) {
     }
 }
 
-/**
- * Determine the number of assessments actually recorded for a student.
- * Returns 1, 2, or 3 based on how many non-null scores exist across all subjects.
- */
 function detectAssessmentCount(students) {
     let max = 0;
     for (const student of students) {
@@ -298,11 +277,6 @@ function detectAssessmentCount(students) {
     return Math.min(Math.max(max, 1), MAX_ASSESSMENTS);
 }
 
-/**
- * Compute per-assessment overall averages across all subjects.
- * Example: assessmentAvgs[0] = average of A1 scores across all subjects.
- * Returns an array of length assessmentCount, each element a rounded number or null.
- */
 function computeAssessmentAverages(student, subjects, assessmentCount) {
     const result = [];
     for (let i = 0; i < assessmentCount; i++) {
@@ -437,11 +411,6 @@ function gradientBand(doc, x, y, w, h, from, to) {
     });
 }
 
-/**
- * Open the incoming image Buffers as reusable PDF XObjects.
- * Called once per PDFDocument; every subsequent doc.image(openImg, ...)
- * only writes a transform matrix, not the image bytes again.
- */
 function openImages(doc, { logoBuffer, stampBuffer, signatureBuffer }) {
     const safeOpen = (buf, label) => {
         if (!buf) return null;
@@ -459,8 +428,6 @@ function openImages(doc, { logoBuffer, stampBuffer, signatureBuffer }) {
     };
 }
 
-// drawImage / drawRotatedImage now take an *opened* image (from openImages),
-// not a raw Buffer. This is what makes the multi-page PDF small.
 function drawImage(doc, img, cx, cy, w, h) {
     if (!img) return false;
     try {
@@ -489,64 +456,50 @@ function drawRotatedImage(doc, img, cx, cy, w, h, angleDeg) {
 }
 
 /**
- * Compose a letterhead-style header inside the given box and return the y
- * coordinate immediately below it (after the coloured underline rule).
- *
- * Layout (mirrors the printed letterhead):
- *   ┌──────────────────────────────────────────────────────────────┐
- *   │ [LOGO]   SCHOOL NAME (bold, blue, large)                     │
- *   │          Motto: … (italic, gray)                             │
- *   │          P.O BOX …                                           │
- *   │          Tel: …                                              │
- *   │          Email: …                                            │
- *   │          Website: …                                          │
- *   ├──────────────────────────────────────────────────────────────┤  ← blue rule
- *
- * Options tune sizes for portrait report vs. landscape transcript card.
+ * Letterhead header. Logo is drawn only when present; when absent, header
+ * text is centred across the full content width.
  */
 function drawLetterheadHeader(doc, {
     x, y, w,
     meta, logoImg,
     logoSize = 58,
-    padding = 6,
+    padding = 10,
     nameSize = 15,
     mottoSize = 8.5,
     contactSize = 7.5,
     lineGap = 2.5,
     ruleGap = 6,
 }) {
-    const logoX = x;
-    const logoY = y;
-    const hasLogo = drawImage(doc, logoImg, logoX, logoY, logoSize, logoSize);
+    let textX = x;
+    let textW = w;
+    let logoBottom = y;
+    let hasLogo = false;
 
-    if (!hasLogo) {
-        doc.rect(logoX, logoY, logoSize, logoSize)
-            .lineWidth(0.6).strokeColor(BORDER).stroke();
-        doc.font(FONT_REGULAR).fontSize(6.5).fillColor('#bbb')
-            .text('NO\nLOGO', logoX, logoY + logoSize / 2 - 6, {
-                width: logoSize, align: 'center', lineGap: 2,
-            });
+    if (logoImg) {
+        const ok = drawImage(doc, logoImg, x, y, logoSize, logoSize);
+        if (ok) {
+            textX = x + logoSize + padding;
+            textW = w - logoSize - padding;
+            logoBottom = y + logoSize;
+            hasLogo = true;
+        }
     }
 
-    const textX = logoX + logoSize + padding;
-    const textW = w - logoSize - padding;
+    const align = hasLogo ? 'left' : 'center';
 
-    // School name (dominant, blue)
     doc.font(FONT_BOLD).fontSize(nameSize).fillColor(HEADER_BLUE)
         .text((meta.schoolName || FALLBACK_NAME).toUpperCase(), textX, y + 1, {
-            width: textW, align: 'left', ellipsis: true,
+            width: textW, align, ellipsis: true,
         });
     let cy = y + nameSize + 3;
 
-    // Motto (italic, gray)
     const motto = meta.schoolMotto || FALLBACK_MOTTO;
     doc.font(FONT_ITALIC).fontSize(mottoSize).fillColor(HEADER_MOTTO_GRAY)
         .text(`Motto: ${motto}`, textX, cy, {
-            width: textW, align: 'left', ellipsis: true,
+            width: textW, align, ellipsis: true,
         });
     cy += mottoSize + lineGap;
 
-    // Contact stack — one item per line, left aligned
     doc.font(FONT_REGULAR).fontSize(contactSize).fillColor(HEADER_CONTACT_GRAY);
     const contactLines = [];
     if (meta.schoolAddress) contactLines.push(String(meta.schoolAddress));
@@ -559,13 +512,12 @@ function drawLetterheadHeader(doc, {
 
     for (const line of contactLines) {
         doc.text(line, textX, cy, {
-            width: textW, align: 'left', ellipsis: true, lineBreak: false,
+            width: textW, align, ellipsis: true, lineBreak: false,
         });
         cy += contactSize + lineGap;
     }
 
-    // Coloured rule under the header block, matching the letterhead
-    const blockBottom = Math.max(cy, logoY + logoSize) + ruleGap;
+    const blockBottom = Math.max(cy, logoBottom) + ruleGap;
     doc.moveTo(x, blockBottom).lineTo(x + w, blockBottom)
         .lineWidth(HEADER_RULE_WIDTH).strokeColor(HEADER_BLUE).stroke();
 
@@ -573,8 +525,6 @@ function drawLetterheadHeader(doc, {
 }
 
 function contactLine(meta) {
-    // Kept for backwards compatibility with transcript mini-cards that still
-    // want a single-line contact string.
     return [
         meta.schoolAddress,
         meta.schoolPhone ? `Tel: ${meta.schoolPhone}` : '',
@@ -606,48 +556,45 @@ function drawTranscriptCard(doc, {
 
     doc.rect(x, y, w, h).lineWidth(0.8).strokeColor(PRIMARY).stroke();
 
-    // Letterhead-styled header inside the card.
-    // The card is smaller than A4, so the logo + text sizes are scaled down
-    // proportionally and the contact stack is condensed to a single line to
-    // fit the narrower space.
     const logoSize = 30;
-    const padding = 8;
-    const textX = x + 6 + logoSize + padding;
-    const textW = w - 12 - logoSize - padding;
+    let textX = x + 6;
+    let textW = w - 12;
+    let logoBottom = y + 5;
+    let hasLogo = false;
 
-    drawImage(doc, logoImg, x + 6, y + 5, logoSize, logoSize);
-    if (!logoImg) {
-        doc.rect(x + 6, y + 5, logoSize, logoSize)
-            .lineWidth(0.5).strokeColor(BORDER).stroke();
-        doc.font(FONT_REGULAR).fontSize(4.5).fillColor('#bbb')
-            .text('LOGO', x + 6, y + 5 + logoSize / 2 - 3, {
-                width: logoSize, align: 'center',
-            });
+    if (logoImg) {
+        const ok = drawImage(doc, logoImg, x + 6, y + 5, logoSize, logoSize);
+        if (ok) {
+            textX = x + 6 + logoSize + 8;
+            textW = w - 12 - logoSize - 8;
+            logoBottom = y + 5 + logoSize;
+            hasLogo = true;
+        }
     }
+
+    const align = hasLogo ? 'left' : 'center';
 
     doc.font(FONT_BOLD).fontSize(9.5).fillColor(HEADER_BLUE)
         .text((meta.schoolName || FALLBACK_NAME).toUpperCase(), textX, y + 5, {
-            width: textW, align: 'left', ellipsis: true,
+            width: textW, align, ellipsis: true,
         });
     doc.font(FONT_ITALIC).fontSize(6).fillColor(HEADER_MOTTO_GRAY)
         .text(`Motto: ${meta.schoolMotto || FALLBACK_MOTTO}`, textX, y + 16, {
-            width: textW, align: 'left', ellipsis: true,
+            width: textW, align, ellipsis: true,
         });
 
     const contact = contactLine(meta);
     if (contact) {
         doc.font(FONT_REGULAR).fontSize(5.3).fillColor(HEADER_CONTACT_GRAY)
             .text(contact, textX, y + 25, {
-                width: textW, align: 'left', ellipsis: true, lineBreak: false,
+                width: textW, align, ellipsis: true, lineBreak: false,
             });
     }
 
-    // Coloured rule under the card header
-    const headerRuleY = y + 5 + logoSize + 2;
+    const headerRuleY = Math.max(y + 5 + logoSize + 2, logoBottom + 2);
     doc.moveTo(x + 6, headerRuleY).lineTo(x + w - 6, headerRuleY)
         .lineWidth(1).strokeColor(HEADER_BLUE).stroke();
 
-    // Student info — starts right below the rule
     let cy = headerRuleY + 5;
     const name = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
     doc.font(FONT_BOLD).fontSize(8).fillColor('#111')
@@ -667,7 +614,6 @@ function drawTranscriptCard(doc, {
         );
     cy += 11;
 
-    // Subjects table (single assessment)
     const tableX = x + 6;
     const tableW = w - 12;
     const colW = [tableW * 0.46, tableW * 0.13, tableW * 0.14, tableW * 0.13, tableW * 0.14];
@@ -678,8 +624,8 @@ function drawTranscriptCard(doc, {
     doc.font(FONT_BOLD).fontSize(6).fillColor(PRIMARY);
     let hx = tableX + 2;
     headers.forEach((h, i) => {
-        const align = i === 0 || i === 4 ? 'left' : 'center';
-        doc.text(h, hx, cy + 3, { width: colW[i] - 4, align, ellipsis: true });
+        const alignH = i === 0 || i === 4 ? 'left' : 'center';
+        doc.text(h, hx, cy + 3, { width: colW[i] - 4, align: alignH, ellipsis: true });
         hx += colW[i];
     });
     cy += headerRowH;
@@ -708,7 +654,6 @@ function drawTranscriptCard(doc, {
         cy += rowH;
     });
 
-    // Summary bar
     const summaryY = y + h - 22;
     doc.rect(x + 6, summaryY, w - 12, 16).fillAndStroke('#f5f7fb', BORDER);
     const summaryCellW = (w - 12) / 3;
@@ -742,7 +687,6 @@ function drawTranscriptCard(doc, {
         drawImage(doc, signatureImg, x + 8, y + h - 22, 60, 16);
     }
 
-    // Cut guides
     const cornerLen = 6;
     doc.lineWidth(0.4).strokeColor('#bbb');
     doc.moveTo(x, y + cornerLen).lineTo(x, y).lineTo(x + cornerLen, y).stroke();
@@ -767,7 +711,6 @@ function drawReportForm(doc, {
     const report = computeReport(student, subjects, null);
     const assessmentAverages = computeAssessmentAverages(student, subjects, assessmentCount);
 
-    // ---- Letterhead-style header ----
     const headerBottom = drawLetterheadHeader(doc, {
         x: MARGIN,
         y: MARGIN,
@@ -785,7 +728,6 @@ function drawReportForm(doc, {
 
     let y = headerBottom + 2;
 
-    // Term title
     doc.font(FONT_BOLD).fontSize(11.5).fillColor('#000')
         .text(`${(term || 'TERM').toUpperCase()} - ${meta.year || new Date().getFullYear()}`,
             MARGIN, y, { width: CONTENT_W, align: 'center' });
@@ -794,7 +736,6 @@ function drawReportForm(doc, {
         .text('MID TERM', MARGIN, y, { width: CONTENT_W, align: 'center' });
     y += 12;
 
-    // Student line
     const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
     const admissionNo = student.admissionNumber || student.studentId || '—';
     const grade = student.class || meta.cls || '—';
@@ -804,24 +745,16 @@ function drawReportForm(doc, {
             MARGIN, y, { width: CONTENT_W, align: 'center' });
     y += 12;
 
-    // Marks line
- const marksText =
-    `Marks: ${report.totalScore}/${report.totalMarks}  |  ` +
-    `Avg: ${report.assessedCount > 0 ? report.meanScore.toFixed(2) : '0.00'}/100  |  ` +
-    `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}  |  ` +
-    `Grade: ${report.overall.code === 'NA' ? '—' : report.overall.code}`;
+    const marksText =
+        `Marks: ${report.totalScore}/${report.totalMarks}  |  ` +
+        `Avg: ${report.assessedCount > 0 ? report.meanScore.toFixed(2) : '0.00'}/100  |  ` +
+        `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}  |  ` +
+        `Grade: ${report.overall.code === 'NA' ? '—' : report.overall.code}`;
 
-doc.font(FONT_BOLD)
-    .fontSize(8.5)
-    .fillColor('#000')
-    .text(marksText, MARGIN, y, {
-        width: CONTENT_W,
-        align: 'center'
-    });
+    doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
+        .text(marksText, MARGIN, y, { width: CONTENT_W, align: 'center' });
+    y += 12;
 
-y += 12;
-
-    // ---- Dynamic marks table ----
     const tableTop = y;
     const colSubject = Math.floor(CONTENT_W * 0.28);
     const colRemark = Math.floor(CONTENT_W * 0.18);
@@ -868,7 +801,6 @@ y += 12;
     const idealRowH = Math.floor(availableTableHeight / (report.subjectRows.length + 2));
     const rowH = Math.max(minRowH, Math.min(maxRowH, idealRowH || baseRowH));
 
-    // Rows
     report.subjectRows.forEach((row, idx) => {
         doc.rect(MARGIN, ry, CONTENT_W, rowH)
             .fillAndStroke(idx % 2 === 1 ? '#f7f9fc' : '#ffffff', '#cccccc');
@@ -900,7 +832,6 @@ y += 12;
             rx += col.w;
         });
 
-        // Vertical separators
         let sepX = MARGIN + colSubject;
         doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).lineWidth(0.3).strokeColor('#cccccc').stroke();
         for (let i = 0; i < assessmentCount; i++) {
@@ -917,7 +848,6 @@ y += 12;
         ry += rowH;
     });
 
-    // TOTAL row
     doc.rect(MARGIN, ry, CONTENT_W, rowH).fillAndStroke('#f5f7fb', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('TOTAL', MARGIN + 4, ry + (rowH - 10) / 2, { width: colSubject - 8 });
@@ -946,7 +876,6 @@ y += 12;
     });
     ry += rowH;
 
-    // AVG row
     doc.rect(MARGIN, ry, CONTENT_W, rowH).fillAndStroke('#f5f7fb', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('AVG', MARGIN + 4, ry + (rowH - 10) / 2, { width: colSubject - 8 });
@@ -969,11 +898,9 @@ y += 12;
     });
     ry += rowH + 4;
 
-    // Outer table border
     doc.rect(MARGIN, tableTop, CONTENT_W, ry - tableTop - 4)
         .lineWidth(1).strokeColor('#000').stroke();
 
-    // ---- Remarks ----
     doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
         .text(`Class Teacher's Remark: `, MARGIN, ry, { continued: true });
     doc.font(FONT_REGULAR).fontSize(9)
@@ -986,7 +913,6 @@ y += 12;
         .text(student.principalComment || 'Good', { width: CONTENT_W - 110 });
     ry += 16;
 
-    // ---- Performance bar chart ----
     const chartH = 55;
     const chartTop = ry;
     const chartW = CONTENT_W * 0.55;
@@ -1011,7 +937,6 @@ y += 12;
             });
     });
 
-    // Legend
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('PERFORMANCE LEVEL (P.L)', legendX, chartTop);
     const legendItems = [
@@ -1029,7 +954,6 @@ y += 12;
 
     ry = chartTop + chartH + 18;
 
-    // ---- Term dates ----
     doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
         .text(
             `Term Started: ${fmtDate(meta.currentTermStart || meta.termStart)}  |  ` +
@@ -1039,7 +963,6 @@ y += 12;
         );
     ry += 18;
 
-    // ---- Signatures ----
     const sigY = Math.max(ry, PAGE_H - 110);
     const sigW = (CONTENT_W - 40) / 2;
 
@@ -1075,7 +998,6 @@ y += 12;
         );
     }
 
-    // ---- Footer ----
     const footerY = PAGE_H - 26;
     doc.moveTo(MARGIN, footerY)
         .lineTo(MARGIN + CONTENT_W, footerY)
@@ -1116,11 +1038,8 @@ async function buildPDF({
             },
         });
 
-        // Set the document-wide default font once so any stray doc.text()
-        // that doesn't explicitly set a font still lands in Times.
         doc.font(FONT_REGULAR);
 
-        // Open images ONCE — every page reuses the same XObjects.
         const { logoImg, stampImg, signatureImg } = openImages(doc, {
             logoBuffer, stampBuffer, signatureBuffer,
         });
