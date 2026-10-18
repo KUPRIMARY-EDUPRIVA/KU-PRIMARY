@@ -13,7 +13,7 @@ import {
     collection,
     query,
     where,
-    getCountFromServer
+    getDocs
 } from 'firebase/firestore';
 import './Layout.css';
 
@@ -40,15 +40,17 @@ export default function Sidebar({ isOpen, onClose }) {
     // --------------------------------------------------
 
     useEffect(() => {
-        if (currentUser) loadUserProfile();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentUser?.uid]);
+        if (currentUser) {
+            loadUserProfile();
+        }
 
-    useEffect(() => {
-        if (userData?.schoolId) loadFeeBadge(userData.schoolId);
-        else setFeeBadge(0);
+        if (userData && userData.schoolId) {
+            loadFeeBadge();
+        }
+
+        // These functions intentionally remain stable for this effect.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [userData?.schoolId]);
+    }, [currentUser, userData]);
 
     // --------------------------------------------------
     // LOAD USER PROFILE
@@ -189,28 +191,60 @@ export default function Sidebar({ isOpen, onClose }) {
     // LOAD FEE BADGE
     // --------------------------------------------------
 
-    const loadFeeBadge = async (schoolId) => {
+    const loadFeeBadge = async () => {
+        if (!userData || !userData.schoolId) {
+            setFeeBadge(0);
+            return;
+        }
+
         try {
             const invoicesQuery = query(
                 collection(db, 'fee_invoices'),
-                where('schoolId', '==', schoolId),
-                where('status', '==', 'pending')
+                where(
+                    'schoolId',
+                    '==',
+                    userData.schoolId
+                ),
+                where(
+                    'status',
+                    '==',
+                    'pending'
+                )
             );
-            const cachedStudents = await getCachedStudentRoster(schoolId);
-            const [pendingInvoices, overdueCount] = await Promise.all([
-                getCountFromServer(invoicesQuery).then((snapshot) => snapshot.data().count),
-                cachedStudents
-                    ? Promise.resolve(cachedStudents.filter((student) => Number(student.feeBalance) > 0).length)
-                    : getCountFromServer(query(
-                        collection(db, 'students'),
-                        where('schoolId', '==', schoolId),
-                        where('feeBalance', '>', 0)
-                    )).then((snapshot) => snapshot.data().count).catch((error) => {
-                        console.warn('Overdue student badge count unavailable:', error);
-                        return 0;
-                    }),
-            ]);
-            setFeeBadge(pendingInvoices + overdueCount);
+
+            const invoicesSnapshot =
+                await getDocs(invoicesQuery);
+
+            const studentsQuery = query(
+                collection(db, 'students'),
+                where(
+                    'schoolId',
+                    '==',
+                    userData.schoolId
+                )
+            );
+
+            const cachedStudents = await getCachedStudentRoster(userData.schoolId);
+            const studentsSnapshot = cachedStudents ? null : await getDocs(studentsQuery);
+
+            let overdueCount = 0;
+
+            const students = cachedStudents
+                || studentsSnapshot.docs.map((studentDoc) => studentDoc.data());
+            students.forEach((student) => {
+
+                if (
+                    student.feeBalance &&
+                    student.feeBalance > 0
+                ) {
+                    overdueCount++;
+                }
+            });
+
+            setFeeBadge(
+                invoicesSnapshot.size +
+                overdueCount
+            );
         } catch (error) {
             console.error(
                 'Error loading fee badge:',
@@ -287,11 +321,12 @@ export default function Sidebar({ isOpen, onClose }) {
         const role = normalizeRole(userRole || userData?.role || 'user');
 
         const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
+        const isHeadteacher = role === 'headteacher';
         const isDeputyHeadteacher = role === 'deputy-headteacher';
         const isAccountant = role === 'accountant';
 
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
+        const isTeacherOrDeputy = isTeacher || isHeadteacher || isDeputyHeadteacher;
 
         const isStudent =
             role === 'student';
@@ -305,34 +340,28 @@ export default function Sidebar({ isOpen, onClose }) {
                 path: '/dashboard',
                 icon: 'fa-tachometer-alt',
                 label: 'Dashboard',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/students',
                 icon: 'fa-user-graduate',
                 label: 'Students',
                 badge: badges.students,
-                show: isAdmin
-            },
-            {
-                path: '/student-promotion',
-                icon: 'fa-arrow-right-arrow-left',
-                label: 'Promotion & Archive',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/teachers',
                 icon: 'fa-chalkboard-teacher',
                 label: 'Teachers',
                 badge: badges.teachers,
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/exams',
                 icon: 'fa-file-alt',
                 label: 'Exams',
                 badge: badges.exams,
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/results',
@@ -341,53 +370,63 @@ export default function Sidebar({ isOpen, onClose }) {
                 badge: badges.results,
                 badgeClass:
                     getResultsBadgeClass(),
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/attendance',
                 icon: 'fa-clipboard-check',
                 label: 'Attendance',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
-           
+            {
+                path: '/discipline',
+                icon: 'fa-scale-balanced',
+                label: 'Discipline',
+                show: isHeadteacher 
+            },
             {
                 path: '/fees',
                 icon: 'fa-coins',
                 label: 'Fee Management',
                 badge: feeBadge,
                 badgeClass: 'danger',
-                show: isAdmin || isAccountant
+                show: isAdmin || isAccountant || isHeadteacher
             },
-           
+            {
+                path: '/communications',
+                icon: 'fa-comment-sms',
+                label: 'Communications',
+                show: isHeadteacher
+            },
             {
                 path: '/reports',
                 icon: 'fa-chart-pie',
                 label: 'Reports',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/studentreports',
                 icon: 'fa-file-alt',
                 label: 'Student Reports',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/school-profile',
                 icon: 'fa-school',
                 label: 'School Profile',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/audit-logs',
                 icon: 'fa-shield-alt',
                 label: 'Audit Logs',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             },
             {
                 path: '/transcripts',
                 icon: 'fa-graduation-cap',
                 label: 'Transcripts',
-                show: isAdmin
+                show: isAdmin || isHeadteacher
             }
         ];
 
@@ -397,13 +436,13 @@ export default function Sidebar({ isOpen, onClose }) {
 
         const teacherItems = [
             {
-                path: '/mydashboard',
+                path: '/dashboard',
                 icon: 'fa-chalkboard-teacher',
                 label: 'Dashboard',
                 show: isTeacherOrDeputy
             },
             {
-                path: '/my-students',
+                path: '/students',
                 icon: 'fa-user-graduate',
                 label: 'My Students',
                 show: isTeacherOrDeputy
