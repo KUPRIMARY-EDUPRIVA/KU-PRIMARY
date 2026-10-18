@@ -326,7 +326,7 @@ export default function Sidebar({ isOpen, onClose }) {
         const isAccountant = role === 'accountant';
 
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher || isHeadteacher || isDeputyHeadteacher;
+        const isTeacherOrDeputy = isTeacher  || isDeputyHeadteacher;
 
         const isStudent =
             role === 'student';
