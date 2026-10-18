@@ -13,7 +13,7 @@ import {
     collection,
     query,
     where,
-    getDocs
+    getCountFromServer
 } from 'firebase/firestore';
 import './Layout.css';
 
@@ -40,17 +40,15 @@ export default function Sidebar({ isOpen, onClose }) {
     // --------------------------------------------------
 
     useEffect(() => {
-        if (currentUser) {
-            loadUserProfile();
-        }
-
-        if (userData && userData.schoolId) {
-            loadFeeBadge();
-        }
-
-        // These functions intentionally remain stable for this effect.
+        if (currentUser) loadUserProfile();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentUser, userData]);
+    }, [currentUser?.uid]);
+
+    useEffect(() => {
+        if (userData?.schoolId) loadFeeBadge(userData.schoolId);
+        else setFeeBadge(0);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [userData?.schoolId]);
 
     // --------------------------------------------------
     // LOAD USER PROFILE
@@ -191,60 +189,28 @@ export default function Sidebar({ isOpen, onClose }) {
     // LOAD FEE BADGE
     // --------------------------------------------------
 
-    const loadFeeBadge = async () => {
-        if (!userData || !userData.schoolId) {
-            setFeeBadge(0);
-            return;
-        }
-
+    const loadFeeBadge = async (schoolId) => {
         try {
             const invoicesQuery = query(
                 collection(db, 'fee_invoices'),
-                where(
-                    'schoolId',
-                    '==',
-                    userData.schoolId
-                ),
-                where(
-                    'status',
-                    '==',
-                    'pending'
-                )
+                where('schoolId', '==', schoolId),
+                where('status', '==', 'pending')
             );
-
-            const invoicesSnapshot =
-                await getDocs(invoicesQuery);
-
-            const studentsQuery = query(
-                collection(db, 'students'),
-                where(
-                    'schoolId',
-                    '==',
-                    userData.schoolId
-                )
-            );
-
-            const cachedStudents = await getCachedStudentRoster(userData.schoolId);
-            const studentsSnapshot = cachedStudents ? null : await getDocs(studentsQuery);
-
-            let overdueCount = 0;
-
-            const students = cachedStudents
-                || studentsSnapshot.docs.map((studentDoc) => studentDoc.data());
-            students.forEach((student) => {
-
-                if (
-                    student.feeBalance &&
-                    student.feeBalance > 0
-                ) {
-                    overdueCount++;
-                }
-            });
-
-            setFeeBadge(
-                invoicesSnapshot.size +
-                overdueCount
-            );
+            const cachedStudents = await getCachedStudentRoster(schoolId);
+            const [pendingInvoices, overdueCount] = await Promise.all([
+                getCountFromServer(invoicesQuery).then((snapshot) => snapshot.data().count),
+                cachedStudents
+                    ? Promise.resolve(cachedStudents.filter((student) => Number(student.feeBalance) > 0).length)
+                    : getCountFromServer(query(
+                        collection(db, 'students'),
+                        where('schoolId', '==', schoolId),
+                        where('feeBalance', '>', 0)
+                    )).then((snapshot) => snapshot.data().count).catch((error) => {
+                        console.warn('Overdue student badge count unavailable:', error);
+                        return 0;
+                    }),
+            ]);
+            setFeeBadge(pendingInvoices + overdueCount);
         } catch (error) {
             console.error(
                 'Error loading fee badge:',
@@ -321,12 +287,11 @@ export default function Sidebar({ isOpen, onClose }) {
         const role = normalizeRole(userRole || userData?.role || 'user');
 
         const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
-        const isHeadteacher = role === 'headteacher';
         const isDeputyHeadteacher = role === 'deputy-headteacher';
         const isAccountant = role === 'accountant';
 
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher || isHeadteacher || isDeputyHeadteacher;
+        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
 
         const isStudent =
             role === 'student';
@@ -347,6 +312,12 @@ export default function Sidebar({ isOpen, onClose }) {
                 icon: 'fa-user-graduate',
                 label: 'Students',
                 badge: badges.students,
+                show: isAdmin
+            },
+            {
+                path: '/student-promotion',
+                icon: 'fa-arrow-right-arrow-left',
+                label: 'Promotion & Archive',
                 show: isAdmin
             },
             {

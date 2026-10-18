@@ -35,9 +35,11 @@ import {
   downloadMasterTimetablePDF,
   downloadDutyRosterPDF,
 } from '../services/timetablePdfClient';
+import WholeSchoolTimetableGenerator from '../components/WholeSchoolTimetableGenerator';
 
 const TABS = [
   { id: 'class',    label: 'Class Timetable',    icon: 'fa-calendar-days' },
+  { id: 'generator', label: 'Whole-school Generator', icon: 'fa-wand-magic-sparkles' },
   { id: 'teachers', label: 'Teacher Timetables', icon: 'fa-chalkboard-user' },
   { id: 'master',   label: 'Master Overview',    icon: 'fa-layer-group' },
   { id: 'duty',     label: 'Duty Roster',        icon: 'fa-clipboard-list' },
@@ -1844,7 +1846,7 @@ export default function Timetable() {
                 </button>
               </>
             )}
-            {activeTab !== 'settings' && activeTab !== 'events' && (
+            {activeTab !== 'settings' && activeTab !== 'events' && activeTab !== 'generator' && (
               <button className="btn btn-primary" onClick={exportCurrentPDF}>
                 <i className="fas fa-file-pdf" aria-hidden="true"></i> Export PDF
               </button>
@@ -1870,6 +1872,7 @@ export default function Timetable() {
         <nav className="tt-tabs" aria-label="Timetable sections">
           {TABS.filter((t) => {
             if (t.id === 'settings' && isTeacher) return false;
+            if (t.id === 'generator' && !isAdmin) return false;
             return true;
           }).map((t) => (
             <button
@@ -1885,7 +1888,7 @@ export default function Timetable() {
           ))}
         </nav>
 
-        {activeTab !== 'settings' && (
+        {activeTab !== 'settings' && activeTab !== 'generator' && (
           <div className="tt-filters">
             {activeTab !== 'duty' && activeTab !== 'events' && (
               <>
@@ -1934,6 +1937,22 @@ export default function Timetable() {
         )}
 
         {activeTab === 'class' && renderClassTimetable()}
+        {activeTab === 'generator' && isAdmin && (
+          <WholeSchoolTimetableGenerator
+            schoolId={schoolId}
+            userId={currentUser?.uid}
+            userData={userData}
+            userRole={userRole}
+            currentUser={currentUser}
+            teachers={teachers}
+            customConfig={customConfig}
+            getLevelClasses={getLevelClasses}
+            term={selectedTerm}
+            year={selectedYear}
+            notify={notify}
+            onSaved={reloadAll}
+          />
+        )}
         {activeTab === 'teachers' && renderTeacherTimetables()}
         {activeTab === 'master' && renderMasterOverview()}
         {activeTab === 'duty' && renderDutyRoster()}

@@ -167,11 +167,10 @@ export default function MobileNav() {
     const getNavItems = () => {
         const role = normalizeRole(userRole || userData?.role || 'user');
         const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
-        const isHeadteacher = role === 'headteacher';
         const isDeputyHeadteacher = role === 'deputy-headteacher';
         const isAccountant = role === 'accountant';
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher || isHeadteacher || isDeputyHeadteacher;
+        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
         const isStudent = role === 'student';
         const isSuperAdmin = role === 'super-admin';
 
@@ -188,6 +187,12 @@ export default function MobileNav() {
                 icon: 'fa-user-graduate',
                 label: 'Students',
                 badge: badges.students,
+                show: isAdmin && !isSuperAdmin
+            },
+            {
+                path: '/student-promotion',
+                icon: 'fa-arrow-right-arrow-left',
+                label: 'Promotion & Archive',
                 show: isAdmin && !isSuperAdmin
             },
             {

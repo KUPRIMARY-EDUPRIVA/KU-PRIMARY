@@ -2,6 +2,13 @@ const { withCors } = require('./_lib/cors');
 // netlify/functions/mpesa-stk-push.js
 const axios = require('axios');
 const { initAdmin } = require('./_lib/firebaseAdmin');
+const { requireAuth } = require('./_lib/chatbotAuth');
+
+const FEE_MANAGER_ROLES = new Set([
+    'admin', 'user', 'school-admin', 'school_admin', 'principal',
+    'headteacher', 'deputy-headteacher', 'finance', 'accountant',
+    'super-admin', 'super_admin', 'platform-admin', 'platform_admin',
+]);
 
 const normalizeAdmissionNumber = (value) => {
     const admission = String(value || '').trim();
@@ -26,8 +33,7 @@ exports.handler = async (event) => {
 
     const {
         phoneNumber, amount, studentId, studentName, description, schoolId,
-        admissionNumber, studentClass, level, term, year, invoiceId,
-        initiatedBy, initiatedByName
+        admissionNumber, studentClass, level, term, year, invoiceId
     } = body;
 
     if (
@@ -56,6 +62,30 @@ exports.handler = async (event) => {
         return json(400, { success: false, message: 'Invalid Kenyan mobile phone number.' });
     }
 
+    let actor;
+    try {
+        actor = await requireAuth(event, { healProfile: false });
+    } catch (error) {
+        return json(error.statusCode || 401, {
+            success: false,
+            message: error.message || 'Authentication is required to initiate an M-Pesa payment.',
+        });
+    }
+    const actorRole = String(actor.role || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+    const isPlatformAdmin = ['super-admin', 'platform-admin'].includes(actorRole);
+    if (!FEE_MANAGER_ROLES.has(actorRole) || (!isPlatformAdmin && actor.schoolId !== schoolId)) {
+        return json(403, { success: false, message: 'You are not authorized to initiate payments for this school.' });
+    }
+
+    const paymentTerm = String(term || 'Term 1').trim();
+    if (!['Term 1', 'Term 2', 'Term 3'].includes(paymentTerm)) {
+        return json(400, { success: false, message: 'Select a valid school term.' });
+    }
+    const paymentYear = Number(year) || new Date().getFullYear();
+    if (!Number.isInteger(paymentYear) || paymentYear < 2000 || paymentYear > 2100) {
+        return json(400, { success: false, message: 'Select a valid academic year.' });
+    }
+
     let admin, db, schoolName = body.schoolName || 'School';
     try {
         admin = initAdmin();
@@ -82,6 +112,17 @@ exports.handler = async (event) => {
         }
         const verifiedStudentName = `${verifiedStudent.firstName || ''} ${verifiedStudent.lastName || ''}`.trim()
             || verifiedStudent.fullName || verifiedStudent.name || '';
+
+        if (invoiceId) {
+            const invoiceSnap = await db.collection('invoices').doc(String(invoiceId)).get();
+            if (
+                !invoiceSnap.exists
+                || invoiceSnap.data().schoolId !== schoolId
+                || invoiceSnap.data().studentId !== studentId
+            ) {
+                return json(400, { success: false, message: 'The selected invoice does not belong to this student and school.' });
+            }
+        }
 
         // ---- 1. Load credentials: from school's private Daraja doc or environment variables ----
         let daraja = {};
@@ -230,10 +271,10 @@ exports.handler = async (event) => {
             studentId,
             studentName: verifiedStudentName || studentName || '',
             admissionNumber: verifiedAdmission,
-            class: studentClass || verifiedStudent.class || '',
-            level: level || verifiedStudent.level || '',
-            term: term || 'Term 1',
-            year: Number(year) || new Date().getFullYear(),
+            class: verifiedStudent.class || studentClass || '',
+            level: verifiedStudent.level || level || '',
+            term: paymentTerm,
+            year: paymentYear,
             invoiceId: invoiceId || null,
             schoolId,
             amount: totalAmount,
@@ -247,23 +288,55 @@ exports.handler = async (event) => {
             shortcode,
             environment,
             createdAt: new Date().toISOString(),
-            recordedBy: 'system',
-            recordedByName: 'M-Pesa System'
+            recordedBy: actor.uid,
+            recordedByName: actor.fullName || actor.email || 'School Fee Manager',
+            initiatedBy: actor.uid,
         };
 
-        if (admin && db) {
-            try {
-                transactionData.createdAt = admin.firestore.FieldValue.serverTimestamp();
-                await db.collection('fee_transactions')
-                    .doc(`MPESA_${checkoutRequestId}`)
-                    .set(transactionData);
-                await db
-                    .collection('mpesa_pending_transactions')
-                    .doc(checkoutRequestId)
-                    .set({ ...transactionData, timestamp });
-            } catch (dbErr) {
-                console.warn('Could not persist pending transaction in Firestore admin:', dbErr.message);
+        try {
+            let persistError;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    const batch = db.batch();
+                    const transactionRef = db.collection('fee_transactions').doc(`MPESA_${checkoutRequestId}`);
+                    const pendingRef = db.collection('mpesa_pending_transactions').doc(checkoutRequestId);
+                    const data = {
+                        ...transactionData,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    };
+                    batch.set(transactionRef, data);
+                    batch.set(pendingRef, { ...data, timestamp });
+                    await batch.commit();
+                    persistError = null;
+                    break;
+                } catch (error) {
+                    persistError = error;
+                    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** attempt)));
+                }
             }
+            if (persistError) {
+                console.error('STK request sent but pending transaction persistence failed:', persistError);
+                return json(200, {
+                    success: true,
+                    trackingPersisted: false,
+                    message: 'M-Pesa accepted the request, but payment tracking could not be saved. Do not retry this payment; contact the school office with the CheckoutRequestID.',
+                    checkoutRequestID: checkoutRequestId,
+                    merchantRequestID: merchantRequestId,
+                    CheckoutRequestID: checkoutRequestId,
+                    MerchantRequestID: merchantRequestId,
+                });
+            }
+        } catch (dbErr) {
+            console.error('Could not persist M-Pesa transaction after gateway acceptance:', dbErr);
+            return json(200, {
+                success: true,
+                trackingPersisted: false,
+                message: 'M-Pesa accepted the request, but payment tracking could not be saved. Do not retry this payment; contact the school office with the CheckoutRequestID.',
+                checkoutRequestID: checkoutRequestId,
+                merchantRequestID: merchantRequestId,
+                CheckoutRequestID: checkoutRequestId,
+                MerchantRequestID: merchantRequestId,
+            });
         }
 
         console.log(

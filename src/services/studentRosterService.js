@@ -5,8 +5,10 @@ const DB_NAME = 'toplink_sync';
 const DB_VERSION = 1;
 const STORE_QUEUE = 'sync_queue';
 const STORE_KV = 'kv';
+const ROSTER_TTL_MS = 15 * 60 * 1000;
 
 let databasePromise;
+const rosterLoads = new Map();
 
 function getDatabase() {
     if (!databasePromise) {
@@ -66,9 +68,22 @@ export async function loadStudentRoster(
     { assignedClasses = [], refresh = false } = {}
 ) {
     if (!schoolId) throw new Error('School context is required to load students.');
+    const key = studentRosterCacheKey(schoolId, assignedClasses);
+    const metaKey = `${key}__meta`;
+
     if (!refresh) {
         const cached = await getCachedStudentRoster(schoolId, { assignedClasses });
-        if (cached) return cached;
+        if (cached) {
+            try {
+                const database = await getDatabase();
+                const metadata = await database.get(STORE_KV, metaKey);
+                if (Number(metadata?.savedAt) > Date.now() - ROSTER_TTL_MS) return cached;
+                if (typeof navigator !== 'undefined' && !navigator.onLine) return cached;
+            } catch (error) {
+                console.warn('Student roster cache metadata is unavailable:', error);
+                if (typeof navigator !== 'undefined' && !navigator.onLine) return cached;
+            }
+        }
     }
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
         const cached = await getCachedStudentRoster(schoolId, { assignedClasses });
@@ -76,17 +91,27 @@ export async function loadStudentRoster(
         throw new Error('No saved student roster is available while offline.');
     }
 
-    try {
-        const students = await loadAllStudents(schoolId, assignedClasses);
-        await saveStudentRoster(schoolId, students, { assignedClasses });
-        return students;
-    } catch (error) {
-        const cached = await getCachedStudentRoster(schoolId, { assignedClasses });
-        if (cached) {
-            console.warn('Student roster refresh failed; using the saved roster:', error);
-            return cached;
+    if (rosterLoads.has(key)) return rosterLoads.get(key);
+
+    const load = (async () => {
+        try {
+            const students = await loadAllStudents(schoolId, assignedClasses);
+            await saveStudentRoster(schoolId, students, { assignedClasses });
+            return students;
+        } catch (error) {
+            const cached = await getCachedStudentRoster(schoolId, { assignedClasses });
+            if (cached) {
+                console.warn('Student roster refresh failed; using the saved roster:', error);
+                return cached;
+            }
+            throw error;
         }
-        throw error;
+    })();
+    rosterLoads.set(key, load);
+    try {
+        return await load;
+    } finally {
+        if (rosterLoads.get(key) === load) rosterLoads.delete(key);
     }
 }
 
@@ -94,7 +119,13 @@ export async function saveStudentRoster(schoolId, students, { assignedClasses = 
     if (!schoolId || !Array.isArray(students)) return;
     try {
         const database = await getDatabase();
-        await database.put(STORE_KV, students, studentRosterCacheKey(schoolId, assignedClasses));
+        const key = studentRosterCacheKey(schoolId, assignedClasses);
+        const tx = database.transaction(STORE_KV, 'readwrite');
+        await Promise.all([
+            tx.store.put(students, key),
+            tx.store.put({ savedAt: Date.now() }, `${key}__meta`),
+            tx.done,
+        ]);
     } catch (error) {
         console.warn('Could not save the student roster for offline use:', error);
     }

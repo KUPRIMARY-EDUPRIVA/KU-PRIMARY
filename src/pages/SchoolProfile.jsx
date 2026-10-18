@@ -14,6 +14,7 @@ import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 
 import { showAppNotice } from '../utils/appNotice';
+import { AuditLogService } from '../services/auditService';
 const DARAJA_FIELDS = [
     {
         key: 'consumerKey',
@@ -552,6 +553,23 @@ export default function SchoolProfile() {
 
             if (isOnline) {
                 await updateDoc(doc(db, 'schools', schoolId), updatedData);
+                const changedFields = Object.keys(updatedData).filter((key) =>
+                    key !== 'updatedAt'
+                    && JSON.stringify(schoolData?.[key]) !== JSON.stringify(updatedData[key])
+                );
+                if (changedFields.length) {
+                    await AuditLogService.logAction(
+                        schoolId,
+                        {
+                            uid: currentUser?.uid,
+                            fullName: userData?.fullName,
+                            email: currentUser?.email,
+                            role: userRole,
+                        },
+                        'SCHOOL_SETTINGS_UPDATED',
+                        { entityId: schoolId, message: 'School profile updated', changedFields }
+                    );
+                }
 
                 // Fire-and-forget: clear the chatbot cache for this school so
                 // the next chat query picks up the new name, motto, contact,

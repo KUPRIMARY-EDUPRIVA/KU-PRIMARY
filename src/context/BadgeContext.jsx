@@ -2,8 +2,9 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { db } from '../firebase';
-import { collection, query, where, onSnapshot, getCountFromServer } from 'firebase/firestore';
+import { collection, query, where, getCountFromServer } from 'firebase/firestore';
 import { getCachedStudentRoster } from '../services/studentRosterService';
+import { getMemory, setMemory } from '../services/cache';
 
 const BadgeContext = createContext();
 
@@ -21,60 +22,53 @@ export function BadgeProvider({ children }) {
     });
 
     useEffect(() => {
-        if (!userData?.schoolId) return;
+        const schoolId = userData?.schoolId;
+        if (!schoolId) return;
 
         let cancelled = false;
-        const loadStudentCount = async () => {
-            try {
-                const cached = await getCachedStudentRoster(userData.schoolId);
-                const count = cached
-                    ? cached.length
-                    : (await getCountFromServer(query(
-                        collection(db, 'students'),
-                        where('schoolId', '==', userData.schoolId)
-                    ))).data().count;
-                if (!cancelled) setBadges((prev) => ({ ...prev, students: count }));
-            } catch (error) {
-                console.error('Student count load failed:', error);
-            }
+        const countFor = async (key, collectionName, constraints) => {
+            const cacheKey = `badge-count:${schoolId}:${key}`;
+            const cached = getMemory(cacheKey);
+            if (cached !== null) return cached;
+            const result = (await getCountFromServer(
+                query(collection(db, collectionName), ...constraints)
+            )).data().count;
+            setMemory(cacheKey, result, 5 * 60 * 1000);
+            return result;
         };
-        loadStudentCount();
 
-        // Listen to teachers count
-        const teachersQuery = query(
-            collection(db, 'teachers'),
-            where('schoolId', '==', userData.schoolId)
-        );
-        const unsubscribeTeachers = onSnapshot(teachersQuery, (snapshot) => {
-            setBadges(prev => ({ ...prev, teachers: snapshot.size }));
-        });
-
-        // Listen to active exams count
-        const examsQuery = query(
-            collection(db, 'exams'),
-            where('schoolId', '==', userData.schoolId),
-            where('status', '==', 'active')
-        );
-        const unsubscribeExams = onSnapshot(examsQuery, (snapshot) => {
-            setBadges(prev => ({ ...prev, exams: snapshot.size }));
-        });
-
-        // Listen to results published
-        const resultsQuery = query(
-            collection(db, 'exams'),
-            where('schoolId', '==', userData.schoolId),
-            where('resultsPublished', '==', true)
-        );
-        const unsubscribeResults = onSnapshot(resultsQuery, (snapshot) => {
-            const total = snapshot.size;
-            setBadges(prev => ({ ...prev, results: total > 0 ? `${total} published` : '0%' }));
-        });
+        (async () => {
+            try {
+                const cachedStudents = await getCachedStudentRoster(schoolId);
+                const [students, teachers, exams, publishedResults] = await Promise.all([
+                    cachedStudents
+                        ? Promise.resolve(cachedStudents.length)
+                        : countFor('students', 'students', [where('schoolId', '==', schoolId)]),
+                    countFor('teachers', 'teachers', [where('schoolId', '==', schoolId)]),
+                    countFor('exams-active', 'exams', [
+                        where('schoolId', '==', schoolId),
+                        where('status', '==', 'active'),
+                    ]),
+                    countFor('results-published', 'exams', [
+                        where('schoolId', '==', schoolId),
+                        where('resultsPublished', '==', true),
+                    ]),
+                ]);
+                if (!cancelled) {
+                    setBadges({
+                        students,
+                        teachers,
+                        exams,
+                        results: publishedResults > 0 ? `${publishedResults} published` : '0%',
+                    });
+                }
+            } catch (error) {
+                console.error('School badge counts failed:', error);
+            }
+        })();
 
         return () => {
             cancelled = true;
-            unsubscribeTeachers();
-            unsubscribeExams();
-            unsubscribeResults();
         };
     }, [userData?.schoolId]);
 

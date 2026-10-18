@@ -4,11 +4,15 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { db } from '../firebase';
-import { getCachedStudentRoster, loadStudentRoster } from '../services/studentRosterService';
+import { getCachedStudentRoster } from '../services/studentRosterService';
 import { isSchoolAdminRole, normalizeRole } from '../utils/roles';
-import { collection, query, where, getDocs, onSnapshot, doc, orderBy, limit, getDoc } from 'firebase/firestore';
+import {
+    collection, query, where, getDocs, onSnapshot, doc, orderBy, limit, getDoc,
+    getCountFromServer
+} from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
+import { getMemory, setMemory } from '../services/cache';
 
 import { showAppNotice } from '../utils/appNotice';
 // Utility function to format time
@@ -34,6 +38,26 @@ const LEVEL_DISPLAY_NAMES = {
 };
 
 const getLevelDisplayName = (level) => LEVEL_DISPLAY_NAMES[level] || level || 'N/A';
+const dashboardCountRequests = new Map();
+
+async function getDashboardCount(cacheKey, countQuery) {
+    const cached = getMemory(cacheKey);
+    if (cached !== null && cached !== undefined) return cached;
+    if (dashboardCountRequests.has(cacheKey)) return dashboardCountRequests.get(cacheKey);
+
+    const request = getCountFromServer(countQuery)
+        .then((snapshot) => snapshot.data().count)
+        .then((count) => {
+            setMemory(cacheKey, count, 10 * 60 * 1000);
+            return count;
+        });
+    dashboardCountRequests.set(cacheKey, request);
+    try {
+        return await request;
+    } finally {
+        if (dashboardCountRequests.get(cacheKey) === request) dashboardCountRequests.delete(cacheKey);
+    }
+}
 
 // ============================================
 // MOTIVATIONAL MESSAGES
@@ -742,11 +766,13 @@ export default function Dashboard() {
             if (collectionName === 'students') {
                 const cached = await getCachedStudentRoster(schoolId);
                 if (cached) return cached.length;
-                return (await loadStudentRoster(schoolId)).length;
+                return getDashboardCount(
+                    `dashboard-count:${schoolId}:students`,
+                    query(collection(db, 'students'), where('schoolId', '==', schoolId))
+                );
             }
             const q = query(collection(db, collectionName), where('schoolId', '==', schoolId));
-            const snapshot = await getDocs(q);
-            return snapshot.size;
+            return getDashboardCount(`dashboard-count:${schoolId}:${collectionName}`, q);
         } catch (error) {
             console.error(`Error getting ${collectionName} count:`, error);
             const cached = await getFromIndexedDB(collectionName);
@@ -764,8 +790,7 @@ export default function Dashboard() {
                 where('status', '==', 'active'),
                 where('endDate', '>=', today)
             );
-            const snapshot = await getDocs(q);
-            return snapshot.size;
+            return await getDashboardCount(`dashboard-count:${schoolId}:active-exams`, q);
         } catch (error) {
             console.error('Error getting active exams:', error);
             return 0;
@@ -780,8 +805,7 @@ export default function Dashboard() {
                 where('schoolId', '==', schoolId),
                 where('status', '==', 'pending')
             );
-            const snapshot = await getDocs(q);
-            return snapshot.size;
+            return await getDashboardCount(`dashboard-count:${schoolId}:pending-submissions`, q);
         } catch (error) {
             console.error('Error getting pending submissions:', error);
             return 0;
@@ -791,13 +815,17 @@ export default function Dashboard() {
     // Get results published percentage
     const getResultsPublishedPercentage = async (schoolId) => {
         try {
-            const [publishedSnapshot, totalSnapshot] = await Promise.all([
-                getDocs(query(collection(db, 'exams'), where('schoolId', '==', schoolId), where('resultsPublished', '==', true))),
-                getDocs(query(collection(db, 'exams'), where('schoolId', '==', schoolId)))
+            const [publishedCount, totalCount] = await Promise.all([
+                getDashboardCount(
+                    `dashboard-count:${schoolId}:published-exams`,
+                    query(collection(db, 'exams'), where('schoolId', '==', schoolId), where('resultsPublished', '==', true))
+                ),
+                getDashboardCount(
+                    `dashboard-count:${schoolId}:exams`,
+                    query(collection(db, 'exams'), where('schoolId', '==', schoolId))
+                )
             ]);
-            const total = totalSnapshot.size;
-            const published = publishedSnapshot.size;
-            return total > 0 ? `${Math.round((published / total) * 100)}%` : '0%';
+            return totalCount > 0 ? `${Math.round((publishedCount / totalCount) * 100)}%` : '0%';
         } catch (error) {
             console.error('Error getting results published:', error);
             return '0%';
@@ -810,14 +838,26 @@ export default function Dashboard() {
             const cachedStudents = await getCachedStudentRoster(schoolId);
             const [studentCount, teacherCount, examCount, scoreCount] = await Promise.all([
                 cachedStudents
-                    ? Promise.resolve({ size: cachedStudents.length })
-                    : getDocs(query(collection(db, 'students'), where('schoolId', '==', schoolId))),
-                getDocs(query(collection(db, 'teachers'), where('schoolId', '==', schoolId))),
-                getDocs(query(collection(db, 'exams'), where('schoolId', '==', schoolId))),
-                getDocs(query(collection(db, 'student_scores'), where('schoolId', '==', schoolId)))
+                    ? Promise.resolve(cachedStudents.length)
+                    : getDashboardCount(
+                        `dashboard-count:${schoolId}:students`,
+                        query(collection(db, 'students'), where('schoolId', '==', schoolId))
+                    ),
+                getDashboardCount(
+                    `dashboard-count:${schoolId}:teachers`,
+                    query(collection(db, 'teachers'), where('schoolId', '==', schoolId))
+                ),
+                getDashboardCount(
+                    `dashboard-count:${schoolId}:exams`,
+                    query(collection(db, 'exams'), where('schoolId', '==', schoolId))
+                ),
+                getDashboardCount(
+                    `dashboard-count:${schoolId}:scores`,
+                    query(collection(db, 'student_scores'), where('schoolId', '==', schoolId))
+                )
             ]);
             
-            const totalDocs = studentCount.size + teacherCount.size + examCount.size + scoreCount.size;
+            const totalDocs = studentCount + teacherCount + examCount + scoreCount;
             const estimatedMB = Math.max(1, Math.round((totalDocs * 0.2) + 2));
             
             if (estimatedMB >= 1024) {

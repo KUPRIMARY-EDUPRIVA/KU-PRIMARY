@@ -94,12 +94,12 @@ export const CBC_GRADING_SYSTEM = {
   'AE1': { level: 'AE', label: 'Approaching Expectation', min: 31, max: 40, points: 4.0 },
   'AE2': { level: 'AE', label: 'Approaching Expectation', min: 21, max: 30, points: 3.0 },
   'BE1': { level: 'BE', label: 'Below Expectation', min: 11, max: 20, points: 2.0 },
-  'BE2': { level: 'BE', label: 'Below Expectation', min: 1, max: 10, points: 1.0 }
+  'BE2': { level: 'BE', label: 'Below Expectation', min: 0, max: 10, points: 1.0 }
 };
 
 // Get CBC Grade
 export const getCBCGrade = (score) => {
-  if (score === null || score === undefined || score === 0) {
+  if (score === null || score === undefined || score === '' || !Number.isFinite(Number(score))) {
     return { code: 'NA', level: 'NA', label: 'Not Assessed', points: 0, levelClass: 'na' };
   }
 
@@ -261,11 +261,13 @@ export function computeScorePercentage(record) {
   }
 
   // Prefer an explicit stored value
-  if (Number.isFinite(Number(record.computedPercentage))) {
+  if (record.computedPercentage !== null && record.computedPercentage !== undefined
+    && record.computedPercentage !== '' && Number.isFinite(Number(record.computedPercentage))) {
     return Math.round(Number(record.computedPercentage));
   }
 
   // Fall back to score/maxScore
+  if (record.score === null || record.score === undefined || record.score === '') return null;
   const score = Number(record.score);
   const max = Number(record.maxScore) || 100;
   if (!Number.isFinite(score) || max <= 0) return null;

@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { useSync } from './SyncContext';
 import { getBiometricLoginStatus, isDeviceBiometricAvailable } from '../services/deviceSecurity';
+import { AuditLogService } from '../services/auditService';
 
 const AuthContext = createContext();
 
@@ -450,6 +451,19 @@ export function AuthProvider({ children }) {
     const logout = useCallback(async () => {
         try {
             if (isOnline && currentUser) {
+                if (userData?.schoolId) {
+                    await AuditLogService.logAction(
+                        userData.schoolId,
+                        {
+                            uid: currentUser.uid,
+                            fullName: userData.fullName,
+                            email: currentUser.email,
+                            role: userRole,
+                        },
+                        'LOGOUT',
+                        { message: 'User signed out' }
+                    );
+                }
                 const uid = currentUser.uid;
                 const collectionName = userCollection && userCollection !== 'claims'
                     ? userCollection
@@ -468,7 +482,7 @@ export function AuthProvider({ children }) {
             console.error('Logout error:', e);
             throw e;
         }
-    }, [currentUser, userCollection, isOnline]);
+    }, [currentUser, userCollection, userData, userRole, isOnline]);
 
     const value = {
         currentUser,

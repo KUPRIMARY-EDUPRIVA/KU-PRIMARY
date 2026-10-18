@@ -31,6 +31,7 @@ const lazyWithRetry = (importFn) =>
 const Login = lazyWithRetry(() => import('./components/Auth/Login'));
 const Dashboard = lazyWithRetry(() => import('./pages/Dashboard'));
 const Students = lazyWithRetry(() => import('./pages/Students'));
+const StudentPromotion = lazyWithRetry(() => import('./pages/StudentPromotion'));
 const StudentAnalytics = lazyWithRetry(() => import('./pages/StudentAnalytics'));
 const Teachers = lazyWithRetry(() => import('./pages/Teachers'));
 const Exams = lazyWithRetry(() => import('./pages/Exams'));
@@ -139,6 +140,11 @@ function AppRoutes() {
                 <Route path="/health" element={<AuthWrapper><Health /></AuthWrapper>} />
                 <Route path="/accomodation" element={<AuthWrapper><Accomodation /></AuthWrapper>} />
                 <Route path="/students" element={<AuthWrapper><Students /></AuthWrapper>} />
+                <Route path="/student-promotion" element={
+                    <AuthWrapper allowedRoles={['admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}>
+                        <StudentPromotion />
+                    </AuthWrapper>
+                } />
                 <Route path="/student-analytics" element={<AuthWrapper><StudentAnalytics /></AuthWrapper>} />
                 <Route path="/communications" element={
                     <AuthWrapper allowedRoles={['admin', 'user', 'school_admin', 'principal', 'headteacher', 'deputy-headteacher']}><Communications /></AuthWrapper>

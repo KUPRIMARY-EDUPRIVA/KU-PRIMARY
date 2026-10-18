@@ -140,7 +140,7 @@ export default function Fees() {
         studentIds: [], items: [{ description: '', amount: '' }],
         dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
         term: 'Term 1', year: new Date().getFullYear(),
-        invoiceAll: false, invoiceLevel: '', invoiceClass: '',
+        invoiceAll: false, invoiceLevel: '', invoiceClass: '', invoiceClasses: [],
         notes: '', tax: 0, discount: 0
     });
 
@@ -641,7 +641,12 @@ export default function Fees() {
                     userData?.schoolId,
                     { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
                     'FEE_PAYMENT',
-                    { entityId: transaction.reference, studentId: student.id, amount: transaction.amount, method: transaction.paymentMethod }
+                    {
+                        entityId: student.admissionNumber || student.studentId || 'unknown-admission',
+                        admissionNumber: student.admissionNumber || student.studentId || '',
+                        amount: transaction.amount,
+                        method: transaction.paymentMethod
+                    }
                 );
                 showNotification('Fee payment recorded', 'success');
                 setShowFeeModal(false);
@@ -680,7 +685,11 @@ export default function Fees() {
                 selectedStudents = await ensureAllStudents();
             } else if (invoiceForm.invoiceLevel) {
                 const roster = await ensureAllStudents();
-                selectedStudents = roster.filter(s => s.level === invoiceForm.invoiceLevel);
+                const selectedClasses = new Set(invoiceForm.invoiceClasses);
+                selectedStudents = roster.filter(s =>
+                    s.level === invoiceForm.invoiceLevel
+                    && (!selectedClasses.size || selectedClasses.has(s.class))
+                );
             } else if (invoiceForm.invoiceClass) {
                 const roster = await ensureAllStudents();
                 selectedStudents = roster.filter(s => s.class === invoiceForm.invoiceClass);
@@ -749,7 +758,7 @@ export default function Fees() {
                     year: invoiceForm.year,
                     totalBilled,
                     scope: invoiceForm.invoiceAll ? 'all'
-                        : invoiceForm.invoiceLevel ? `level:${invoiceForm.invoiceLevel}`
+                        : invoiceForm.invoiceLevel ? `level:${invoiceForm.invoiceLevel};classes:${invoiceForm.invoiceClasses.length ? invoiceForm.invoiceClasses.join('|') : 'all'}`
                         : invoiceForm.invoiceClass ? `class:${invoiceForm.invoiceClass}`
                         : 'selected'
                 }
@@ -771,7 +780,7 @@ export default function Fees() {
             studentIds: [], items: [{ description: '', amount: '' }],
             dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
             term: 'Term 1', year: new Date().getFullYear(),
-            invoiceAll: false, invoiceLevel: '', invoiceClass: '',
+            invoiceAll: false, invoiceLevel: '', invoiceClass: '', invoiceClasses: [],
             notes: '', tax: 0, discount: 0
         });
     };
@@ -898,7 +907,13 @@ export default function Fees() {
             let token = '';
             try {
                 if (currentUser?.getIdToken) token = await currentUser.getIdToken();
-            } catch { /* ignore */ }
+            } catch (error) {
+                console.error('Could not refresh session token before M-Pesa request:', error);
+            }
+            if (!token) {
+                showNotification('Your login session has expired. Sign in again before sending an M-Pesa request.', 'error');
+                return;
+            }
 
             const response = await fetchNetlifyFunction('mpesa-stk-push', {
                 method: 'POST',
@@ -924,7 +939,12 @@ export default function Fees() {
 
             const result = await response.json();
             if (result.success) {
-                showNotification('M-Pesa STK push sent! Check the phone to complete payment.', 'success');
+                showNotification(
+                    result.trackingPersisted === false
+                        ? `${result.message} CheckoutRequestID: ${result.checkoutRequestID}`
+                        : 'M-Pesa STK push sent! Check the phone to complete payment.',
+                    result.trackingPersisted === false ? 'warning' : 'success'
+                );
                 setShowMpesaModal(false);
                 setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
             } else {
@@ -1749,23 +1769,54 @@ export default function Fees() {
                         <form onSubmit={handleInvoiceSubmit}>
                             <div className="invoice-options">
                                 <label><input type="radio" name="invoiceScope" checked={!invoiceForm.invoiceAll && !invoiceForm.invoiceLevel && !invoiceForm.invoiceClass}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: '', studentIds: [] }))} /> Selected Students</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: '', invoiceClasses: [], studentIds: [] }))} /> Selected Students</label>
                                 <label><input type="radio" name="invoiceScope" checked={invoiceForm.invoiceAll}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: true, invoiceLevel: '', invoiceClass: '', studentIds: [] }))} /> All Students</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: true, invoiceLevel: '', invoiceClass: '', invoiceClasses: [], studentIds: [] }))} /> All Students</label>
                                 <label><input type="radio" name="invoiceScope" checked={!!invoiceForm.invoiceLevel}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: prev.invoiceLevel || schoolLevels[0] || 'pre-primary', invoiceClass: '', studentIds: [] }))} /> By Level</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: prev.invoiceLevel || schoolLevels[0] || 'pre-primary', invoiceClass: '', invoiceClasses: [], studentIds: [] }))} /> By Level</label>
                                 <label><input type="radio" name="invoiceScope" checked={!!invoiceForm.invoiceClass}
-                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: prev.invoiceClass || '', studentIds: [] }))} /> By Class</label>
+                                    onChange={() => setInvoiceForm(prev => ({ ...prev, invoiceAll: false, invoiceLevel: '', invoiceClass: prev.invoiceClass || '', invoiceClasses: [], studentIds: [] }))} /> By Class</label>
                             </div>
 
                             {invoiceForm.invoiceLevel && (
                                 <div className="form-group">
                                     <label>Select Level</label>
-                                    <select value={invoiceForm.invoiceLevel} onChange={(e) => setInvoiceForm(prev => ({ ...prev, invoiceLevel: e.target.value }))}>
+                                    <select value={invoiceForm.invoiceLevel} onChange={(e) => setInvoiceForm(prev => ({ ...prev, invoiceLevel: e.target.value, invoiceClasses: [] }))}>
                                         {uniqueLevels.map(level => (
                                             <option key={level} value={level}>{LEVEL_DISPLAY_NAMES[level] || level}</option>
                                         ))}
                                     </select>
+                                    <div className="student-select-grid" role="group" aria-label="Classes to invoice">
+                                        {invoiceClasses.map(cls => {
+                                            const activeClasses = invoiceForm.invoiceClasses.length
+                                                ? invoiceForm.invoiceClasses
+                                                : invoiceClasses;
+                                            return (
+                                                <label key={cls} className="student-select-item">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={activeClasses.includes(cls)}
+                                                        disabled={activeClasses.length === 1 && activeClasses.includes(cls)}
+                                                        onChange={(event) => {
+                                                            const next = event.target.checked
+                                                                ? [...new Set([...activeClasses, cls])]
+                                                                : activeClasses.filter(value => value !== cls);
+                                                            setInvoiceForm(prev => ({
+                                                                ...prev,
+                                                                invoiceClasses: next.length === invoiceClasses.length ? [] : next
+                                                            }));
+                                                        }}
+                                                    />
+                                                    {cls}
+                                                </label>
+                                            );
+                                        })}
+                                    </div>
+                                    <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
+                                        {invoiceForm.invoiceClasses.length
+                                            ? `${invoiceForm.invoiceClasses.length} class(es) selected`
+                                            : 'All classes in this level are selected'}
+                                    </div>
                                 </div>
                             )}
 

@@ -36,12 +36,8 @@ exports.handler = async () => {
       .limit(MAX_PER_RUN)
       .get();
   } catch (err) {
-    // Fall back to a full scan if the composite index isn't deployed.
-    console.warn('[mpesa-timeout-sweep] falling back to unordered query:', err.message);
-    snap = await db.collection('mpesa_pending_transactions')
-      .where('status', '==', 'pending')
-      .limit(MAX_PER_RUN)
-      .get();
+    console.error('[mpesa-timeout-sweep] Expired-payment query failed:', err.message);
+    return { statusCode: 500, body: 'Expired-payment query failed; verify the Firestore composite index.' };
   }
 
   const candidates = snap.docs

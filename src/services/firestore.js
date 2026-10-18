@@ -15,6 +15,42 @@ import {
 } from './cache';
 import { computeScorePercentage } from '../utils/constants';
 
+const pendingReads = new Map();
+const readVersions = new Map();
+const knownReadKeys = new Set();
+
+async function readCached(cacheKey, ttlMs, fetcher) {
+    knownReadKeys.add(cacheKey);
+    const cached = getMemory(cacheKey);
+    if (cached !== null && cached !== undefined) return cached;
+    if (pendingReads.has(cacheKey)) return pendingReads.get(cacheKey);
+
+    const version = readVersions.get(cacheKey) || 0;
+    const request = (async () => {
+        const value = await fetcher();
+        if ((readVersions.get(cacheKey) || 0) === version) setMemory(cacheKey, value, ttlMs);
+        return value;
+    })();
+    pendingReads.set(cacheKey, request);
+    try {
+        return await request;
+    } finally {
+        if (pendingReads.get(cacheKey) === request) pendingReads.delete(cacheKey);
+    }
+}
+
+function invalidateRead(cacheKey) {
+    readVersions.set(cacheKey, (readVersions.get(cacheKey) || 0) + 1);
+    pendingReads.delete(cacheKey);
+    setMemory(cacheKey, null, 0);
+}
+
+function invalidateReadsForPrefix(prefix) {
+    knownReadKeys.forEach((cacheKey) => {
+        if (cacheKey.startsWith(prefix)) invalidateRead(cacheKey);
+    });
+}
+
 // ============================================================
 // TENANT GUARD
 // ============================================================
@@ -31,19 +67,16 @@ export function requireSchoolId(userData) {
 // ============================================================
 export async function getAssessmentConfigs(schoolId, { level, cls, subject } = {}) {
     const cacheKey = `configs_${schoolId}_${level || 'all'}_${cls || 'all'}_${subject || 'all'}`;
-    const cached = getMemory(cacheKey);
-    if (cached) return cached;
+    return readCached(cacheKey, 30 * 60 * 1000, async () => {
+        const constraints = [where('schoolId', '==', schoolId)];
+        if (level) constraints.push(where('level', '==', level));
+        if (cls) constraints.push(where('class', '==', cls));
+        if (subject) constraints.push(where('subject', '==', subject));
 
-    const constraints = [where('schoolId', '==', schoolId)];
-    if (level) constraints.push(where('level', '==', level));
-    if (cls) constraints.push(where('class', '==', cls));
-    if (subject) constraints.push(where('subject', '==', subject));
-
-    const q = query(collection(db, 'assessment_configs'), ...constraints);
-    const snap = await getDocs(q);
-    const configs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    setMemory(cacheKey, configs, 30 * 60 * 1000);
-    return configs;
+        const q = query(collection(db, 'assessment_configs'), ...constraints);
+        const snap = await getDocs(q);
+        return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    });
 }
 
 export async function saveAssessmentConfig(schoolId, { level, cls, subject, assessmentType, term, deadline, createdBy }) {
@@ -56,7 +89,7 @@ export async function saveAssessmentConfig(schoolId, { level, cls, subject, asse
         createdAt: serverTimestamp(),
         isActive: true
     }, { merge: true });
-    setMemory(`configs_${schoolId}_${level}_${cls}_${subject}`, null, 0);
+    invalidateReadsForPrefix(`configs_${schoolId}_`);
     return id;
 }
 
@@ -73,22 +106,13 @@ export async function getPaperConfig(schoolId, level, subject) {
     if (!schoolId || !level || !subject) return { papers: [] };
 
     const cacheKey = `papercfg_${schoolId}_${level}_${subject}`;
-    const cached = getMemory(cacheKey);
-    if (cached) return cached;
-
-    const id = makePaperConfigId(schoolId, level, subject);
-    const snap = await getDoc(doc(db, 'subject_paper_configs', id));
-    if (!snap.exists()) {
-        const empty = { papers: [] };
-        setMemory(cacheKey, empty, 10 * 60 * 1000);
-        return empty;
-    }
-    const data = snap.data();
-    const result = {
-        papers: Array.isArray(data.papers) ? data.papers : []
-    };
-    setMemory(cacheKey, result, 10 * 60 * 1000);
-    return result;
+    return readCached(cacheKey, 10 * 60 * 1000, async () => {
+        const id = makePaperConfigId(schoolId, level, subject);
+        const snap = await getDoc(doc(db, 'subject_paper_configs', id));
+        if (!snap.exists()) return { papers: [] };
+        const data = snap.data();
+        return { papers: Array.isArray(data.papers) ? data.papers : [] };
+    });
 }
 
 /**
@@ -99,24 +123,22 @@ export async function getAllPaperConfigsForLevel(schoolId, level) {
     if (!schoolId || !level) return {};
 
     const cacheKey = `papercfgs_${schoolId}_${level}`;
-    const cached = getMemory(cacheKey);
-    if (cached) return cached;
-
-    const q = query(
-        collection(db, 'subject_paper_configs'),
-        where('schoolId', '==', schoolId),
-        where('level', '==', level)
-    );
-    const snap = await getDocs(q);
-    const out = {};
-    snap.docs.forEach(d => {
-        const data = d.data();
-        if (data.subject) {
-            out[data.subject] = Array.isArray(data.papers) ? data.papers : [];
-        }
+    return readCached(cacheKey, 10 * 60 * 1000, async () => {
+        const q = query(
+            collection(db, 'subject_paper_configs'),
+            where('schoolId', '==', schoolId),
+            where('level', '==', level)
+        );
+        const snap = await getDocs(q);
+        const out = {};
+        snap.docs.forEach(d => {
+            const data = d.data();
+            if (data.subject) {
+                out[data.subject] = Array.isArray(data.papers) ? data.papers : [];
+            }
+        });
+        return out;
     });
-    setMemory(cacheKey, out, 10 * 60 * 1000);
-    return out;
 }
 
 /**
@@ -144,8 +166,8 @@ export async function savePaperConfig(schoolId, level, subject, papers, userId) 
     }, { merge: true });
 
     // Invalidate caches
-    setMemory(`papercfg_${schoolId}_${level}_${subject}`, null, 0);
-    setMemory(`papercfgs_${schoolId}_${level}`, null, 0);
+    invalidateRead(`papercfg_${schoolId}_${level}_${subject}`);
+    invalidateRead(`papercfgs_${schoolId}_${level}`);
 
     return id;
 }
@@ -186,36 +208,33 @@ export function subscribeStudentsPage(schoolId, level, cls, pageSize = 10, callb
 
 export async function getScores(schoolId, level, cls, subject, term, assessmentType) {
     const cacheKey = `scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`;
-    const cached = getMemory(cacheKey);
-    if (cached) return cached;
-
-    const q = query(
-        collection(db, 'student_scores'),
-        where('schoolId', '==', schoolId),
-        where('level', '==', level),
-        where('class', '==', cls),
-        where('subject', '==', subject),
-        where('term', '==', term),
-        where('assessmentType', '==', assessmentType)
-    );
-    const snap = await getDocs(q);
-    const scores = {};
-    snap.forEach(d => {
-        const data = d.data();
-        // Backfill computedPercentage for legacy records
-        const enriched = {
-            id: d.id,
-            ...data,
-            computedPercentage:
-                data.computedPercentage != null
-                    ? data.computedPercentage
-                    : computeScorePercentage(data)
-        };
-        if (!scores[data.studentId]) scores[data.studentId] = [];
-        scores[data.studentId].push(enriched);
+    return readCached(cacheKey, 2 * 60 * 1000, async () => {
+        const q = query(
+            collection(db, 'student_scores'),
+            where('schoolId', '==', schoolId),
+            where('level', '==', level),
+            where('class', '==', cls),
+            where('subject', '==', subject),
+            where('term', '==', term),
+            where('assessmentType', '==', assessmentType)
+        );
+        const snap = await getDocs(q);
+        const scores = {};
+        snap.forEach(d => {
+            const data = d.data();
+            const enriched = {
+                id: d.id,
+                ...data,
+                computedPercentage:
+                    data.computedPercentage != null
+                        ? data.computedPercentage
+                        : computeScorePercentage(data)
+            };
+            if (!scores[data.studentId]) scores[data.studentId] = [];
+            scores[data.studentId].push(enriched);
+        });
+        return scores;
     });
-    setMemory(cacheKey, scores, 2 * 60 * 1000);
-    return scores;
 }
 
 /**
@@ -322,7 +341,7 @@ export async function saveScoresBatch(
     await batch.commit();
 
     // Invalidate caches
-    setMemory(`scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`, null, 0);
+    invalidateRead(`scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`);
 
     return { count: entries.length };
 }
@@ -337,7 +356,7 @@ export async function publishScoresBatch(schoolId, level, cls, subject, term, as
         });
     }
     await batch.commit();
-    setMemory(`scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`, null, 0);
+    invalidateRead(`scores_${schoolId}_${level}_${cls}_${subject}_${term}_${assessmentType}`);
 }
 
 // ============================================================
@@ -345,15 +364,11 @@ export async function publishScoresBatch(schoolId, level, cls, subject, term, as
 // ============================================================
 export async function getClassSummary(schoolId, level, cls, subject, term) {
     const cacheKey = `summary_${schoolId}_${level}_${cls}_${subject}_${term}`;
-    const cached = getMemory(cacheKey);
-    if (cached) return cached;
-
-    const id = `${schoolId}__${level}__${cls}__${subject}__${term}`.replace(/\s+/g, '_');
-    const snap = await getDoc(doc(db, 'class_summaries', id));
-    if (!snap.exists()) return null;
-    const data = snap.data();
-    setMemory(cacheKey, data, 5 * 60 * 1000);
-    return data;
+    return readCached(cacheKey, 5 * 60 * 1000, async () => {
+        const id = `${schoolId}__${level}__${cls}__${subject}__${term}`.replace(/\s+/g, '_');
+        const snap = await getDoc(doc(db, 'class_summaries', id));
+        return snap.exists() ? snap.data() : null;
+    });
 }
 
 // ============================================================

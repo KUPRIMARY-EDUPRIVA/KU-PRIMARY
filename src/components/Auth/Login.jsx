@@ -9,6 +9,7 @@ import {
 import { db } from '../../firebase';
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { useSync } from '../../context/SyncContext';
+import { AuditLogService } from '../../services/auditService';
 import {
     authenticateWithBiometrics, getBiometricLoginStatus, isDeviceBiometricAvailable,
     enableBiometricUnlock
@@ -461,6 +462,20 @@ export default function Login() {
             const userData = await findUserDocument(user.uid, email);
             if (userData) {
                 const { collection, docId } = userData;
+                const schoolId = userData.data?.schoolId || userData.data?.school_id;
+                if (isOnline && schoolId) {
+                    await AuditLogService.logAction(
+                        schoolId,
+                        {
+                            uid: user.uid,
+                            fullName: userData.data?.fullName || user.displayName || email,
+                            email,
+                            role: userData.data?.role || collection,
+                        },
+                        'LOGIN',
+                        { message: 'Successful sign-in' }
+                    );
+                }
                 if (isOnline) {
                     try {
                         await updateDoc(doc(db, collection, docId), { lastLogin: serverTimestamp() });

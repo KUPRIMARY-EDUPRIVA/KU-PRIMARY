@@ -1,4 +1,5 @@
 const { db, FieldValue } = require('../lib/admin');
+const crypto = require('crypto');
 
 const slug = (s) => String(s).trim().replace(/\s+/g, '_').replace(/[\/\\.#$\[\]]/g, '');
 const summaryId = (schoolId, term, year) => `${slug(schoolId)}__${slug(term)}__${slug(year)}`;
@@ -49,8 +50,12 @@ exports.onFeeTransactionWrite = require('firebase-functions/v2/firestore')
 
         const id = summaryId(schoolId, term, year);
         const ref = db.collection('invoice_summaries').doc(id);
+        const eventRef = db.collection('fee_summary_events')
+            .doc(crypto.createHash('sha256').update(event.id).digest('hex'));
 
         await db.runTransaction(async (trx) => {
+            const eventSnap = await trx.get(eventRef);
+            if (eventSnap.exists) return;
             const snap = await trx.get(ref);
             const cur = snap.exists() ? snap.data() : {
                 schoolId, term, year: Number(year),
@@ -66,5 +71,10 @@ exports.onFeeTransactionWrite = require('firebase-functions/v2/firestore')
                 txnCount: (cur.txnCount || 0) + netCount,
                 updatedAt: FieldValue.serverTimestamp()
             }, { merge: true });
+            trx.create(eventRef, {
+                eventId: event.id,
+                transactionId: event.params.txnId,
+                processedAt: FieldValue.serverTimestamp()
+            });
         });
     });

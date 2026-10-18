@@ -15,6 +15,7 @@ const { withCors } = require('./_lib/cors');
 //   5. The handler always returns 200 so Safaricom stops retrying.
 
 const { initAdmin } = require('./_lib/firebaseAdmin');
+const { verifyMpesaCallback } = require('./_lib/mpesaAuth');
 
 /* ============================================================
    Constants
@@ -114,6 +115,16 @@ exports.handler = async (event) => {
     return ok({ message: 'Method not allowed' });
   }
 
+  const callbackAuth = verifyMpesaCallback(event);
+  if (!callbackAuth.ok) {
+    console.warn('[mpesa-callback] Rejected unauthenticated callback:', callbackAuth.reason);
+    return ok({ message: 'Callback authentication failed' });
+  }
+  if (process.env.MPESA_REQUIRE_CALLBACK_AUTH === 'true' && callbackAuth.skipped) {
+    console.error('[mpesa-callback] Strict callback authentication is required but not configured.');
+    return ok({ message: 'Callback authentication is not configured' });
+  }
+
   /* ---- 1. Firebase Admin bootstrap ---- */
   let admin, db, FieldValue;
   try {
@@ -184,7 +195,14 @@ exports.handler = async (event) => {
     const existingTxnSnap = await txnRef.get();
     const existingTxn = existingTxnSnap.exists ? existingTxnSnap.data() : null;
 
-    if (existingTxn && existingTxn.status && existingTxn.status !== TXN_STATUS.PENDING && existingTxn.status !== TXN_STATUS.PROCESSING) {
+    const isLateSuccessAfterTimeout = Number(ResultCode) === 0
+      && existingTxn?.status === TXN_STATUS.TIMEOUT;
+    if (
+      existingTxn?.status
+      && existingTxn.status !== TXN_STATUS.PENDING
+      && existingTxn.status !== TXN_STATUS.PROCESSING
+      && !isLateSuccessAfterTimeout
+    ) {
       console.log(
         `[mpesa-callback][idempotency] txn ${deterministicTxnId} already ${existingTxn.status}.`
       );
@@ -197,7 +215,14 @@ exports.handler = async (event) => {
       return ok({ message: 'Already processed', duplicate: true, status: existingTxn.status });
     }
 
-    if (pending && (pending.status === TXN_STATUS.COMPLETED || pending.status === TXN_STATUS.CANCELLED || pending.status === TXN_STATUS.FAILED || pending.status === TXN_STATUS.TIMEOUT || pending.status === TXN_STATUS.INSUFFICIENT)) {
+    const isLatePendingSuccess = Number(ResultCode) === 0 && pending?.status === TXN_STATUS.TIMEOUT;
+    if (pending && (
+      pending.status === TXN_STATUS.COMPLETED
+      || pending.status === TXN_STATUS.CANCELLED
+      || pending.status === TXN_STATUS.FAILED
+      || (pending.status === TXN_STATUS.TIMEOUT && !isLatePendingSuccess)
+      || pending.status === TXN_STATUS.INSUFFICIENT
+    )) {
       console.log(
         `[mpesa-callback][idempotency] pending ${CheckoutRequestID} already ${pending.status}.`
       );
@@ -228,6 +253,20 @@ exports.handler = async (event) => {
       const transactionDate = getCallbackItem(items, 'TransactionDate')
         ? String(getCallbackItem(items, 'TransactionDate'))
         : null;
+
+      if (!Number.isFinite(paidAmount) || paidAmount <= 0) {
+        console.error(`[mpesa-callback][orphan] invalid confirmed amount for ${CheckoutRequestID}.`);
+        await db.collection('mpesa_orphan_callbacks').doc(CheckoutRequestID).set({
+          CheckoutRequestID,
+          MerchantRequestID,
+          expectedAmount,
+          paidAmount,
+          reason: 'invalid_confirmed_amount',
+          payload: stkCallback,
+          receivedAt: FieldValue.serverTimestamp(),
+        }, { merge: true });
+        return ok({ message: 'Recorded callback with invalid amount for reconciliation' });
+      }
 
       // Guard: missing student context — can't allocate, write a reconciliation entry.
       if (!schoolId || !studentId) {
@@ -266,12 +305,21 @@ exports.handler = async (event) => {
       const receiptDocId = `RCP_MPESA_${receiptNumber || CheckoutRequestID}`;
       const receiptRef = db.collection('receipts').doc(receiptDocId);
       const auditRef = db.collection('fee_audit_log').doc(`AUDIT_MPESA_${CheckoutRequestID}`);
+      let callbackApplied = false;
 
       await db.runTransaction(async (trx) => {
+        callbackApplied = false;
         // Re-read txn inside the transaction for atomic idempotency.
         const innerTxn = await trx.get(txnRef);
-        if (innerTxn.exists && innerTxn.data().status === TXN_STATUS.COMPLETED) {
-          return; // Completed in a parallel invocation.
+        if (innerTxn.exists) {
+          const status = innerTxn.data().status;
+          if (status === TXN_STATUS.COMPLETED) return;
+          if (
+            status
+            && status !== TXN_STATUS.PENDING
+            && status !== TXN_STATUS.PROCESSING
+            && !(status === TXN_STATUS.TIMEOUT && Number(ResultCode) === 0)
+          ) return;
         }
 
         const [balSnap, studentSnap] = await Promise.all([
@@ -461,7 +509,12 @@ exports.handler = async (event) => {
           completedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         }, { merge: true });
+        callbackApplied = true;
       });
+
+      if (!callbackApplied) {
+        return ok({ message: 'Already processed', duplicate: true });
+      }
 
       console.log(
         `[mpesa-callback][success] ${receiptNumber || CheckoutRequestID} ` +

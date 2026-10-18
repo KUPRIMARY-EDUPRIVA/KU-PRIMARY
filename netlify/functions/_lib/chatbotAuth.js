@@ -40,8 +40,6 @@ async function requireAuth(event, options = {}) {
         console.error('[chatbotAuth] verifyIdToken failed', {
             code: verifyErr.code,
             message: verifyErr.message,
-            tokenPrefix: token.slice(0, 20),
-            tokenLength: token.length,
         });
         throw Object.assign(
             new Error(`Auth failed: ${verifyErr.code || verifyErr.message}`),

@@ -101,6 +101,16 @@ service cloud.firestore {
       );
     }
 
+    function canManageStudentLifecycle(schoolId) {
+      return isSignedIn() && (
+        isPlatformAdmin() ||
+        (
+          userSchoolId() == schoolId &&
+          userRole() in ['admin', 'user', 'school_admin', 'school-admin', 'principal', 'headteacher', 'deputy-headteacher']
+        )
+      );
+    }
+
     function canUseSchoolCommunications(schoolId) {
       return isSignedIn() && (
         isPlatformAdmin() ||
@@ -238,9 +248,117 @@ service cloud.firestore {
       allow delete: if isValidId(studentId) && isSchoolAdmin(existing().schoolId);
     }
 
+    match /student_promotion_operations/{operationId} {
+      allow get: if isSignedIn() && (
+        resource == null
+          ? canManageStudentLifecycle(userSchoolId())
+          : canManageStudentLifecycle(resource.data.schoolId)
+      );
+      allow list: if canManageStudentLifecycle(resource.data.schoolId);
+      allow create: if canManageStudentLifecycle(incoming().schoolId)
+        && incoming().studentId is string
+        && incoming().academicYear is string
+        && incoming().status == 'applied'
+        && exists(/databases/$(database)/documents/students/$(incoming().studentId))
+        && get(/databases/$(database)/documents/students/$(incoming().studentId)).data.schoolId == incoming().schoolId;
+      allow update: if canManageStudentLifecycle(existing().schoolId)
+        && incoming().schoolId == existing().schoolId
+        && incoming().studentId == existing().studentId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'rolledBackAt', 'rolledBackBy'])
+        && existing().status == 'applied'
+        && incoming().status == 'rolled_back';
+      allow delete: if false;
+    }
+
+    match /student_archives/{archiveId} {
+      allow get: if isSignedIn() && (
+        resource == null
+          ? canManageStudentLifecycle(userSchoolId())
+          : canManageStudentLifecycle(resource.data.schoolId)
+      );
+      allow list: if canManageStudentLifecycle(resource.data.schoolId);
+      allow create: if canManageStudentLifecycle(incoming().schoolId)
+        && incoming().studentId is string
+        && incoming().academicYear is string
+        && incoming().studentSnapshot is map
+        && exists(/databases/$(database)/documents/students/$(incoming().studentId))
+        && get(/databases/$(database)/documents/students/$(incoming().studentId)).data.schoolId == incoming().schoolId;
+      allow update: if canManageStudentLifecycle(existing().schoolId)
+        && incoming().schoolId == existing().schoolId
+        && incoming().studentId == existing().studentId
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reversedAt', 'reversedBy'])
+        && incoming().status == 'reversed';
+      allow delete: if false;
+    }
+
+    match /school_timetables/{timetableId} {
+      allow get: if isSignedIn() && (
+        resource == null
+          ? isSchoolMember(userSchoolId())
+          : isSchoolMember(resource.data.schoolId)
+      );
+      allow list: if isSchoolMember(resource.data.schoolId);
+      allow create: if canManageStudentLifecycle(incoming().schoolId);
+      allow update: if canManageStudentLifecycle(existing().schoolId)
+        && incoming().schoolId == existing().schoolId;
+      allow delete: if false;
+    }
+
+    match /timetable_settings/{settingsId} {
+      allow get: if isSignedIn() && (
+        resource == null
+          ? isSchoolMember(userSchoolId())
+          : isSchoolMember(resource.data.schoolId)
+      );
+      allow list: if isSchoolMember(resource.data.schoolId);
+      allow create: if canManageStudentLifecycle(incoming().schoolId);
+      allow update: if canManageStudentLifecycle(existing().schoolId)
+        && incoming().schoolId == existing().schoolId;
+      allow delete: if false;
+    }
+
+    match /timetable_events/{eventId} {
+      allow get, list: if isSchoolMember(resource.data.schoolId);
+      allow create: if canManageStudentLifecycle(incoming().schoolId);
+      allow update: if canManageStudentLifecycle(existing().schoolId)
+        && incoming().schoolId == existing().schoolId;
+      allow delete: if canManageStudentLifecycle(existing().schoolId);
+    }
+
+    match /duty_rosters/{rosterId} {
+      allow get: if isSignedIn() && (
+        resource == null
+          ? isSchoolMember(userSchoolId())
+          : isSchoolMember(resource.data.schoolId)
+      );
+      allow list: if isSchoolMember(resource.data.schoolId);
+      allow create: if canManageStudentLifecycle(incoming().schoolId);
+      allow update: if canManageStudentLifecycle(existing().schoolId)
+        && incoming().schoolId == existing().schoolId;
+      allow delete: if false;
+    }
+
     // -------------------------------------------------------------
     // Fee Transactions (Immutable Financial Ledger)
     // -------------------------------------------------------------
+    match /mpesa_pending_transactions/{checkoutRequestId} {
+      allow get: if isValidId(checkoutRequestId) && (
+        isFeeManager(existing().schoolId) ||
+        (
+          isSchoolMember(existing().schoolId) &&
+          userRole() == 'student' &&
+          (
+            ('studentId' in existing() && existing().studentId == request.auth.uid) ||
+            ('studentUid' in existing() && existing().studentUid == request.auth.uid)
+          )
+        )
+      );
+      allow list: if isSignedIn() &&
+        resource.data.schoolId == userSchoolId() &&
+        isFeeManager(userSchoolId());
+      allow create, update, delete: if false;
+    }
+
     match /fee_transactions/{txnId} {
       allow get: if isValidId(txnId) && (
         isFeeManager(existing().schoolId) ||

@@ -92,13 +92,34 @@ export async function bulkUpdateStudents(updates) {
 }
 
 export async function loadAllStudents(schoolId, assignedClasses = []) {
-    const constraints = [
-        where('schoolId', '==', schoolId),
-    ];
-    if (assignedClasses.length > 0) {
-        constraints.push(where('class', 'in', assignedClasses));
+    if (!schoolId) throw new Error('School ID is required to load students.');
+
+    const classScopes = [];
+    for (let i = 0; i < assignedClasses.length; i += 30) {
+        classScopes.push(assignedClasses.slice(i, i + 30));
     }
-    constraints.push(orderBy('createdAt', 'desc'));
-    const snap = await getDocs(query(collection(db, 'students'), ...constraints));
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (classScopes.length === 0) classScopes.push([]);
+
+    const loadScope = async (classes) => {
+        const students = [];
+        let cursor = null;
+        while (true) {
+            const constraints = [where('schoolId', '==', schoolId)];
+            if (classes.length) constraints.push(where('class', 'in', classes));
+            constraints.push(orderBy('createdAt', 'desc'));
+            if (cursor) constraints.push(startAfter(cursor));
+            constraints.push(limit(500));
+
+            const snapshot = await getDocs(query(collection(db, 'students'), ...constraints));
+            students.push(...snapshot.docs.map((item) => ({ id: item.id, ...item.data() })));
+            if (snapshot.size < 500) break;
+            cursor = snapshot.docs[snapshot.docs.length - 1];
+        }
+        return students;
+    };
+
+    const scopedStudents = await Promise.all(classScopes.map(loadScope));
+    const byId = new Map();
+    scopedStudents.flat().forEach((student) => byId.set(student.id, student));
+    return [...byId.values()];
 }
