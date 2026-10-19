@@ -74,6 +74,7 @@ export default function Results() {
     const [studentScores, setStudentScores] = useState({});
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [publishingAll, setPublishingAll] = useState(false);
 
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
@@ -155,9 +156,6 @@ export default function Results() {
     const [combinedRankingData, setCombinedRankingData] = useState(null);
     const [combinedRankingLoading, setCombinedRankingLoading] = useState(false);
 
-    // Flat map { studentId: [ { subject, score, term, assessmentType }, ... ] }
-    // so RankingModal's array logic works exactly the same way it does for
-    // the subject ranking. THIS is the fix for "t.find is not a function".
     const [combinedPreviewScores, setCombinedPreviewScores] = useState({});
 
     const showNotification = useCallback((message, type = 'info') => {
@@ -468,6 +466,57 @@ export default function Results() {
         } finally { setSaving(false); }
     };
 
+    // ============================================================
+    // PUBLISH ALL — publishes every loaded student's scores for the
+    // current subject/term/assessment. Replaces the duplicate
+    // non-functional "Save All" button.
+    // ============================================================
+    const publishAllResults = async () => {
+        if (isReadOnly) { showNotification('Deadline passed — read-only', 'warning'); return; }
+        if (students.length === 0) { showNotification('No students loaded', 'warning'); return; }
+        if (!window.confirm(`Publish results for ${students.length} student(s) in ${selectedClass}?`)) return;
+
+        setPublishingAll(true);
+        try {
+            const schoolId = requireSchoolId(userData);
+            const ids = students.map((s) => s.id);
+
+            if (!isOnline) {
+                for (const id of ids) {
+                    await addToSyncQueue('student_scores', 'publish', {
+                        schoolId, level: selectedLevel, class: selectedClass,
+                        subject: selectedSubject, term: selectedTerm,
+                        assessmentType, studentId: id
+                    });
+                }
+                showNotification(`${ids.length} results queued to publish offline`, 'info');
+            } else {
+                await publishScoresBatch(
+                    schoolId, selectedLevel, selectedClass, selectedSubject,
+                    selectedTerm, assessmentType, ids
+                );
+                await AuditLogService.logAction(
+                    schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
+                    AUDIT_ACTIONS.SCORES_PUBLISHED,
+                    {
+                        entityId: `${selectedClass}-${selectedSubject}-${assessmentType}`,
+                        message: `Published ${ids.length} ${selectedSubject} result(s) for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
+                    }
+                );
+                invalidatePerformanceCache({ currentUser, schoolId });
+                showNotification(`Published ${ids.length} results`, 'success');
+            }
+
+            setStudents((prev) => prev.map((s) => ({ ...s, status: 'published' })));
+        } catch (err) {
+            console.error('publishAllResults failed:', err);
+            showNotification('Failed to publish results: ' + err.message, 'error');
+        } finally {
+            setPublishingAll(false);
+        }
+    };
+
     const saveScore = async (studentId) => {
         if (isReadOnly) { showNotification('Deadline passed — read-only', 'warning'); return; }
         const val = pendingInputs[studentId];
@@ -599,9 +648,6 @@ export default function Results() {
         return Math.round(values.reduce((a, b) => a + b, 0) / values.length);
     }, [students, selectedSubject, getSubjectScoreForStudent]);
 
-    /**
-     * Subject ranking: single subject only.
-     */
     const buildSubjectRankingRows = useCallback(() => {
         const rows = students.map((s) => {
             const score = getSubjectScoreForStudent(s.id, selectedSubject);
@@ -624,12 +670,6 @@ export default function Results() {
         });
     }, [students, selectedSubject, getSubjectScoreForStudent]);
 
-    /**
-     * Combined ranking: every subject in the level. Fetches fresh score data
-     * for ALL subjects, computes per-student mean, and also flattens the
-     * per-subject map into `combinedPreviewScores` as an ARRAY OF RECORDS
-     * (same shape RankingModal reads for the subject ranking).
-     */
     const generateCombinedRanking = useCallback(async () => {
         if (!isAdmin) {
             showNotification('Only admins can view the combined ranking report', 'warning');
@@ -732,8 +772,6 @@ export default function Results() {
 
             combined.sort((a, b) => (b.average || 0) - (a.average || 0));
 
-            // Build an ARRAY-based map for the preview table so
-            // RankingModal's `.find(...)` calls work unchanged.
             const previewMap = {};
             combined.forEach(s => {
                 const arr = [];
@@ -1216,6 +1254,18 @@ export default function Results() {
                     disabled={saving || students.length === 0 || isReadOnly || Object.keys(pendingInputs).length === 0}
                 >
                     <i className="fas fa-save"></i> {saving ? 'Saving...' : `Save All (${Object.keys(pendingInputs).length})`}
+                </button>
+
+                <button className="btn btn-primary"
+                    style={{
+                        padding: '10px 20px', border: 'none', borderRadius: '8px', fontWeight: '600',
+                        cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+                        gap: '8px', fontSize: '14px', background: 'var(--primary)', color: 'white'
+                    }}
+                    onClick={publishAllResults}
+                    disabled={publishingAll || students.length === 0 || isReadOnly}
+                >
+                    <i className="fas fa-upload"></i> {publishingAll ? 'Publishing...' : 'Publish All'}
                 </button>
 
                 <button className="btn btn-warning"
