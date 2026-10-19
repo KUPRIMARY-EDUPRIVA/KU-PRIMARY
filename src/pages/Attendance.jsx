@@ -61,9 +61,6 @@ export default function Attendance() {
     const { isOnline, addToSyncQueue } = useSync();
 
     // ---- Access resolution ------------------------------------------------
-    // Class teachers are stored in `schools/{schoolId}.classTeachers` as
-    // { [className]: teacherUid }. We check whether the current user's
-    // uid appears in that map. Only those users (and admins) can use this page.
     const [loading, setLoading] = useState(true);
     const [schoolData, setSchoolData] = useState(null);
     const [assignedClasses, setAssignedClasses] = useState([]);
@@ -76,7 +73,7 @@ export default function Attendance() {
     const [selectedDate, setSelectedDate] = useState(todayISO());
 
     const [roster, setRoster] = useState([]);
-    const [entries, setEntries] = useState({}); // studentId -> { status, note }
+    const [entries, setEntries] = useState({});
     const [existingRecord, setExistingRecord] = useState(null);
     const [saving, setSaving] = useState(false);
 
@@ -96,6 +93,10 @@ export default function Attendance() {
     const [reporting, setReporting] = useState(false);
     const [classReportStats, setClassReportStats] = useState(null);
 
+    // The class-scope view data (fetched independently by "View")
+    const [classScopeView, setClassScopeView] = useState(null);
+    const [viewLoading, setViewLoading] = useState(false);
+
     useEffect(() => {
         if (!schoolData || reportType !== 'term') return;
         setReportTerm(String(schoolData.currentTerm || 1));
@@ -103,8 +104,11 @@ export default function Attendance() {
         setReportTo(schoolData.currentTermEnd || todayISO());
     }, [schoolData, reportType]);
 
+    // Reset the in-page view when filters change, so the user knows to
+    // re-run "View" to see the new numbers.
     useEffect(() => {
         setClassReportStats(null);
+        setClassScopeView(null);
     }, [reportClass, reportType, reportDate, reportFrom, reportTo, reportTerm]);
 
     // ---- Notifications ----------------------------------------------------
@@ -134,7 +138,6 @@ export default function Attendance() {
                 setIsAdmin(admin);
                 setActiveTab(admin ? 'reports' : 'take');
 
-                // Resolve which classes this user is a class teacher for
                 const classTeachers = data.classTeachers || {};
                 const mine = Object.entries(classTeachers)
                     .filter(([, uid]) => uid && uid === currentUser.uid)
@@ -145,7 +148,6 @@ export default function Attendance() {
                 if (!admin && mine.length === 0) {
                     showNotification('You are not assigned as a class teacher.', 'warning');
                 } else {
-                    // Preselect the first available class
                     setSelectedClass(mine[0] || '');
                     setReportClass(admin ? '__all__' : (mine[0] || ''));
                 }
@@ -175,7 +177,6 @@ export default function Attendance() {
                 setRoster(list);
                 setExistingRecord(existing);
 
-                // Seed entries from existing record or default "present"
                 const seeded = {};
                 list.forEach((s) => {
                     const hit = existing?.entries?.find((e) => e.studentId === s.id);
@@ -195,8 +196,6 @@ export default function Attendance() {
     // ---- Helpers ----------------------------------------------------------
     const findLevelForClass = useCallback((cls) => {
         if (!cls) return '';
-        // Try custom classes first (from SchoolContext.getLevelClasses)
-        // else fall back to LEVEL_CLASSES lookup.
         for (const [level, list] of Object.entries(configs?.customClasses
             ? configs.customClasses.reduce((acc, c) => {
                 (acc[c.level] = acc[c.level] || []).push(c.className);
@@ -206,7 +205,6 @@ export default function Attendance() {
         )) {
             if (list.includes(cls)) return level;
         }
-        // Fallback: use the school-context helper
         for (const lvl of ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school']) {
             const list = getLevelClasses ? getLevelClasses(lvl) : [];
             if (list.includes(cls)) return lvl;
@@ -380,7 +378,110 @@ export default function Attendance() {
         };
     };
 
-    const handleGenerateReport = async () => {
+    // -------- Compute stats for the current filter, no PDF --------
+    const computeSchoolWideStats = async (req) => {
+        const records = await listAttendanceRecords({
+            schoolId: req.schoolId,
+            fromDate: req.from,
+            toDate: req.to,
+            max: 2000,
+        });
+        const totalsByClass = new Map();
+        records.forEach((record) => {
+            const className = record.class || 'Unassigned';
+            if (!totalsByClass.has(className)) {
+                totalsByClass.set(className, {
+                    className, sessions: 0, present: 0, absent: 0, late: 0, excused: 0,
+                });
+            }
+            const row = totalsByClass.get(className);
+            row.sessions += 1;
+            for (const status of ['present', 'absent', 'late', 'excused']) {
+                const entries = Array.isArray(record.entries) ? record.entries : [];
+                const entryCount = entries.filter((entry) => (entry.status || 'present') === status).length;
+                const count = record.counts?.[status];
+                row[status] += Number.isFinite(Number(count)) ? Number(count) : entryCount;
+            }
+        });
+        const rows = [...totalsByClass.values()].sort((a, b) => a.className.localeCompare(b.className));
+        const totals = rows.reduce((acc, row) => {
+            for (const status of ['present', 'absent', 'late', 'excused']) acc[status] += row[status];
+            acc.sessions += row.sessions;
+            return acc;
+        }, { sessions: 0, present: 0, absent: 0, late: 0, excused: 0 });
+        const marks = totals.present + totals.absent + totals.late + totals.excused;
+        const rate = marks ? Math.round(((totals.present + totals.late) / marks) * 100) : 0;
+        const classRows = rows.map((row) => {
+            const classMarks = row.present + row.absent + row.late + row.excused;
+            return {
+                ...row,
+                rate: classMarks ? Math.round(((row.present + row.late) / classMarks) * 100) : 0,
+            };
+        });
+        return { ...totals, marks, rate, rows: classRows };
+    };
+
+    // -------- Compute stats for a single class, no PDF --------
+    const computeClassStats = async (req) => {
+        const records = await listAttendanceRecords({
+            schoolId: req.schoolId,
+            cls: req.cls,
+            fromDate: req.from,
+            toDate: req.to,
+            max: 2000,
+        });
+        const totals = { sessions: 0, present: 0, absent: 0, late: 0, excused: 0 };
+        records.forEach((record) => {
+            totals.sessions += 1;
+            for (const status of ['present', 'absent', 'late', 'excused']) {
+                const entries = Array.isArray(record.entries) ? record.entries : [];
+                const entryCount = entries.filter((entry) => (entry.status || 'present') === status).length;
+                const count = record.counts?.[status];
+                totals[status] += Number.isFinite(Number(count)) ? Number(count) : entryCount;
+            }
+        });
+        const marks = totals.present + totals.absent + totals.late + totals.excused;
+        const rate = marks ? Math.round(((totals.present + totals.late) / marks) * 100) : 0;
+        return { ...totals, marks, rate, records };
+    };
+
+    // ---- VIEW: fetch and render stats inline ----
+    const handleView = async () => {
+        const req = buildReportRequest();
+        if (!req) return showNotification('Select a class first', 'warning');
+        if (req.from && req.to && req.from > req.to) {
+            return showNotification('The start date must be on or before the end date.', 'warning');
+        }
+
+        setViewLoading(true);
+        try {
+            if (req.allClasses) {
+                const stats = await computeSchoolWideStats(req);
+                setClassReportStats(stats);
+                setClassScopeView(null);
+            } else {
+                const stats = await computeClassStats(req);
+                setClassScopeView({
+                    ...stats,
+                    cls: req.cls,
+                    level: req.level,
+                    from: req.from,
+                    to: req.to,
+                    reportType: req.reportType,
+                });
+                setClassReportStats(null);
+            }
+            showNotification('Stats loaded', 'success');
+        } catch (e) {
+            console.error('View failed:', e);
+            showNotification('Failed to load stats: ' + e.message, 'error');
+        } finally {
+            setViewLoading(false);
+        }
+    };
+
+    // ---- EXPORT PDF: generate and save ----
+    const handleExportPDF = async () => {
         const req = buildReportRequest();
         if (!req) return showNotification('Select a class first', 'warning');
         if (req.from && req.to && req.from > req.to) {
@@ -390,46 +491,11 @@ export default function Attendance() {
         setReporting(true);
         try {
             if (req.allClasses) {
-                const records = await listAttendanceRecords({
-                    schoolId: req.schoolId,
-                    fromDate: req.from,
-                    toDate: req.to,
-                    max: 2000,
-                });
-                const totalsByClass = new Map();
-                records.forEach((record) => {
-                    const className = record.class || 'Unassigned';
-                    if (!totalsByClass.has(className)) {
-                        totalsByClass.set(className, {
-                            className, sessions: 0, present: 0, absent: 0, late: 0, excused: 0,
-                        });
-                    }
-                    const row = totalsByClass.get(className);
-                    row.sessions += 1;
-                    for (const status of ['present', 'absent', 'late', 'excused']) {
-                        const entries = Array.isArray(record.entries) ? record.entries : [];
-                        const entryCount = entries.filter((entry) => (entry.status || 'present') === status).length;
-                        const count = record.counts?.[status];
-                        row[status] += Number.isFinite(Number(count)) ? Number(count) : entryCount;
-                    }
-                });
-                const rows = [...totalsByClass.values()].sort((a, b) => a.className.localeCompare(b.className));
-                const totals = rows.reduce((acc, row) => {
-                    for (const status of ['present', 'absent', 'late', 'excused']) acc[status] += row[status];
-                    acc.sessions += row.sessions;
-                    return acc;
-                }, { sessions: 0, present: 0, absent: 0, late: 0, excused: 0 });
-                const marks = totals.present + totals.absent + totals.late + totals.excused;
-                const rate = marks ? Math.round(((totals.present + totals.late) / marks) * 100) : 0;
-                const classRows = rows.map((row) => {
-                    const classMarks = row.present + row.absent + row.late + row.excused;
-                    return {
-                        ...row,
-                        rate: classMarks ? Math.round(((row.present + row.late) / classMarks) * 100) : 0,
-                    };
-                });
-                setClassReportStats({ ...totals, marks, rate, rows: classRows });
+                const stats = await computeSchoolWideStats(req);
+                setClassReportStats(stats);
+                setClassScopeView(null);
 
+                const { rows: classRows, ...totals } = stats;
                 const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
                 pdf.setFontSize(18);
                 pdf.setTextColor(26, 35, 126);
@@ -438,7 +504,11 @@ export default function Attendance() {
                 pdf.text('All-Class Attendance Summary', 14, 27);
                 pdf.setFontSize(9);
                 pdf.setTextColor(80, 80, 80);
-                pdf.text(`${reportType === 'term' ? `Term ${reportTerm}  |  ` : ''}${req.from} to ${req.to}  |  ${totals.sessions} class sessions  |  Attendance rate ${rate}%`, 14, 34);
+                pdf.text(
+                    `${reportType === 'term' ? `Term ${reportTerm}  |  ` : ''}${req.from} to ${req.to}  |  ` +
+                    `${totals.sessions} class sessions  |  Attendance rate ${totals.rate}%`,
+                    14, 34
+                );
                 autoTable(pdf, {
                     startY: 40,
                     head: [['Class', 'Sessions', 'Present', 'Absent', 'Late', 'Excused', 'Attendance rate']],
@@ -447,7 +517,7 @@ export default function Attendance() {
                             row.className, row.sessions, row.present, row.absent,
                             row.late, row.excused, `${row.rate}%`,
                         ]),
-                        ['SCHOOL TOTAL', totals.sessions, totals.present, totals.absent, totals.late, totals.excused, `${rate}%`],
+                        ['SCHOOL TOTAL', totals.sessions, totals.present, totals.absent, totals.late, totals.excused, `${totals.rate}%`],
                     ],
                     styles: { fontSize: 9, cellPadding: 3 },
                     headStyles: { fillColor: [26, 35, 126] },
@@ -472,7 +542,7 @@ export default function Attendance() {
             const saved = await savePdfBlob(blob, `attendance_${req.reportType}_${req.cls}_${req.from}_to_${req.to}.pdf`);
             showNotification(`Saved ${saved.filename} to ${saved.location || 'your Downloads folder'}.`, 'success');
         } catch (e) {
-            console.error('Report failed:', e);
+            console.error('Export failed:', e);
             showNotification('Failed to generate report: ' + e.message, 'error');
         } finally {
             setReporting(false);
@@ -531,6 +601,7 @@ export default function Attendance() {
                 .att-btn-primary { background:var(--primary); color:white; }
                 .att-btn-outline { background:transparent; border:2px solid var(--border); color:var(--secondary); }
                 .att-btn-success { background:#16a34a; color:white; }
+                .att-btn-danger { background:#e11d48; color:white; }
                 .att-btn:disabled { opacity:.6; cursor:not-allowed; }
                 .att-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:15px; margin-bottom:15px; }
                 .att-field label { display:block; font-size:13px; font-weight:600; color:var(--secondary); margin-bottom:5px; }
@@ -599,7 +670,6 @@ export default function Attendance() {
                         </div>
                     </div>
 
-                    {/* Quick stats */}
                     <div className="att-stats">
                         <div className="att-stat">
                             <div className="att-stat-label">Students</div>
@@ -615,7 +685,6 @@ export default function Attendance() {
                         ))}
                     </div>
 
-                    {/* Quick actions */}
                     <div style={{ display: 'flex', gap: 8, marginBottom: 15, flexWrap: 'wrap' }}>
                         <button className="att-btn att-btn-outline" onClick={() => markAll('present')}>
                             <i className="fas fa-check"></i> Mark all present
@@ -783,11 +852,11 @@ export default function Attendance() {
             {activeTab === 'reports' && (
                 <div className="att-panel">
                     <h3 style={{ marginTop: 0, color: 'var(--secondary)' }}>
-                        <i className="fas fa-file-pdf"></i> Generate Attendance Report
+                        <i className="fas fa-file-pdf"></i> Attendance Reports
                     </h3>
                     <p style={{ color: 'var(--gray)', fontSize: 14, marginBottom: 20 }}>
-                        Reports are generated as PDFs. The first page includes school
-                        details and logo; subsequent pages start clean without repeating the header.
+                        Pick your filters below. Use <strong>View</strong> to see stats on this page,
+                        and <strong>Export to PDF</strong> to download a printable report.
                     </p>
 
                     <div className="att-grid">
@@ -882,16 +951,28 @@ export default function Attendance() {
                         </p>
                     )}
 
-                    <div style={{ marginTop: 10 }}>
+                    {/* Two separate buttons */}
+                    <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        <button
+                            className="att-btn att-btn-outline"
+                            onClick={handleView}
+                            disabled={viewLoading || (!reportClass && !selectedClass)}
+                        >
+                            <i className="fas fa-eye"></i>
+                            {viewLoading ? 'Loading…' : 'View'}
+                        </button>
+
                         <button
                             className="att-btn att-btn-primary"
-                            onClick={handleGenerateReport}
+                            onClick={handleExportPDF}
                             disabled={reporting || (!reportClass && !selectedClass)}
                         >
                             <i className="fas fa-file-pdf"></i>
-                            {reporting ? 'Generating…' : isAdmin && reportClass === '__all__' ? 'View school stats & export PDF' : 'Generate PDF'}
+                            {reporting ? 'Exporting…' : 'Export to PDF'}
                         </button>
                     </div>
+
+                    {/* ========== Inline View: School-wide ========== */}
                     {classReportStats && reportClass === '__all__' && (
                         <div style={{ marginTop: 20 }}>
                             <div className="att-stats">
@@ -923,6 +1004,57 @@ export default function Attendance() {
                                     ))}</tbody>
                                 </table>
                             </div>
+                        </div>
+                    )}
+
+                    {/* ========== Inline View: Single class ========== */}
+                    {classScopeView && (
+                        <div style={{ marginTop: 20 }}>
+                            <div className="att-stats">
+                                {[
+                                    ['Sessions', classScopeView.sessions, '#1a237e'],
+                                    ['Present', classScopeView.present, '#16a34a'],
+                                    ['Absent', classScopeView.absent, '#dc2626'],
+                                    ['Late', classScopeView.late, '#d97706'],
+                                    ['Excused', classScopeView.excused, '#2563eb'],
+                                    ['Attendance rate', `${classScopeView.rate}%`, '#2563eb'],
+                                ].map(([label, value, color]) => (
+                                    <div className="att-stat" key={label}>
+                                        <div className="att-stat-label">{label}</div>
+                                        <div className="att-stat-value" style={{ color }}>{value}</div>
+                                    </div>
+                                ))}
+                            </div>
+                            <p style={{ fontSize: 13, color: 'var(--gray)' }}>
+                                {classScopeView.cls}
+                                {classScopeView.level ? ` • ${LEVEL_DISPLAY_NAMES[classScopeView.level] || classScopeView.level}` : ''}
+                                {' '}— {classScopeView.from} to {classScopeView.to}
+                                {' '}({classScopeView.reportType})
+                            </p>
+                            {classScopeView.records.length > 0 && (
+                                <div className="att-panel" style={{ padding: 0, overflowX: 'auto' }}>
+                                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                        <thead><tr style={{ background: '#f8fafc' }}>
+                                            {['Date', 'Session', 'Present', 'Absent', 'Late', 'Excused', 'Taken by'].map((heading) => (
+                                                <th key={heading} style={{ padding: 10, textAlign: 'left', fontSize: 12 }}>{heading}</th>
+                                            ))}
+                                        </tr></thead>
+                                        <tbody>
+                                            {classScopeView.records.slice(0, 100).map((r) => (
+                                                <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                                                    <td style={{ padding: 10 }}>{r.date}</td>
+                                                    <td style={{ padding: 10, textTransform: 'capitalize' }}>{r.session}</td>
+                                                    <td style={{ padding: 10, color: '#16a34a', fontWeight: 600 }}>{r.counts?.present || 0}</td>
+                                                    <td style={{ padding: 10, color: '#dc2626', fontWeight: 600 }}>{r.counts?.absent || 0}</td>
+                                                    <td style={{ padding: 10, color: '#d97706', fontWeight: 600 }}>{r.counts?.late || 0}</td>
+                                                    <td style={{ padding: 10, color: '#2563eb', fontWeight: 600 }}>{r.counts?.excused || 0}</td>
+                                                    <td style={{ padding: 10, color: 'var(--gray)', fontSize: 13 }}>{r.takenByName || '—'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
