@@ -120,58 +120,46 @@ export async function getPaperConfig(schoolId, level, subject) {
  * Returns a map: { subjectName: [papers] }
  */
 export async function getAllPaperConfigsForLevel(schoolId, level) {
-    if (!schoolId || !level) return {};
-
-    const cacheKey = `papercfgs_${schoolId}_${level}`;
-    return readCached(cacheKey, 10 * 60 * 1000, async () => {
-        const q = query(
-            collection(db, 'subject_paper_configs'),
-            where('schoolId', '==', schoolId),
-            where('level', '==', level)
-        );
-        const snap = await getDocs(q);
-        const out = {};
-        snap.docs.forEach(d => {
-            const data = d.data();
-            if (data.subject) {
-                out[data.subject] = Array.isArray(data.papers) ? data.papers : [];
-            }
-        });
-        return out;
+    const q = query(
+        collection(db, 'paper_configs'),
+        where('schoolId', '==', schoolId),
+        where('level', '==', level)
+    );
+    const snap = await getDocs(q);
+    const out = {};
+    snap.docs.forEach((d) => {
+        const data = d.data();
+        if (!data.subject) return;
+        out[data.subject] = {
+            papers: data.papers || [],
+            showBranchesOnReport: !!data.showBranchesOnReport,
+        };
     });
+    return out;
 }
 
 /**
  * Persist a subject's paper configuration.
  * papers: [{ name, maxScore, weight }, ...]  (empty array = single-paper subject)
  */
-export async function savePaperConfig(schoolId, level, subject, papers, userId) {
-    if (!schoolId || !level || !subject) {
-        throw new Error('savePaperConfig: schoolId, level and subject are required');
-    }
-    const id = makePaperConfigId(schoolId, level, subject);
-    const clean = Array.isArray(papers)
-        ? papers.map(p => ({
-            name: String(p.name || '').trim(),
-            maxScore: Number(p.maxScore ?? p.max) || 100,
-            weight: Number(p.weight) || 0
-        }))
-        : [];
-
-    await setDoc(doc(db, 'subject_paper_configs', id), {
-        schoolId, level, subject,
-        papers: clean,
+export async function savePaperConfig(schoolId, level, subject, papers, userId, options = {}) {
+    const { showBranchesOnReport = false } = options;
+    const id = `${schoolId}_${level}_${subject}`.replace(/[^\w-]/g, '_');
+    const ref = doc(db, 'paper_configs', id);
+    await setDoc(ref, {
+        schoolId,
+        level,
+        subject,
+        papers: (papers || []).map((p) => ({
+            name: p.name,
+            maxScore: Number(p.maxScore) || 100,
+            weight: Number(p.weight) || 0,
+        })),
+        showBranchesOnReport: !!showBranchesOnReport,
+        updatedBy: userId || '',
         updatedAt: serverTimestamp(),
-        updatedBy: userId || 'system'
     }, { merge: true });
-
-    // Invalidate caches
-    invalidateRead(`papercfg_${schoolId}_${level}_${subject}`);
-    invalidateRead(`papercfgs_${schoolId}_${level}`);
-
-    return id;
 }
-
 // ============================================================
 // STUDENTS
 // ============================================================
