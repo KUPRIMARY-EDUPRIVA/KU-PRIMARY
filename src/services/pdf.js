@@ -855,7 +855,7 @@ function drawStudentInfo(doc, student, meta, term, startY) {
 }
 
 // ------------------------------------------------------------
-// 1. TRANSCRIPTS — 4 students per A4 portrait page.
+// 1. TRANSCRIPTS — 4 students per A4 portrait page with cut marks.
 // ------------------------------------------------------------
 export async function downloadTranscripts({ students, meta, subjects, term, assessmentIndex = 0 }) {
     if (!Array.isArray(students) || students.length === 0) {
@@ -865,55 +865,179 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
 
+    // ---- Layout constants ----
     const PER_PAGE = 4;
-    const MARGIN_X = 8;
-    const MARGIN_Y = 8;
-    const GAP = 6;
-    const contentH = pageHeight - MARGIN_Y * 2 - GAP * (PER_PAGE - 1);
-    const cardH = contentH / PER_PAGE;
+    // Printable area — leaves 12 mm side margins so cut marks live in the gutter.
+    const PRINT_LEFT = 12;
+    const PRINT_RIGHT = pageWidth - 12;
+    const PRINT_TOP = 12;
+    const PRINT_BOTTOM = pageHeight - 12;
+    const PRINT_W = PRINT_RIGHT - PRINT_LEFT;
+    const PRINT_H = PRINT_BOTTOM - PRINT_TOP;
+
+    // Card sizing: 4 equal cards stacked vertically.
+    const CARD_H = PRINT_H / PER_PAGE;
+    const CARD_W = PRINT_W;
+
+    // Sub-layout inside each card.
+    const HEADER_H = 7;          // top blue band
+    const INFO_H = 8;            // name / adm / class line
+    const FOOTER_H = 13;         // summary band
+    const TABLE_TOP_OFFSET = HEADER_H + INFO_H + 1;
+    const TABLE_BOTTOM_RESERVE = FOOTER_H + 1;
+
+    // Crop / cut mark geometry (mm)
+    const TICK = 2.5;
+    const GUTTER_DASH_LEN = 1.6;
+    const GUTTER_GAP_LEN = 1.2;
+
     const subjectList = Array.isArray(subjects) ? subjects : [];
+    const subjectCount = subjectList.length;
 
-    students.forEach((student, idx) => {
-        const slot = idx % PER_PAGE;
-        if (idx > 0 && slot === 0) doc.addPage();
+    // Adaptive table font so long subject lists still fit.
+    const tableFontSize = subjectCount > 10 ? 6.0 : subjectCount > 8 ? 6.5 : 7.0;
+    const cellPadding = subjectCount > 10 ? 0.4 : 0.6;
 
-        const cardTop = MARGIN_Y + slot * (cardH + GAP);
-        const cardLeft = MARGIN_X;
-        const cardW = pageWidth - MARGIN_X * 2;
+    // ---- Helpers: cutting guides ----
+    const drawCropMarks = (top, bottom) => {
+        doc.setDrawColor(120, 120, 120);
+        doc.setLineWidth(0.15);
+        // Left gutter ticks
+        doc.line(PRINT_LEFT - TICK, top, PRINT_LEFT, top);
+        doc.line(PRINT_LEFT - TICK, bottom, PRINT_LEFT, bottom);
+        // Right gutter ticks
+        doc.line(PRINT_RIGHT, top, PRINT_RIGHT + TICK, top);
+        doc.line(PRINT_RIGHT, bottom, PRINT_RIGHT + TICK, bottom);
+    };
 
+    const drawHorizontalCut = (y) => {
+        doc.setDrawColor(170, 170, 170);
+        doc.setLineWidth(0.2);
+        let x = PRINT_LEFT - TICK;
+        const xEnd = PRINT_RIGHT + TICK;
+        while (x < xEnd) {
+            const nextX = Math.min(x + GUTTER_DASH_LEN, xEnd);
+            doc.line(x, y, nextX, y);
+            x = nextX + GUTTER_GAP_LEN;
+        }
+    };
+
+    const drawVerticalCut = () => {
+        const cx = PRINT_LEFT + PRINT_W / 2;
+        doc.setDrawColor(200, 200, 200);
+        doc.setLineWidth(0.15);
+        let y = PRINT_TOP;
+        while (y < PRINT_BOTTOM) {
+            const nextY = Math.min(y + GUTTER_DASH_LEN, PRINT_BOTTOM);
+            doc.line(cx, y, cx, nextY);
+            y = nextY + GUTTER_GAP_LEN;
+        }
+    };
+
+    // ---- Summary computation (per student) ----
+    const buildSummary = (student) => {
+        const scores = student.scores || {};
+        const averages = student.averages || {};
+
+        let totalMarks = 0;
+        let totalMax = 0;
+        let assessedAtThisIndex = 0;
+        subjectList.forEach((subject) => {
+            const list = Array.isArray(scores[subject]) ? scores[subject] : [];
+            const v = list[assessmentIndex] ?? null;
+            if (v != null && !isNaN(v)) {
+                totalMarks += Number(v);
+                totalMax += 100;
+                assessedAtThisIndex += 1;
+            }
+        });
+
+        const assessedAvgs = subjectList
+            .map((s) => averages[s])
+            .filter((v) => v != null && !isNaN(v));
+        const overallAverage = assessedAvgs.length
+            ? Math.round(assessedAvgs.reduce((a, b) => a + b, 0) / assessedAvgs.length)
+            : 0;
+
+        const grade = cbcGrade(overallAverage);
+
+        const position = student.position || null;
+        const classSize = student.classSize || null;
+
+        const year = student.academicYear
+            || student.year
+            || meta?.academicYear?.start
+            || meta?.year
+            || new Date().getFullYear();
+        const currentYear = new Date().getFullYear();
+
+        return {
+            totalMarks,
+            totalMax,
+            assessedAtThisIndex,
+            overallAverage,
+            grade,
+            position,
+            classSize,
+            year,
+            currentYear,
+        };
+    };
+
+    // ---- Draw one card ----
+    const drawCard = (student, cardTop) => {
+        const cardLeft = PRINT_LEFT;
+        const cardBottom = cardTop + CARD_H;
+
+        // Outer border
         doc.setDrawColor(...PDF_COLORS.primary);
         doc.setLineWidth(0.4);
-        doc.rect(cardLeft, cardTop, cardW, cardH);
+        doc.rect(cardLeft, cardTop, CARD_W, CARD_H);
 
+        // Header band
         doc.setFillColor(...PDF_COLORS.primary);
-        doc.rect(cardLeft, cardTop, cardW, 7, 'F');
+        doc.rect(cardLeft, cardTop, CARD_W, HEADER_H, 'F');
         doc.setTextColor(255, 255, 255);
-        doc.setFont('times', 'bold');
-        doc.setFontSize(8.5);
-        doc.text(
-            `${(meta?.schoolName || 'SCHOOL').toUpperCase()} • TRANSCRIPT • ${term || meta?.term || ''}`,
-            cardLeft + 3,
-            cardTop + 4.8
-        );
-        doc.text(`Assessment ${assessmentIndex + 1}`, cardLeft + cardW - 3, cardTop + 4.8, { align: 'right' });
-
-        doc.setTextColor(...PDF_COLORS.text);
         doc.setFont('times', 'bold');
         doc.setFontSize(8);
         doc.text(
+            `${(meta?.schoolName || 'SCHOOL').toUpperCase()} • TRANSCRIPT • ${term || meta?.term || ''}`,
+            cardLeft + 3,
+            cardTop + HEADER_H - 2.2
+        );
+        doc.setFontSize(7.5);
+        doc.text(
+            `Assessment ${assessmentIndex + 1}`,
+            cardLeft + CARD_W - 3,
+            cardTop + HEADER_H - 2.2,
+            { align: 'right' }
+        );
+
+        // Student identity
+        doc.setTextColor(...PDF_COLORS.text);
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.2);
+        const nameY = cardTop + HEADER_H + 4;
+        doc.text(
             `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—',
             cardLeft + 3,
-            cardTop + 11
+            nameY
         );
         doc.setFont('times', 'normal');
         doc.setFontSize(7);
         doc.text(
-            `Adm: ${student.admissionNumber || student.studentId || '—'}   Class: ${student.class || meta?.cls || '—'}`,
+            `Adm: ${student.admissionNumber || student.studentId || '—'}   ` +
+            `Class: ${student.class || meta?.cls || '—'}`,
             cardLeft + 3,
-            cardTop + 15
+            nameY + 4
         );
 
-        const body = subjectList.map(subject => {
+        // Subject table
+        const tableStartY = cardTop + TABLE_TOP_OFFSET;
+        const tableMaxBottom = cardBottom - TABLE_BOTTOM_RESERVE;
+        const bottomMargin = pageHeight - tableMaxBottom;
+
+        const body = subjectList.map((subject) => {
             const list = Array.isArray(student.scores?.[subject]) ? student.scores[subject] : [];
             const score = list[assessmentIndex] ?? list[0] ?? null;
             const avg = student.averages?.[subject] ?? null;
@@ -927,18 +1051,24 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
             ];
         });
 
-        const tableStartY = cardTop + 17;
-        const tableBottomReserve = 10;
-        const tableMaxBottom = cardTop + cardH - tableBottomReserve;
-
         autoTable(doc, {
             startY: tableStartY,
-            margin: { left: cardLeft + 2, right: cardLeft + 2, top: tableStartY, bottom: pageHeight - tableMaxBottom },
+            margin: {
+                left: cardLeft + 2,
+                right: cardLeft + CARD_W - 2,
+                top: tableStartY,
+                bottom: bottomMargin
+            },
             head: [[`Subject`, `A${assessmentIndex + 1}`, 'Avg %', 'CBC', 'Pts']],
             body: body.length ? body : [['No subjects', '—', '—', '—', '—']],
             theme: 'grid',
-            headStyles: { fillColor: PDF_COLORS.primary, fontSize: 6.5, halign: 'center', cellPadding: 0.6 },
-            bodyStyles: { fontSize: 6.5, cellPadding: 0.6 },
+            headStyles: {
+                fillColor: PDF_COLORS.primary,
+                fontSize: tableFontSize,
+                halign: 'center',
+                cellPadding
+            },
+            bodyStyles: { fontSize: tableFontSize, cellPadding },
             columnStyles: {
                 0: { halign: 'left' },
                 1: { halign: 'center' },
@@ -949,17 +1079,95 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
             styles: { overflow: 'linebreak' }
         });
 
-        const overall = student.overallAverage || 0;
-        const og = cbcGrade(overall);
+        // Footer / summary band
+        const summary = buildSummary(student);
+        const footerTop = cardBottom - FOOTER_H + 0.5;
+
+        // Soft divider above summary.
+        doc.setDrawColor(...PDF_COLORS.border);
+        doc.setLineWidth(0.2);
+        doc.line(cardLeft + 2, footerTop, cardLeft + CARD_W - 2, footerTop);
+
         doc.setFont('times', 'bold');
         doc.setFontSize(6.8);
         doc.setTextColor(...PDF_COLORS.primary);
+
+        const colA = cardLeft + 3;
+        const colB = cardLeft + CARD_W * 0.42;
+        const colC = cardLeft + CARD_W * 0.72;
+
+        // Row 1: totals & averages
         doc.text(
-            `Overall: ${overall}%   CBC: ${og.code}   Points: ${og.points != null ? og.points.toFixed(1) : '—'}   Assessed: ${student.assessedCount || 0}/${student.totalSubjects || subjectList.length}`,
-            cardLeft + 3,
-            cardTop + cardH - 3
+            `Total Marks: ${summary.totalMarks}/${summary.totalMax || (subjectList.length * 100)}`,
+            colA,
+            footerTop + 3.2
         );
+        doc.text(
+            `Avg: ${summary.overallAverage}%   CBC: ${summary.grade.code}   Pts: ${summary.grade.points != null ? summary.grade.points.toFixed(1) : '—'}`,
+            colB,
+            footerTop + 3.2
+        );
+        doc.text(
+            `Pos: ${summary.position ?? '—'}/${summary.classSize ?? '—'}`,
+            colC,
+            footerTop + 3.2
+        );
+
+        // Row 2: assessed count, year, current year
+        doc.setFont('times', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(...PDF_COLORS.text);
+        doc.text(
+            `Assessed: ${summary.assessedAtThisIndex}/${subjectCount}`,
+            colA,
+            footerTop + 7.0
+        );
+        doc.text(
+            `Year: ${summary.year}`,
+            colB,
+            footerTop + 7.0
+        );
+        doc.text(
+            `Current Year: ${summary.currentYear}`,
+            colC,
+            footerTop + 7.0
+        );
+
+        // Row 3: overall progress line (small)
+        doc.setFont('times', 'italic');
+        doc.setFontSize(6.2);
+        doc.setTextColor(...PDF_COLORS.gray);
+        doc.text(
+            `Overall progress for ${term || meta?.term || 'this term'}: ${summary.overallAverage}% (${summary.grade.label})`,
+            colA,
+            footerTop + 11.0
+        );
+    };
+
+    // ---- Iterate pages / students ----
+    students.forEach((student, idx) => {
+        const slot = idx % PER_PAGE;
+        if (idx > 0 && slot === 0) doc.addPage();
+
+        const cardTop = PRINT_TOP + slot * CARD_H;
+
+        drawCard(student, cardTop);
+
+        // Crop marks on every card
+        drawCropMarks(cardTop, cardTop + CARD_H);
+
+        // Inter-card dashed cut guide (skip above the first card; the
+        // bottom edge of the last card gets its own crop mark).
+        if (slot > 0) drawHorizontalCut(cardTop);
     });
+
+    // Vertical cut guide on every page — drawn last so it doesn't
+    // get overwritten by subsequent cards.
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p += 1) {
+        doc.setPage(p);
+        drawVerticalCut();
+    }
 
     const safeTerm = String(term || meta?.term || 'Term').replace(/\s+/g, '_');
     return saveGeneratedPdf(
