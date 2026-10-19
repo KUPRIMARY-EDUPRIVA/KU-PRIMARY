@@ -2,9 +2,26 @@
 import React, { useState } from 'react';
 import { validatePaperConfig } from '../../utils/constants';
 
-export default function PaperConfigModal({ subject, level, initialPapers = [], onSave, onClose }) {
+/**
+ * Configure multi-paper subjects.
+ *
+ * The `showBranchesOnReport` toggle controls whether the individual papers
+ * (branches) are printed on the report form as indented sub-rows under the
+ * subject. Only the subject total is ever graded.
+ */
+export default function PaperConfigModal({
+    subject,
+    level,
+    initialPapers = [],
+    initialShowBranchesOnReport = false,
+    onSave,
+    onClose,
+}) {
     const [papers, setPapers] = useState(
         initialPapers.length > 0 ? initialPapers.map(p => ({ ...p })) : []
+    );
+    const [showBranchesOnReport, setShowBranchesOnReport] = useState(
+        !!initialShowBranchesOnReport
     );
 
     const addPaper = () => {
@@ -39,6 +56,24 @@ export default function PaperConfigModal({ subject, level, initialPapers = [], o
                 <p style={{ fontSize: 13, color: 'var(--gray)', marginBottom: 16 }}>
                     Leave empty for a single-paper subject. Add one row per paper; weights must sum to <strong>100%</strong>.
                 </p>
+
+                {/* Report display toggle */}
+                <label style={toggleRowStyle}>
+                    <input
+                        type="checkbox"
+                        checked={showBranchesOnReport}
+                        onChange={(e) => setShowBranchesOnReport(e.target.checked)}
+                        style={{ width: 18, height: 18, accentColor: 'var(--primary)' }}
+                    />
+                    <span>
+                        <strong>Show branches on report form</strong>
+                        <span style={toggleSubStyle}>
+                            When enabled, each paper appears as an indented sub-row under
+                            the subject on the printed report form, followed by the
+                            subject total. Only the subject total is graded.
+                        </span>
+                    </span>
+                </label>
 
                 {papers.length > 0 && (
                     <div style={{ display: 'grid', gap: 8 }}>
@@ -97,7 +132,10 @@ export default function PaperConfigModal({ subject, level, initialPapers = [], o
                 <div style={modalFooter}>
                     <button onClick={onClose} style={cancelBtn}>Cancel</button>
                     <button
-                        onClick={() => onSave(papers)}
+                        onClick={() => onSave({
+                            papers,
+                            showBranchesOnReport: !!showBranchesOnReport,
+                        })}
                         disabled={!valid}
                         style={{ ...saveBtn, opacity: valid ? 1 : 0.5, cursor: valid ? 'pointer' : 'not-allowed' }}
                     >
@@ -117,3 +155,14 @@ const addBtn = { padding: '8px 14px', background: '#eef2ff', color: '#3730a3', b
 const modalFooter = { display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' };
 const cancelBtn = { padding: '10px 18px', background: 'transparent', border: '2px solid var(--border)', borderRadius: 8, fontWeight: 600, cursor: 'pointer', color: 'var(--secondary)' };
 const saveBtn = { padding: '10px 18px', background: 'var(--primary)', color: 'white', border: 'none', borderRadius: 8, fontWeight: 600 };
+const toggleRowStyle = {
+    display: 'flex', alignItems: 'flex-start', gap: 10,
+    padding: 12, background: '#f8fafc',
+    border: '1px solid var(--border)', borderRadius: 10,
+    cursor: 'pointer', fontWeight: 600, color: 'var(--secondary)',
+    marginBottom: 16,
+};
+const toggleSubStyle = {
+    display: 'block', fontSize: 12, fontWeight: 400,
+    color: 'var(--gray)', marginTop: 3, lineHeight: 1.5,
+};
