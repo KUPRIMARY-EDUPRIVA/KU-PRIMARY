@@ -49,17 +49,32 @@ const SAMPLE_STUDENT = {
     },
 };
 
-// ----------------------------------------------------------------
-// Resolve the class list for a level. Custom classes from SchoolContext
-// win; built-in LEVEL_CLASSES is only a fallback for schools that haven't
-// configured custom classes yet. Mirrors the logic in Students.jsx.
-// ----------------------------------------------------------------
+// Roles that count as "head teacher / principal" at the school level.
+// Keep this list in sync with src/utils/roles.js and SchoolProfile.jsx.
+const HEAD_TEACHER_ROLES = ['headteacher', 'principal'];
+
 const resolveClassList = (level, getLevelClassesFn) => {
     if (!level) return [];
     const custom = getLevelClassesFn ? getLevelClassesFn(level) : null;
     if (Array.isArray(custom) && custom.length > 0) return custom;
     return LEVEL_CLASSES[level] || [];
 };
+
+// ----------------------------------------------------------------
+// Resolve a user's display name across the various shapes a user
+// document can take.
+// ----------------------------------------------------------------
+function userDisplayName(u) {
+    if (!u) return '';
+    const direct = `${u.firstName || ''} ${u.lastName || ''}`.trim();
+    if (direct) return direct;
+    if (typeof u.fullName === 'string' && u.fullName.trim()) return u.fullName.trim();
+    if (typeof u.name === 'string' && u.name.trim()) return u.name.trim();
+    if (typeof u.email === 'string' && u.email.includes('@')) {
+        return u.email.split('@')[0];
+    }
+    return '';
+}
 
 export default function StudentReports() {
     const { userData } = useAuth();
@@ -77,13 +92,9 @@ export default function StudentReports() {
     const [previewStudent, setPreviewStudent] = useState(null);
     const [previewAssessment, setPreviewAssessment] = useState(0);
 
-    // Raw paper configs from Firestore, per subject.
-    // Shape: { subject: { papers: [...], showBranchesOnReport: boolean } }
     const [paperConfigsRaw, setPaperConfigsRaw] = useState({});
-
-    // Class teacher for the currently selected class (resolved from
-    // schoolData.classTeachers → users collection).
     const [classTeacherName, setClassTeacherName] = useState('');
+    const [headTeacherName, setHeadTeacherName] = useState('');
 
     // ------------------------------------------------------------------
     // ALL HOOKS MUST RUN UNCONDITIONALLY, IN THE SAME ORDER, EVERY RENDER.
@@ -105,8 +116,14 @@ export default function StudentReports() {
         schoolEmail: userData?.schoolEmail || schoolData?.email || '',
         website: userData?.website || schoolData?.website || '',
         schoolCode: userData?.schoolCode || schoolData?.schoolCode || '',
+        // Branding used by PDF report forms:
+        // uploaded stamp and principal signature (transparent PNG).
         schoolStamp: userData?.schoolStamp || schoolData?.stampUrl || '',
-        principalSignature: userData?.principalSignature || schoolData?.principalSignatureUrl || '',
+        principalSignature:
+            userData?.principalSignature
+            || schoolData?.principalSignatureUrl
+            || '',
+        // Kept for legacy callers; also used as a head-teacher fallback.
         principalName: userData?.principalName || schoolData?.principalName || '',
         currentTermStart: schoolData?.termStart || userData?.currentTermStart || '',
         currentTermEnd: schoolData?.currentTermEnd || userData?.currentTermEnd || '',
@@ -125,9 +142,6 @@ export default function StudentReports() {
         showAppNotice(message, type);
     }, []);
 
-    // Only subjects whose "show branches on report" toggle is on AND that
-    // have at least one paper configured. The PDF function renders a
-    // sub-row for each paper it receives.
     const paperConfigBySubject = useMemo(() => {
         const out = {};
         Object.entries(paperConfigsRaw).forEach(([subject, cfg]) => {
@@ -150,14 +164,22 @@ export default function StudentReports() {
         cls: selectedClass,
         term: `Term ${selectedTerm}`,
         year: new Date().getFullYear(),
-        // Class teacher name (resolved per class) with a fallback to the
-        // school-level value, so the report header always has a value.
-        classTeacherName: classTeacherName || schoolBranding.principalName || '',
-        // Head teacher / principal (as stored in the school profile).
-        principalName: schoolBranding.principalName || '',
-        // Subjects whose branches should be printed on the report form.
+        // Class teacher for the currently selected class.
+        classTeacherName: classTeacherName || '',
+        // Head teacher / principal — role-resolved from the users
+        // collection (see useHeadTeacher below), with a fallback to
+        // whatever was stored on the school document.
+        headTeacherName: headTeacherName || schoolBranding.principalName || '',
+        principalName: headTeacherName || schoolBranding.principalName || '',
+        // Branding URLs consumed by downloadClassReportForms:
+        stampUrl: schoolBranding.schoolStamp || '',
+        principalSignatureUrl: schoolBranding.principalSignature || '',
+        // Branch rows
         paperConfigBySubject,
-    }), [schoolBranding, selectedLevel, selectedClass, selectedTerm, classTeacherName, paperConfigBySubject]);
+    }), [
+        schoolBranding, selectedLevel, selectedClass, selectedTerm,
+        classTeacherName, headTeacherName, paperConfigBySubject,
+    ]);
 
     // ---- Load paper configs for the selected level ----
     useEffect(() => {
@@ -197,15 +219,19 @@ export default function StudentReports() {
                 const map = schoolData?.classTeachers || {};
                 const teacherUid = map[selectedClass];
                 if (!teacherUid) { setClassTeacherName(''); return; }
-                const snap = await getDocs(query(
-                    collection(db, 'users'),
-                    where('uid', '==', teacherUid)
-                ));
+                // Users documents may key by `uid`, `id`, or `userId`.
+                const snaps = await Promise.all([
+                    getDocs(query(collection(db, 'users'), where('uid', '==', teacherUid), limit(1))),
+                ]);
                 if (cancelled) return;
-                const d0 = snap.docs[0];
-                if (d0) {
-                    const t = d0.data();
-                    setClassTeacherName(`${t.firstName || ''} ${t.lastName || ''}`.trim());
+                let doc = snaps[0].docs[0];
+                if (!doc) {
+                    const alt = await getDocs(query(collection(db, 'users'), where('id', '==', teacherUid), limit(1)));
+                    if (cancelled) return;
+                    doc = alt.docs[0];
+                }
+                if (doc) {
+                    setClassTeacherName(userDisplayName(doc.data()));
                 } else {
                     setClassTeacherName('');
                 }
@@ -216,6 +242,36 @@ export default function StudentReports() {
         resolve();
         return () => { cancelled = true; };
     }, [selectedClass, schoolData?.classTeachers, userData?.schoolId]);
+
+    // ---- Resolve head teacher / principal for the school ----
+    // Mirrors SchoolProfile.jsx: query users by role ∈ HEAD_TEACHER_ROLES.
+    useEffect(() => {
+        let cancelled = false;
+        async function resolve() {
+            const schoolId = userData?.schoolId;
+            if (!schoolId) { setHeadTeacherName(''); return; }
+            try {
+                const snap = await getDocs(query(
+                    collection(db, 'users'),
+                    where('schoolId', '==', schoolId),
+                    where('role', 'in', HEAD_TEACHER_ROLES),
+                    limit(1)
+                ));
+                if (cancelled) return;
+                if (!snap.empty) {
+                    setHeadTeacherName(userDisplayName(snap.docs[0].data()));
+                } else {
+                    // Fallback: whatever is on the school document.
+                    setHeadTeacherName(schoolData?.principalName || '');
+                }
+            } catch (e) {
+                console.warn('Could not resolve head teacher:', e?.message || e);
+                if (!cancelled) setHeadTeacherName(schoolData?.principalName || '');
+            }
+        }
+        resolve();
+        return () => { cancelled = true; };
+    }, [userData?.schoolId, schoolData?.principalName]);
 
     // ---- Load students ----
     const loadStudents = useCallback(async () => {
@@ -253,7 +309,6 @@ export default function StudentReports() {
                 limit(MAX_SCORES)
             ));
 
-            // Bucket scores per student, per subject, per assessment index.
             const bucket = new Map();
             scoresSnap.forEach((d) => {
                 const s = d.data();
@@ -320,8 +375,6 @@ export default function StudentReports() {
                 };
             });
 
-            // Compute per-class rank by overall average (descending).
-            // Ties get the same rank (standard competition ranking).
             const ranked = [...enriched].sort(
                 (a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)
             );
@@ -454,7 +507,10 @@ export default function StudentReports() {
                     cls: 'Grade 7', term: 'Term 2',
                     year: new Date().getFullYear(),
                     classTeacherName: '',
+                    headTeacherName: '',
                     principalName: '',
+                    stampUrl: schoolBranding.schoolStamp || '',
+                    principalSignatureUrl: schoolBranding.principalSignature || '',
                     paperConfigBySubject: {},
                 },
                 subjects: SAMPLE_SUBJECTS,
@@ -538,7 +594,6 @@ export default function StudentReports() {
                 </div>
 
                 <div style={actionGridStyle}>
-                    {/* Transcripts — 3 buttons */}
                     <DocButton
                         icon="fa-file-alt"
                         title="Transcript — Assessment 1"
@@ -564,7 +619,6 @@ export default function StudentReports() {
                         color="#d35400"
                     />
 
-                    {/* Report form — full page */}
                     <DocButton
                         icon="fa-file-alt"
                         title="Report Form — All 3 Assessments"
@@ -795,7 +849,6 @@ function PreviewModal({
     return (
         <div onClick={(e) => e.target === e.currentTarget && onClose()} style={overlayStyle}>
             <div style={modalStyle}>
-                {/* Header */}
                 <div style={modalHeaderStyle}>
                     <div>
                         <div style={{ fontSize: 12, color: '#bdc3c7', fontWeight: 600, letterSpacing: 0.5 }}>
@@ -810,7 +863,6 @@ function PreviewModal({
                     </button>
                 </div>
 
-                {/* Assessment tabs */}
                 <div style={tabBarStyle}>
                     {ASSESSMENTS.map((a) => (
                         <button key={a.index}
@@ -825,7 +877,6 @@ function PreviewModal({
                     ))}
                 </div>
 
-                {/* Info grid */}
                 <div style={infoGridStyle}>
                     <InfoCell label="Admission">{student.admissionNumber || student.studentId || '—'}</InfoCell>
                     <InfoCell label="Class">{student.class || meta.cls}</InfoCell>
@@ -843,7 +894,6 @@ function PreviewModal({
                     </InfoCell>
                 </div>
 
-                {/* Table */}
                 <div style={{ overflowX: 'auto' }}>
                     <table style={tableStyle}>
                         <thead>
@@ -889,7 +939,6 @@ function PreviewModal({
                     </table>
                 </div>
 
-                {/* Actions */}
                 <div style={modalFooterStyle}>
                     <button onClick={onClose} style={ghostBtn}>Close</button>
                     <button onClick={onDownloadTranscript} disabled={generating}
