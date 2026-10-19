@@ -181,7 +181,7 @@ function computeAssessmentAverages(student, subjects, activeIndices) {
 }
 
 // ============================================================
-// Header
+// Header — measured so nothing overlaps and text aligns cleanly
 // ============================================================
 async function addBranding(doc, meta) {
     const logoUrl = meta?.schoolLogo || meta?.logoUrl || meta?.logo || '';
@@ -200,8 +200,8 @@ async function addBranding(doc, meta) {
     let hasLogo = false;
     if (logoUrl) {
         try {
-            // jsPDF can accept a URL for jpg/png
-            const ext = String(logoUrl).toLowerCase().endsWith('.jpg') || String(logoUrl).toLowerCase().endsWith('.jpeg')
+            const ext = String(logoUrl).toLowerCase().endsWith('.jpg')
+                || String(logoUrl).toLowerCase().endsWith('.jpeg')
                 ? 'JPEG'
                 : 'PNG';
             doc.addImage(logoUrl, ext, MARGIN_X, HEADER_TOP, LOGO_SIZE, LOGO_SIZE, undefined, 'FAST');
@@ -212,17 +212,20 @@ async function addBranding(doc, meta) {
         }
     }
 
+    // Aligned text block: starts at the left margin when no logo, or to the
+    // right of the logo when a logo is present.
     const textX = hasLogo ? MARGIN_X + LOGO_SIZE + 6 : MARGIN_X;
     const textW = hasLogo ? CONTENT_W - LOGO_SIZE - 6 : CONTENT_W;
+    const textCentre = textX + textW / 2;
 
     // School name
-    doc.setTextColor(...HEX_TO_RGB(HEADER_BLUE_HEX));
     doc.setFont('times', 'bold');
-    doc.setFontSize(16);
+    doc.setFontSize(15);
+    doc.setTextColor(...HEX_TO_RGB(HEADER_BLUE_HEX));
     doc.text(schoolName, textX, HEADER_TOP + 6, { maxWidth: textW });
+    let cy = HEADER_TOP + 12;
 
     // Motto
-    let cy = HEADER_TOP + 12;
     if (motto) {
         doc.setFont('times', 'italic');
         doc.setFontSize(9);
@@ -231,7 +234,7 @@ async function addBranding(doc, meta) {
         cy += 5;
     }
 
-    // Contact stack
+    // Contact stack — left aligned under the school name
     doc.setFont('times', 'normal');
     doc.setFontSize(8);
     doc.setTextColor(51, 51, 51);
@@ -253,7 +256,7 @@ async function addBranding(doc, meta) {
     doc.setLineWidth(0.6);
     doc.line(MARGIN_X, ruleY, MARGIN_X + CONTENT_W, ruleY);
 
-    return ruleY + 4;
+    return { bottom: ruleY + 4, textX, textW, textCentre };
 }
 
 function HEX_TO_RGB(hex) {
@@ -290,7 +293,6 @@ function drawTermInfoTable(doc, startY, meta, classTeacherName, principalName) {
         ],
     ];
 
-    // Header strip
     doc.setFillColor(238, 242, 255);
     doc.setTextColor(0, 0, 0);
     doc.setFont('times', 'bold');
@@ -303,7 +305,6 @@ function drawTermInfoTable(doc, startY, meta, classTeacherName, principalName) {
 
     let y = startY + ROW_H;
     rows.forEach((row, idx) => {
-        // Row background
         if (idx % 2 === 1) {
             doc.setFillColor(250, 251, 254);
             doc.rect(MARGIN_X, y, CONTENT_W, ROW_H, 'F');
@@ -311,7 +312,6 @@ function drawTermInfoTable(doc, startY, meta, classTeacherName, principalName) {
         doc.setDrawColor(204, 204, 204);
         doc.setLineWidth(0.2);
         doc.rect(MARGIN_X, y, CONTENT_W, ROW_H);
-        // Middle divider
         doc.line(MARGIN_X + COL_W, y, MARGIN_X + COL_W, y + ROW_H);
 
         const drawCell = (cellX, cell, cellW) => {
@@ -334,7 +334,6 @@ function drawTermInfoTable(doc, startY, meta, classTeacherName, principalName) {
         y += ROW_H;
     });
 
-    // Outer border
     doc.setDrawColor(0, 0, 0);
     doc.setLineWidth(0.6);
     doc.rect(MARGIN_X, startY, CONTENT_W, y - startY);
@@ -358,21 +357,24 @@ export async function exportIndividualStudentReport(
     const CONTENT_W = 190;
     const PAGE_H = doc.internal.pageSize.getHeight();
 
-    // Paper config map: { subject: [{ name, weight }] } — only subjects
-    // whose "show branches on report" toggle is on.
     const paperConfigBySubject = meta?.paperConfigBySubject || {};
-
     const classTeacherName = meta?.classTeacherName || '—';
     const principalName = meta?.principalName || '—';
 
-    // Letterhead header
-    let y = await addBranding(doc, meta);
+    // ---- Letterhead header ----
+    const header = await addBranding(doc, meta);
+    let y = header.bottom;
 
-    // Title
+    // ---- Title ----
     doc.setFont('times', 'bold');
     doc.setFontSize(12);
     doc.setTextColor(0, 0, 0);
-    doc.text(`${(term || 'TERM').toUpperCase()} - ${meta?.year || new Date().getFullYear()}`, MARGIN_X + CONTENT_W / 2, y + 4, { align: 'center' });
+    doc.text(
+        `${(term || 'TERM').toUpperCase()} - ${meta?.year || new Date().getFullYear()}`,
+        MARGIN_X + CONTENT_W / 2,
+        y + 4,
+        { align: 'center' }
+    );
     y += 6;
 
     doc.setFont('times', 'bold');
@@ -380,16 +382,22 @@ export async function exportIndividualStudentReport(
     doc.text('MID TERM', MARGIN_X + CONTENT_W / 2, y, { align: 'center' });
     y += 5;
 
+    // ---- Student identity line (single occurrence) ----
     const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
     const admissionNo = student.admissionNumber || student.studentId || '—';
     const grade = student.class || meta?.cls || '—';
 
+    doc.setFont('times', 'bold');
     doc.setFontSize(9.5);
-    doc.text(`Student: ${fullName}  |  Adm No: ${admissionNo}  |  Grade: ${grade}`,
-        MARGIN_X + CONTENT_W / 2, y, { align: 'center' });
-    y += 5;
+    doc.text(
+        `Student: ${fullName}   |   Adm No: ${admissionNo}   |   Grade: ${grade}`,
+        MARGIN_X + CONTENT_W / 2,
+        y,
+        { align: 'center' }
+    );
+    y += 4;
 
-    // Compute rows and totals
+    // ---- Compute rows and totals ----
     const subjectRows = computeSubjectRows(student, subjects);
     const assessed = subjectRows.filter((r) => r.average != null);
     const assessedCount = assessed.length;
@@ -400,25 +408,12 @@ export async function exportIndividualStudentReport(
     const totalMarks = assessedCount * 100;
     const totalScore = assessed.reduce((s, r) => s + (r.average || 0), 0);
     const totalPoints = assessed.reduce((s, r) => s + (r.cbc.points || 0), 0);
-    const avgPoints = assessedCount > 0 ? (totalPoints / assessedCount).toFixed(1) : '—';
     const overall = cbcGrade(assessedCount > 0 ? meanScore : null);
 
-    // Active assessment indices for this student
     const activeIndices = detectActiveAssessmentIndices(student);
     const assessmentAverages = computeAssessmentAverages(student, subjects, activeIndices);
 
-    // Marks line
-    doc.setFont('times', 'bold');
-    doc.setFontSize(8.5);
-    doc.text(
-        `Marks: ${totalScore}/${totalMarks}  |  Avg: ${meanScore.toFixed(2)}/100  |  ` +
-        `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}  |  ` +
-        `Grade: ${overall.code === 'NA' ? '—' : overall.code}`,
-        MARGIN_X + CONTENT_W / 2, y, { align: 'center' }
-    );
-    y += 4;
-
-    // Build table columns dynamically — per-student assessments only
+    // ---- Score table (built dynamically) ----
     const head = ['Learning Area', ...activeIndices.map((i) => `A${i + 1}`), 'Avg', 'P.L', 'Points', 'Remark'];
     const columnStyles = {
         0: { halign: 'left', cellWidth: 45 },
@@ -431,7 +426,6 @@ export async function exportIndividualStudentReport(
     columnStyles[activeIndices.length + 2] = { halign: 'center', cellWidth: 12 };
     columnStyles[activeIndices.length + 3] = { halign: 'center', cellWidth: 14 };
 
-    // Build body — one row per subject, plus branch rows if configured
     const body = [];
     subjectRows.forEach((row) => {
         const subjectPapers = Array.isArray(paperConfigBySubject[row.subject])
@@ -491,17 +485,32 @@ export async function exportIndividualStudentReport(
         margin: { left: MARGIN_X, right: MARGIN_X },
     });
 
-    y = doc.lastAutoTable.finalY + 4;
+    y = doc.lastAutoTable.finalY + 3;
 
-    // ---- Class Teacher remark ----
+    // ---- Marks summary line — AFTER the score table ----
+    doc.setFont('times', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(
+        `Marks: ${totalScore}/${totalMarks}   |   ` +
+        `Avg: ${meanScore.toFixed(2)}/100   |   ` +
+        `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}   |   ` +
+        `Grade: ${overall.code === 'NA' ? '—' : overall.code}`,
+        MARGIN_X + CONTENT_W / 2,
+        y + 4,
+        { align: 'center' }
+    );
+    y += 8;
+
+    // ---- Class Teacher remark (once) ----
     const teacherComment = (student.teacherComment && String(student.teacherComment).trim())
         || buildClassTeacherComment({ meanScore, assessedCount, totalSubjects, subjectRows });
 
     doc.setFont('times', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(0, 0, 0);
-    doc.text(`CLASS TEACHER: ${classTeacherName}`, MARGIN_X, y + 4);
-    y += 6;
+    doc.text(`CLASS TEACHER: ${classTeacherName}`, MARGIN_X, y);
+    y += 5;
 
     doc.setFont('times', 'bold');
     doc.setFontSize(8.5);
@@ -511,7 +520,6 @@ export async function exportIndividualStudentReport(
     doc.text(teacherLines, MARGIN_X + 18, y);
     y += teacherLines.length * 4 + 2;
 
-    // Signature line
     doc.setDrawColor(51, 51, 51);
     doc.setLineWidth(0.4);
     doc.line(MARGIN_X, y + 4, MARGIN_X + 50, y + 4);
@@ -521,7 +529,7 @@ export async function exportIndividualStudentReport(
     doc.text('Signature / Date', MARGIN_X, y + 7);
     y += 11;
 
-    // ---- Head Teacher remark ----
+    // ---- Head Teacher remark (once) ----
     const headTeacherComment = (student.principalComment && String(student.principalComment).trim())
         || buildHeadTeacherComment({ meanScore, assessedCount, totalSubjects, subjectRows, student });
 
@@ -539,7 +547,6 @@ export async function exportIndividualStudentReport(
     doc.text(headTeacherLines, MARGIN_X + 18, y);
     y += headTeacherLines.length * 4 + 2;
 
-    // Signature line
     doc.setDrawColor(51, 51, 51);
     doc.setLineWidth(0.4);
     doc.line(MARGIN_X, y + 4, MARGIN_X + 50, y + 4);
@@ -553,7 +560,6 @@ export async function exportIndividualStudentReport(
     y = drawTermInfoTable(doc, y, meta || {}, classTeacherName, principalName);
 
     // ---- Bar chart of per-assessment averages ----
-    // Only show when there is room on the page.
     const chartH = 22;
     if (y + chartH + 15 < PAGE_H - 20) {
         const chartW = CONTENT_W * 0.55;
@@ -582,12 +588,10 @@ export async function exportIndividualStudentReport(
             doc.text(` - ${item.label}`, chartX + chartW + 6 + 7, ly);
         });
 
-        // Bars
         const count = Math.max(assessmentAverages.length, 1);
         const gap = 4;
         const barW = (chartW - gap * (count - 1)) / count;
 
-        // baseline
         doc.setDrawColor(153, 153, 153);
         doc.setLineWidth(0.2);
         doc.line(chartX, chartTop + chartH, chartX + chartW, chartTop + chartH);
