@@ -16,6 +16,7 @@ import {
     downloadStudentReportForm,
 } from '../services/pdf';
 import { loadStudentRoster } from '../services/studentRosterService';
+import { getAllPaperConfigsForLevel } from '../services/firestore';
 
 const MAX_STUDENTS = 500;
 const MAX_SCORES = 4000;
@@ -62,7 +63,7 @@ const resolveClassList = (level, getLevelClassesFn) => {
 
 export default function StudentReports() {
     const { userData } = useAuth();
-    const { getLevelClasses } = useSchool();
+    const { getLevelClasses, schoolData } = useSchool();
 
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
@@ -76,6 +77,14 @@ export default function StudentReports() {
     const [previewStudent, setPreviewStudent] = useState(null);
     const [previewAssessment, setPreviewAssessment] = useState(0);
 
+    // Raw paper configs from Firestore, per subject.
+    // Shape: { subject: { papers: [...], showBranchesOnReport: boolean } }
+    const [paperConfigsRaw, setPaperConfigsRaw] = useState({});
+
+    // Class teacher for the currently selected class (resolved from
+    // schoolData.classTeachers → users collection).
+    const [classTeacherName, setClassTeacherName] = useState('');
+
     // ------------------------------------------------------------------
     // ALL HOOKS MUST RUN UNCONDITIONALLY, IN THE SAME ORDER, EVERY RENDER.
     // No early returns above this point.
@@ -88,23 +97,22 @@ export default function StudentReports() {
     );
 
     const schoolBranding = useMemo(() => ({
-        schoolName: userData?.schoolName || 'EDUPRIVA',
-        schoolMotto: userData?.schoolMotto || 'Powering Modern Education',
-        schoolLogo: userData?.schoolLogo || '',
-        schoolAddress: userData?.schoolAddress || '',
-        schoolPhone: userData?.schoolPhone || '',
-        schoolEmail: userData?.schoolEmail || '',
-        website: userData?.website || '',
-        schoolCode: userData?.schoolCode || '',
-        schoolStamp: userData?.schoolStamp || '',
-        principalSignature: userData?.principalSignature || '',
-        principalName: userData?.principalName || '',
-        classTeacherName: userData?.classTeacherName || '',
-        currentTermStart: userData?.currentTermStart || '',
-        currentTermEnd: userData?.currentTermEnd || '',
-        nextTermStart: userData?.nextTermStart || '',
+        schoolName: userData?.schoolName || schoolData?.schoolName || 'EDUPRIVA',
+        schoolMotto: userData?.schoolMotto || schoolData?.motto || 'Powering Modern Education',
+        schoolLogo: userData?.schoolLogo || schoolData?.logoUrl || '',
+        schoolAddress: userData?.schoolAddress || schoolData?.address || '',
+        schoolPhone: userData?.schoolPhone || schoolData?.phone || '',
+        schoolEmail: userData?.schoolEmail || schoolData?.email || '',
+        website: userData?.website || schoolData?.website || '',
+        schoolCode: userData?.schoolCode || schoolData?.schoolCode || '',
+        schoolStamp: userData?.schoolStamp || schoolData?.stampUrl || '',
+        principalSignature: userData?.principalSignature || schoolData?.principalSignatureUrl || '',
+        principalName: userData?.principalName || schoolData?.principalName || '',
+        currentTermStart: schoolData?.termStart || userData?.currentTermStart || '',
+        currentTermEnd: schoolData?.currentTermEnd || userData?.currentTermEnd || '',
+        nextTermStart: schoolData?.nextTermStart || userData?.nextTermStart || '',
         year: new Date().getFullYear(),
-    }), [userData]);
+    }), [userData, schoolData]);
 
     const sortedStudents = useMemo(
         () => [...students].sort((a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)),
@@ -117,6 +125,24 @@ export default function StudentReports() {
         showAppNotice(message, type);
     }, []);
 
+    // Only subjects whose "show branches on report" toggle is on AND that
+    // have at least one paper configured. The PDF function renders a
+    // sub-row for each paper it receives.
+    const paperConfigBySubject = useMemo(() => {
+        const out = {};
+        Object.entries(paperConfigsRaw).forEach(([subject, cfg]) => {
+            if (
+                cfg &&
+                cfg.showBranchesOnReport &&
+                Array.isArray(cfg.papers) &&
+                cfg.papers.length > 0
+            ) {
+                out[subject] = cfg.papers;
+            }
+        });
+        return out;
+    }, [paperConfigsRaw]);
+
     const buildMeta = useCallback(() => ({
         ...schoolBranding,
         level: selectedLevel,
@@ -124,7 +150,72 @@ export default function StudentReports() {
         cls: selectedClass,
         term: `Term ${selectedTerm}`,
         year: new Date().getFullYear(),
-    }), [schoolBranding, selectedLevel, selectedClass, selectedTerm]);
+        // Class teacher name (resolved per class) with a fallback to the
+        // school-level value, so the report header always has a value.
+        classTeacherName: classTeacherName || schoolBranding.principalName || '',
+        // Head teacher / principal (as stored in the school profile).
+        principalName: schoolBranding.principalName || '',
+        // Subjects whose branches should be printed on the report form.
+        paperConfigBySubject,
+    }), [schoolBranding, selectedLevel, selectedClass, selectedTerm, classTeacherName, paperConfigBySubject]);
+
+    // ---- Load paper configs for the selected level ----
+    useEffect(() => {
+        let cancelled = false;
+        const schoolId = userData?.schoolId;
+        if (!schoolId || !selectedLevel) { setPaperConfigsRaw({}); return; }
+        (async () => {
+            try {
+                const raw = (await getAllPaperConfigsForLevel(schoolId, selectedLevel)) || {};
+                const normalised = {};
+                Object.entries(raw).forEach(([subject, val]) => {
+                    if (Array.isArray(val)) {
+                        normalised[subject] = { papers: val, showBranchesOnReport: false };
+                    } else if (val && typeof val === 'object') {
+                        normalised[subject] = {
+                            papers: Array.isArray(val.papers) ? val.papers : [],
+                            showBranchesOnReport: !!val.showBranchesOnReport,
+                        };
+                    }
+                });
+                if (!cancelled) setPaperConfigsRaw(normalised);
+            } catch (e) {
+                console.warn('Failed to load paper configs:', e);
+                if (!cancelled) setPaperConfigsRaw({});
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [userData?.schoolId, selectedLevel]);
+
+    // ---- Resolve class teacher name for the currently selected class ----
+    useEffect(() => {
+        let cancelled = false;
+        async function resolve() {
+            const schoolId = userData?.schoolId;
+            if (!schoolId || !selectedClass) { setClassTeacherName(''); return; }
+            try {
+                const map = schoolData?.classTeachers || {};
+                const teacherUid = map[selectedClass];
+                if (!teacherUid) { setClassTeacherName(''); return; }
+                const snap = await getDocs(query(
+                    collection(db, 'users'),
+                    where('uid', '==', teacherUid)
+                ));
+                if (cancelled) return;
+                const d0 = snap.docs[0];
+                if (d0) {
+                    const t = d0.data();
+                    setClassTeacherName(`${t.firstName || ''} ${t.lastName || ''}`.trim());
+                } else {
+                    setClassTeacherName('');
+                }
+            } catch (e) {
+                console.warn('Could not resolve class teacher:', e?.message || e);
+            }
+        }
+        resolve();
+        return () => { cancelled = true; };
+    }, [selectedClass, schoolData?.classTeachers, userData?.schoolId]);
 
     // ---- Load students ----
     const loadStudents = useCallback(async () => {
@@ -162,28 +253,53 @@ export default function StudentReports() {
                 limit(MAX_SCORES)
             ));
 
+            // Bucket scores per student, per subject, per assessment index.
             const bucket = new Map();
             scoresSnap.forEach((d) => {
                 const s = d.data();
                 if (!s.studentId || !s.subject) return;
                 if (!bucket.has(s.studentId)) bucket.set(s.studentId, new Map());
                 const bySubj = bucket.get(s.studentId);
-                if (!bySubj.has(s.subject)) bySubj.set(s.subject, []);
-                bySubj.get(s.subject).push(Number(s.score) || 0);
+                if (!bySubj.has(s.subject)) {
+                    bySubj.set(s.subject, {
+                        assessmentScores: [null, null, null],
+                        papers: {},
+                    });
+                }
+                const entry = bySubj.get(s.subject);
+                const aType = String(s.assessmentType || '');
+                const match = aType.match(/Assessment\s+(\d+)/i);
+                const idx = match ? parseInt(match[1], 10) - 1 : null;
+                if (idx != null && idx >= 0 && idx < 3) {
+                    const val = s.computedPercentage != null ? s.computedPercentage : s.score;
+                    entry.assessmentScores[idx] = Number.isFinite(Number(val)) ? Number(val) : null;
+                }
+                if (s.papers && typeof s.papers === 'object') {
+                    Object.assign(entry.papers, s.papers);
+                }
             });
 
             const enriched = studentsData.map((student) => {
                 const bySubj = bucket.get(student.id) || new Map();
                 const scores = {};
                 const averages = {};
+                const papersBySubject = {};
                 let sumOfAverages = 0;
                 let assessedCount = 0;
 
                 subjects.forEach((subject) => {
-                    const list = bySubj.get(subject) || [];
-                    scores[subject] = list;
-                    if (list.length > 0) {
-                        const avg = Math.round(list.reduce((a, b) => a + b, 0) / list.length);
+                    const entry = bySubj.get(subject);
+                    if (!entry) {
+                        scores[subject] = [null, null, null];
+                        averages[subject] = null;
+                        papersBySubject[subject] = {};
+                        return;
+                    }
+                    scores[subject] = entry.assessmentScores;
+                    papersBySubject[subject] = entry.papers || {};
+                    const valid = entry.assessmentScores.filter((v) => v != null);
+                    if (valid.length > 0) {
+                        const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
                         averages[subject] = avg;
                         sumOfAverages += avg;
                         assessedCount++;
@@ -197,6 +313,7 @@ export default function StudentReports() {
 
                 return {
                     ...student, scores, averages,
+                    papersBySubject,
                     assessedCount,
                     totalSubjects: subjects.length,
                     overallAverage: meanOfAssessed,
@@ -336,6 +453,9 @@ export default function StudentReports() {
                     levelDisplay: 'Junior School',
                     cls: 'Grade 7', term: 'Term 2',
                     year: new Date().getFullYear(),
+                    classTeacherName: '',
+                    principalName: '',
+                    paperConfigBySubject: {},
                 },
                 subjects: SAMPLE_SUBJECTS,
                 term: 'Term 2',
