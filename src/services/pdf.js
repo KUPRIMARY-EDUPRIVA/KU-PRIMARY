@@ -598,9 +598,6 @@ export async function downloadStudentInvoicePDF(invoice, school) {
 // CBC STUDENT REPORTS — consumed by src/pages/StudentReports.jsx
 // ============================================================
 
-// Aligned with the canonical key in src/utils/constants.js and
-// netlify/functions/generate-student-report.js.
-// BE is "Below Expectations" (never "Beginning").
 const CBC_GRADES = [
     { min: 80, code: 'EE', level: 'EE', label: 'Exceeding Expectations',   points: 8 },
     { min: 65, code: 'ME', level: 'ME', label: 'Meeting Expectations',      points: 6 },
@@ -700,8 +697,8 @@ function buildHeadTeacherComment({ meanScore, assessedCount, totalSubjects, subj
 
 /**
  * Letterhead header for the jsPDF-based CBC report form.
- * Draws logo (left) or centres text when no logo. Returns the y coordinate
- * of the bottom rule.
+ * Draws logo (left) and text block either beside it (logo present)
+ * or centred (no logo). Returns the y coordinate below the bottom rule.
  */
 function drawCBCHeader(doc, meta, titleLine) {
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -713,9 +710,8 @@ function drawCBCHeader(doc, meta, titleLine) {
     let hasLogo = false;
     if (logoUrl) {
         try {
-            const ext = String(logoUrl).toLowerCase().endsWith('.jpg') || String(logoUrl).toLowerCase().endsWith('.jpeg')
-                ? 'JPEG'
-                : 'PNG';
+            const lower = String(logoUrl).toLowerCase();
+            const ext = lower.endsWith('.jpg') || lower.endsWith('.jpeg') ? 'JPEG' : 'PNG';
             doc.addImage(logoUrl, ext, MARGIN, HEADER_TOP, LOGO_SIZE, LOGO_SIZE);
             hasLogo = true;
         } catch (e) {
@@ -723,23 +719,32 @@ function drawCBCHeader(doc, meta, titleLine) {
         }
     }
 
-    const textX = hasLogo ? MARGIN + LOGO_SIZE + 6 : MARGIN;
-    const textW = pageWidth - textX - MARGIN;
-    const align = hasLogo ? 'left' : 'center';
-    const centerX = hasLogo ? textX + textW / 2 : pageWidth / 2;
+    // Text column geometry — kept clear of the logo when present.
+    const textLeft = hasLogo ? MARGIN + LOGO_SIZE + 4 : MARGIN;
+    const textWidth = pageWidth - textLeft - MARGIN;
+    const centreX = hasLogo ? textLeft + textWidth / 2 : pageWidth / 2;
+    const align = 'center';
+
+    let cy = HEADER_TOP + 1;
 
     doc.setTextColor(...PDF_COLORS.primary);
     doc.setFont('times', 'bold');
-    doc.setFontSize(15);
-    doc.text((meta?.schoolName || 'SCHOOL').toUpperCase(), centerX, HEADER_TOP + 6, { align, maxWidth: textW });
+    doc.setFontSize(14);
+    const schoolNameLines = doc.splitTextToSize(
+        (meta?.schoolName || 'SCHOOL').toUpperCase(),
+        textWidth
+    );
+    schoolNameLines.forEach(line => {
+        doc.text(line, centreX, cy, { align });
+        cy += 5.5;
+    });
 
-    let cy = HEADER_TOP + 12;
     if (meta?.schoolMotto) {
         doc.setFont('times', 'italic');
-        doc.setFontSize(9);
+        doc.setFontSize(8.5);
         doc.setTextColor(...PDF_COLORS.gray);
-        doc.text(`Motto: ${meta.schoolMotto}`, centerX, cy, { align, maxWidth: textW });
-        cy += 5;
+        doc.text(`Motto: ${meta.schoolMotto}`, centreX, cy, { align, maxWidth: textWidth });
+        cy += 4.5;
     }
 
     doc.setFont('times', 'normal');
@@ -754,16 +759,19 @@ function drawCBCHeader(doc, meta, titleLine) {
     ].filter(Boolean);
 
     for (const line of contactLines) {
-        doc.text(line, centerX, cy, { align, maxWidth: textW });
+        doc.text(line, centreX, cy, { align, maxWidth: textWidth });
         cy += 4;
     }
 
-    const blockBottom = Math.max(cy, HEADER_TOP + (hasLogo ? LOGO_SIZE : 0)) + 2;
+    // Ensure the rule clears both the text block and the logo box.
+    const logoBottom = hasLogo ? HEADER_TOP + LOGO_SIZE : 0;
+    const blockBottom = Math.max(cy, logoBottom) + 2;
+
     doc.setDrawColor(...PDF_COLORS.primary);
     doc.setLineWidth(0.6);
     doc.line(MARGIN, blockBottom, pageWidth - MARGIN, blockBottom);
 
-    // Title line
+    // Title line, centred on the full content width.
     doc.setFont('times', 'bold');
     doc.setFontSize(11);
     doc.setTextColor(0, 0, 0);
@@ -774,6 +782,7 @@ function drawCBCHeader(doc, meta, titleLine) {
 
 /**
  * Draws the student info panel; returns y below the block.
+ * This is the ONLY place student identity is written on the form.
  */
 function drawStudentInfo(doc, student, meta, term, startY) {
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -784,34 +793,38 @@ function drawStudentInfo(doc, student, meta, term, startY) {
     doc.setLineWidth(0.3);
     doc.rect(MARGIN, startY, CONTENT_W, boxH);
 
+    const col2X = MARGIN + CONTENT_W / 2;
+
     doc.setFontSize(9);
     doc.setTextColor(...PDF_COLORS.text);
+
+    // Row 1
     doc.setFont('times', 'bold');
     doc.text('Name:', MARGIN + 3, startY + 6);
     doc.setFont('times', 'normal');
     doc.text(`${student.firstName || ''} ${student.lastName || ''}`.trim() || '—', MARGIN + 15, startY + 6);
 
     doc.setFont('times', 'bold');
+    doc.text('Class:', col2X, startY + 6);
+    doc.setFont('times', 'normal');
+    doc.text(String(student.class || meta?.cls || '—'), col2X + 15, startY + 6);
+
+    // Row 2
+    doc.setFont('times', 'bold');
     doc.text('Adm No:', MARGIN + 3, startY + 12);
     doc.setFont('times', 'normal');
     doc.text(String(student.admissionNumber || student.studentId || '—'), MARGIN + 20, startY + 12);
 
     doc.setFont('times', 'bold');
-    doc.text('Class:', MARGIN + CONTENT_W / 2, startY + 6);
+    doc.text('Term:', col2X, startY + 12);
     doc.setFont('times', 'normal');
-    doc.text(String(student.class || meta?.cls || '—'), MARGIN + CONTENT_W / 2 + 15, startY + 6);
-
-    doc.setFont('times', 'bold');
-    doc.text('Term:', MARGIN + CONTENT_W / 2, startY + 12);
-    doc.setFont('times', 'normal');
-    doc.text(String(term || meta?.term || '—'), MARGIN + CONTENT_W / 2 + 15, startY + 12);
+    doc.text(String(term || meta?.term || '—'), col2X + 15, startY + 12);
 
     return startY + boxH + 3;
 }
 
 // ------------------------------------------------------------
 // 1. TRANSCRIPTS — 4 students per A4 portrait page.
-//    Each card is measured so it never overlaps the next.
 // ------------------------------------------------------------
 export async function downloadTranscripts({ students, meta, subjects, term, assessmentIndex = 0 }) {
     if (!Array.isArray(students) || students.length === 0) {
@@ -837,12 +850,10 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
         const cardLeft = MARGIN_X;
         const cardW = pageWidth - MARGIN_X * 2;
 
-        // Card border
         doc.setDrawColor(...PDF_COLORS.primary);
         doc.setLineWidth(0.4);
         doc.rect(cardLeft, cardTop, cardW, cardH);
 
-        // Header band
         doc.setFillColor(...PDF_COLORS.primary);
         doc.rect(cardLeft, cardTop, cardW, 7, 'F');
         doc.setTextColor(255, 255, 255);
@@ -855,7 +866,6 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
         );
         doc.text(`Assessment ${assessmentIndex + 1}`, cardLeft + cardW - 3, cardTop + 4.8, { align: 'right' });
 
-        // Student info
         doc.setTextColor(...PDF_COLORS.text);
         doc.setFont('times', 'bold');
         doc.setFontSize(8);
@@ -872,7 +882,6 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
             cardTop + 15
         );
 
-        // Subject table — bounded by card
         const body = subjectList.map(subject => {
             const list = Array.isArray(student.scores?.[subject]) ? student.scores[subject] : [];
             const score = list[assessmentIndex] ?? list[0] ?? null;
@@ -888,7 +897,7 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
         });
 
         const tableStartY = cardTop + 17;
-        const tableBottomReserve = 10; // for the footer summary inside the card
+        const tableBottomReserve = 10;
         const tableMaxBottom = cardTop + cardH - tableBottomReserve;
 
         autoTable(doc, {
@@ -909,7 +918,6 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
             styles: { overflow: 'linebreak' }
         });
 
-        // Summary line inside card
         const overall = student.overallAverage || 0;
         const og = cbcGrade(overall);
         doc.setFont('times', 'bold');
@@ -922,8 +930,6 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
         );
     });
 
-    // No page numbers.
-
     const safeTerm = String(term || meta?.term || 'Term').replace(/\s+/g, '_');
     return saveGeneratedPdf(
         doc,
@@ -932,7 +938,7 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
 }
 
 // ------------------------------------------------------------
-// 2. FULL REPORT FORMS — one student per A4 page, flowing layout
+// 2. FULL REPORT FORMS — one student per A4 page
 // ------------------------------------------------------------
 export async function downloadClassReportForms({ students, meta, subjects, term }) {
     if (!Array.isArray(students) || students.length === 0) {
@@ -955,20 +961,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         let y = drawCBCHeader(doc, meta, 'CBC ACADEMIC PROGRESS REPORT');
         y = drawStudentInfo(doc, student, meta, term, y);
 
-        // Student-line
-        const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
-        const admissionNo = student.admissionNumber || student.studentId || '—';
-        const grade = student.class || meta?.cls || '—';
-        doc.setFont('times', 'bold');
-        doc.setFontSize(9.5);
-        doc.setTextColor(0, 0, 0);
-        doc.text(
-            `Student: ${fullName}  |  Adm No: ${admissionNo}  |  Grade: ${grade}`,
-            pageWidth / 2, y + 2, { align: 'center' }
-        );
-        y += 8;
-
-        // Compute rows
+        // ---- Subject rows / aggregates ----
         const subjectRows = subjectList.map(subject => {
             const list = Array.isArray(student.scores?.[subject]) ? student.scores[subject] : [];
             const ass1 = list[0] ?? null;
@@ -996,34 +989,21 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         const avgPoints = assessedCount > 0 ? (totalPoints / assessedCount).toFixed(1) : '—';
         const overall = cbcGrade(meanScore);
 
-        // Active indices per student
         const activeIndices = detectActiveAssessmentIndices(student);
         const assessmentCount = activeIndices.length;
 
-        // Marks line
-        doc.setFont('times', 'bold');
-        doc.setFontSize(8.5);
-        doc.text(
-            `Marks: ${totalScore}/${totalMarks}  |  Avg: ${meanScore.toFixed(2)}/100  |  ` +
-            `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}  |  ` +
-            `Grade: ${overall.code === 'NA' ? '—' : overall.code}`,
-            pageWidth / 2, y, { align: 'center' }
-        );
-        y += 4;
-
-        // Main table (dynamic columns per student)
+        // ---- Main subject table ----
         const head = ['Learning Area'];
         for (let i = 0; i < assessmentCount; i++) head.push(`A${activeIndices[i] + 1}`);
         head.push('Avg', 'P.L', 'Points', 'Remark');
 
         const body = [];
-        subjectRows.forEach((row, sIdx) => {
+        subjectRows.forEach((row) => {
             const subjectPapers = Array.isArray(paperConfigBySubject[row.subject])
                 ? paperConfigBySubject[row.subject]
                 : [];
             const paperScores = (student.papersBySubject && student.papersBySubject[row.subject]) || {};
 
-            // Branch rows
             subjectPapers.forEach((paper) => {
                 const p = paperScores[paper.name] || null;
                 const branchScore = p && p.score != null ? Number(p.score) : null;
@@ -1033,7 +1013,6 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
                 body.push(branchRow);
             });
 
-            // Subject total row
             const assValues = [row.ass1, row.ass2, row.ass3];
             const totalRow = [{ content: subjectPapers.length > 0 ? `${row.subject} — TOTAL` : row.subject, styles: { fontStyle: subjectPapers.length > 0 ? 'bold' : 'normal' } }];
             for (let i = 0; i < assessmentCount; i++) {
@@ -1077,18 +1056,26 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         });
         y = (doc.lastAutoTable?.finalY || y) + 4;
 
-        // TOTAL / AVG summary rows are implicit in the subject totals; skip
-        // explicit totals to keep flow clean — the "Marks" line already
-        // carries the overall total.
+        // ---- Marks / position summary BELOW the table ----
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(0, 0, 0);
+        doc.text(
+            `Marks: ${totalScore}/${totalMarks}  |  Avg: ${meanScore.toFixed(2)}/100  |  ` +
+            `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}  |  ` +
+            `Grade: ${overall.code === 'NA' ? '—' : overall.code}`,
+            pageWidth / 2, y, { align: 'center' }
+        );
+        y += 6;
 
-        // Remarks — class teacher
+        // ---- Class teacher remark ----
         const teacherComment = (student.teacherComment && String(student.teacherComment).trim())
             || buildClassTeacherComment({
                 meanScore, assessedCount, totalSubjects: subjectList.length,
                 subjectRows: subjectRows.map(r => ({ subject: r.subject, average: r.average })),
             });
 
-        if (y > pageHeight - 60) { doc.addPage(); y = 15; }
+        if (y > pageHeight - 50) { doc.addPage(); y = 15; }
 
         doc.setFont('times', 'bold');
         doc.setFontSize(9);
@@ -1113,7 +1100,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         doc.text('Signature / Date', MARGIN, y + 7);
         y += 11;
 
-        // Head teacher remark
+        // ---- Head teacher remark ----
         const headTeacherComment = (student.principalComment && String(student.principalComment).trim())
             || buildHeadTeacherComment({
                 meanScore, assessedCount, totalSubjects: subjectList.length,
@@ -1121,7 +1108,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
                 student,
             });
 
-        if (y > pageHeight - 50) { doc.addPage(); y = 15; }
+        if (y > pageHeight - 45) { doc.addPage(); y = 15; }
 
         doc.setFont('times', 'bold');
         doc.setFontSize(9);
@@ -1146,19 +1133,16 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         doc.text('Signature / Date', MARGIN, y + 7);
         y += 11;
 
-        // Term & Signatory table
-        if (y > pageHeight - 40) { doc.addPage(); y = 15; }
+        // ---- Term dates strip (dates only — no duplicated teacher names) ----
+        if (y > pageHeight - 35) { doc.addPage(); y = 15; }
         const infoRowH = 6;
-        const infoLabelW = 32;
+        const infoLabelW = 30;
         const col2X = MARGIN + CONTENT_W / 2;
-        const infoRows = [
+
+        const dateRows = [
             [
                 { label: 'Term Started', value: fmtDate(meta?.currentTermStart || meta?.termStart) },
-                { label: 'Class Teacher', value: classTeacherName },
-            ],
-            [
                 { label: 'Closing Date', value: fmtDate(meta?.currentTermEnd) },
-                { label: 'Head Teacher', value: principalName },
             ],
             [
                 { label: 'Next Opening', value: fmtDate(meta?.nextTermStart) },
@@ -1175,10 +1159,10 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         doc.setFont('times', 'bold');
         doc.setFontSize(8.5);
         doc.setTextColor(0, 0, 0);
-        doc.text('Term & Signatory Information', MARGIN + 2, y + 4);
+        doc.text('Term Dates', MARGIN + 2, y + 4);
         y += infoRowH;
 
-        infoRows.forEach((row, iIdx) => {
+        dateRows.forEach((row, iIdx) => {
             if (iIdx % 2 === 1) {
                 doc.setFillColor(250, 251, 254);
                 doc.rect(MARGIN, y, CONTENT_W, infoRowH, 'F');
@@ -1209,12 +1193,11 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
 
         doc.setDrawColor(0, 0, 0);
         doc.setLineWidth(0.5);
-        doc.rect(MARGIN, y - infoRowH * (infoRows.length + 1), CONTENT_W, infoRowH * (infoRows.length + 1));
-        y += 5;
+        doc.rect(MARGIN, y - infoRowH * (dateRows.length + 1), CONTENT_W, infoRowH * (dateRows.length + 1));
+        y += 8;
 
-        // Final signatures
-        if (y > pageHeight - 30) { doc.addPage(); y = 15; }
-        const sigW = (CONTENT_W - 20) / 2;
+        // ---- Single final signature row (names only; no repeat of remarks) ----
+        if (y > pageHeight - 25) { doc.addPage(); y = 15; }
         doc.setFont('times', 'bold');
         doc.setFontSize(8.5);
         doc.setTextColor(0, 0, 0);
@@ -1225,7 +1208,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         doc.text(classTeacherName, MARGIN, y + 30);
         doc.text(principalName, col2X + 10, y + 30);
 
-        // Footer (no page numbers)
+        // ---- Footer ----
         doc.setDrawColor(153, 153, 153);
         doc.setLineWidth(0.2);
         doc.line(MARGIN, pageHeight - 10, pageWidth - MARGIN, pageHeight - 10);
@@ -1243,7 +1226,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
 }
 
 // ------------------------------------------------------------
-// 3. SINGLE STUDENT REPORT FORM — thin wrapper over the above
+// 3. SINGLE STUDENT REPORT FORM — thin wrapper
 // ------------------------------------------------------------
 export async function downloadStudentReportForm({ student, meta, subjects, term }) {
     return downloadClassReportForms({ students: [student], meta, subjects, term });
