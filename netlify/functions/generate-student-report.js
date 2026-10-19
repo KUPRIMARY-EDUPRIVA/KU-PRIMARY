@@ -6,22 +6,22 @@ const { withCors } = require('./_lib/cors');
 //   docType = 'transcript'   → 4 landscape cards per A4 landscape page
 //   docType = 'report-form'  → 1 full report card per A4 portrait page
 //
-// Feature highlights:
-//   - Letterhead header with logo (left) OR centred text when no logo.
-//   - PER-STUDENT dynamic assessment columns: only the assessments this
-//     student actually has scores for are shown.
-//   - Subject BRANCH rows: if the school configured a multi-paper subject
-//     (e.g. Kiswahili → LUGHA, KUSOMA), each branch appears as its own
-//     indented row with the branch score, followed by the subject TOTAL.
-//     Only the subject total is graded.
-//   - Auto-generated class-teacher remark: strength + weakness.
-//   - Auto-generated head-teacher remark: advisory based on performance.
-//   - Class teacher / head teacher names printed with a signature line.
-//   - Term dates table driven by school profile settings.
-//   - NO page numbers anywhere.
-//   - Flowing layout — sections measure themselves and stack downward so
-//     nothing overlaps even when remarks are long.
-//   - Times New Roman typography (PDFKit standard-14 Times family).
+// Transcript layout:
+//   - Full A4 landscape printable area, 2×2 grid of cards.
+//   - 26 pt outer margins and 26 pt gaps in both directions → clear cut lines.
+//   - Each card measures its own content and never overlaps the next.
+//
+// Report-form layout:
+//   - Letterhead header, per-student assessment columns, subject branch
+//     rows when configured, auto-generated class-teacher / head-teacher
+//     remarks, term & signatory table, flowing signature block, footer.
+//   - No page numbers anywhere.
+//
+// NOTE ON "Beginning":
+//   There is no "Beginning" label anywhere in this file. BE is printed as
+//   "Below Expectations" both in cbcGrade and in the legend. If a deployed
+//   transcript still shows "Beginning", it is a stale function on Netlify
+//   or a different code path — re-deploy and confirm.
 
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
@@ -57,6 +57,14 @@ const FONT_ITALIC = 'Times-Italic';
 const STAMP_SIZE = 62;
 const SIGNATURE_W = 113;
 const SIGNATURE_H = 40;
+
+// Transcript page geometry — used by buildPDF only.
+const TRANSCRIPT_PAGE = {
+    width: 841.89,
+    height: 595.28,
+    margin: 26,   // outer margin in pt (≈ 9 mm)
+    gap: 26,      // gap between cards in pt (≈ 9 mm) — enough for cutting
+};
 
 // ============================================================
 // Handler
@@ -193,7 +201,7 @@ function buildFilename({ docType, students, meta, term, assessmentIndex }) {
 }
 
 // ============================================================
-// Grading
+// Grading — BE is printed as "Below Expectations" (never "Beginning")
 // ============================================================
 function cbcGrade(score) {
     if (score == null || isNaN(score)) {
@@ -232,14 +240,8 @@ function subjectRemark(avg, cbc) {
 }
 
 // ============================================================
-// AUTO-GENERATED REMARKS
+// Auto-generated remarks
 // ============================================================
-
-/**
- * Class teacher's remark — strength + weakness.
- * Deliberately splits them into two short sentences so the marker can
- * spot both at a glance.
- */
 function buildClassTeacherComment(report) {
     const { meanScore, assessedCount, totalSubjects, subjectRows } = report;
     if (assessedCount === 0) {
@@ -269,10 +271,6 @@ function buildClassTeacherComment(report) {
     return `${head}${strength}${weakness}${caveat}`.trim();
 }
 
-/**
- * Head teacher's advisory remark — based on performance level, pointing
- * to next steps and (if relevant) the class position.
- */
 function buildHeadTeacherComment(report) {
     const { meanScore, assessedCount, totalSubjects, subjectRows, student } = report;
     if (assessedCount === 0) {
@@ -308,12 +306,6 @@ function buildHeadTeacherComment(report) {
 // ============================================================
 // Per-student helpers
 // ============================================================
-
-/**
- * Return the assessment indices (0,1,2) the student actually has scores
- * for. Never shows columns the student hasn't been assessed on.
- * Guarantees at least one entry so the table never has zero score columns.
- */
 function detectStudentActiveIndices(student) {
     const active = new Set();
     const scores = student.scores || {};
@@ -588,7 +580,7 @@ function drawVerticalBarChart(doc, { x, y, w, h, data, assessLabels }) {
 }
 
 // ============================================================
-// Transcript card
+// Transcript card — self-contained, fully measured, no overlap.
 // ============================================================
 function drawTranscriptCard(doc, {
     student, meta, subjects, term, assessmentIndex,
@@ -597,109 +589,129 @@ function drawTranscriptCard(doc, {
 }) {
     const report = computeReport(student, subjects);
 
+    // Card outline
     doc.rect(x, y, w, h).lineWidth(0.8).strokeColor(PRIMARY).stroke();
 
-    const logoSize = 30;
-    let textX = x + 6;
-    let textW = w - 12;
-    let logoBottom = y + 5;
-    let hasLogo = false;
+    // Padding inside the card
+    const PAD = 6;
+    const innerX = x + PAD;
+    const innerW = w - PAD * 2;
+    const innerTop = y + PAD;
+    const innerBottom = y + h - PAD;
+
+    // ---------- Header ----------
+    const logoSize = 26;
+    let textX = innerX;
+    let textW = innerW;
+    let headerContentBottom = innerTop;
 
     if (logoImg) {
-        const ok = drawImage(doc, logoImg, x + 6, y + 5, logoSize, logoSize);
+        const ok = drawImage(doc, logoImg, innerX, innerTop, logoSize, logoSize);
         if (ok) {
-            textX = x + 6 + logoSize + 8;
-            textW = w - 12 - logoSize - 8;
-            logoBottom = y + 5 + logoSize;
-            hasLogo = true;
+            textX = innerX + logoSize + 6;
+            textW = innerW - logoSize - 6;
         }
     }
 
-    const align = hasLogo ? 'left' : 'center';
+    const align = logoImg ? 'left' : 'center';
 
-    doc.font(FONT_BOLD).fontSize(9.5).fillColor(HEADER_BLUE)
-        .text((meta.schoolName || FALLBACK_NAME).toUpperCase(), textX, y + 5, {
+    doc.font(FONT_BOLD).fontSize(8.5).fillColor(HEADER_BLUE)
+        .text((meta.schoolName || FALLBACK_NAME).toUpperCase(), textX, innerTop, {
             width: textW, align, ellipsis: true,
         });
-    doc.font(FONT_ITALIC).fontSize(6).fillColor(HEADER_MOTTO_GRAY)
-        .text(`Motto: ${meta.schoolMotto || FALLBACK_MOTTO}`, textX, y + 16, {
+    let hy = innerTop + 10;
+
+    doc.font(FONT_ITALIC).fontSize(5.5).fillColor(HEADER_MOTTO_GRAY)
+        .text(`Motto: ${meta.schoolMotto || FALLBACK_MOTTO}`, textX, hy, {
             width: textW, align, ellipsis: true,
         });
+    hy += 7;
 
     const contact = contactLine(meta);
     if (contact) {
-        doc.font(FONT_REGULAR).fontSize(5.3).fillColor(HEADER_CONTACT_GRAY)
-            .text(contact, textX, y + 25, {
+        doc.font(FONT_REGULAR).fontSize(5).fillColor(HEADER_CONTACT_GRAY)
+            .text(contact, textX, hy, {
                 width: textW, align, ellipsis: true, lineBreak: false,
             });
+        hy += 6;
     }
 
-    const headerRuleY = Math.max(y + 5 + logoSize + 2, logoBottom + 2);
-    doc.moveTo(x + 6, headerRuleY).lineTo(x + w - 6, headerRuleY)
-        .lineWidth(1).strokeColor(HEADER_BLUE).stroke();
+    headerContentBottom = Math.max(hy, innerTop + logoSize);
 
-    let cy = headerRuleY + 5;
+    // Header rule
+    doc.moveTo(innerX, headerContentBottom + 2)
+        .lineTo(innerX + innerW, headerContentBottom + 2)
+        .lineWidth(0.8).strokeColor(HEADER_BLUE).stroke();
+
+    let cy = headerContentBottom + 6;
+
+    // ---------- Student line ----------
     const name = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
-    doc.font(FONT_BOLD).fontSize(8).fillColor('#111')
-        .text(name, x + 6, cy, { width: w - 12, ellipsis: true });
-
-    doc.font(FONT_REGULAR).fontSize(6).fillColor(GRAY)
+    doc.font(FONT_BOLD).fontSize(7.5).fillColor('#111')
+        .text(name, innerX, cy, { width: innerW, ellipsis: true });
+    doc.font(FONT_REGULAR).fontSize(5.5).fillColor(GRAY)
         .text(
             `Adm: ${student.admissionNumber || student.studentId || '—'}   |   Class: ${student.class || meta.cls || '—'}`,
-            x + 6, cy, { width: w - 12, ellipsis: true, align: 'right' }
+            innerX, cy, { width: innerW, ellipsis: true, align: 'right' }
         );
-    cy += 11;
+    cy += 9;
 
-    doc.font(FONT_ITALIC).fontSize(5.8).fillColor('#555')
+    doc.font(FONT_ITALIC).fontSize(5.5).fillColor('#555')
         .text(
             `Assessment ${assessmentIndex + 1} • ${term || ''} • ${meta.year || new Date().getFullYear()}`,
-            x + 6, cy, { width: w - 12, ellipsis: true }
+            innerX, cy, { width: innerW, ellipsis: true }
         );
-    cy += 11;
+    cy += 9;
 
-    const tableX = x + 6;
-    const tableW = w - 12;
-    const colW = [tableW * 0.46, tableW * 0.13, tableW * 0.14, tableW * 0.13, tableW * 0.14];
+    // ---------- Table ----------
+    const colRatios = [0.44, 0.13, 0.13, 0.12, 0.18];
+    const colW = colRatios.map((r) => innerW * r);
     const headers = ['Learning Area', 'Score', 'Level', 'Pts', 'Remark'];
 
-    const headerRowH = 11;
-    doc.rect(tableX, cy, tableW, headerRowH).fill(PRIMARY_LIGHT);
-    doc.font(FONT_BOLD).fontSize(6).fillColor(PRIMARY);
-    let hx = tableX + 2;
+    const headerRowH = 9;
+    doc.rect(innerX, cy, innerW, headerRowH).fill(PRIMARY_LIGHT);
+    doc.font(FONT_BOLD).fontSize(5.8).fillColor(PRIMARY);
+    let hx = innerX + 2;
     headers.forEach((h, i) => {
         const alignH = i === 0 || i === 4 ? 'left' : 'center';
-        doc.text(h, hx, cy + 3, { width: colW[i] - 4, align: alignH, ellipsis: true });
+        doc.text(h, hx, cy + 2, { width: colW[i] - 3, align: alignH, ellipsis: true });
         hx += colW[i];
     });
     cy += headerRowH;
 
-    const rowH = 10;
-    const maxRows = Math.floor((y + h - 22 - cy) / rowH);
+    const rowH = 8.5;
+    // Reserve bottom strip (summary bar + signature/stamp strip) = 20 pt
+    const bottomStripH = 20;
+    const tableMaxBottom = innerBottom - bottomStripH;
+    const maxRows = Math.max(1, Math.floor((tableMaxBottom - cy) / rowH));
     const rows = report.subjectRows.slice(0, maxRows);
 
     rows.forEach((r, idx) => {
-        if (idx % 2 === 1) doc.rect(tableX, cy, tableW, rowH).fill('#fafbfe');
-        let rx = tableX + 2;
+        if (idx % 2 === 1) doc.rect(innerX, cy, innerW, rowH).fill('#fafbfe');
+        let rx = innerX + 2;
         const cells = [
-            { t: r.subject, align: 'left', bold: true, size: 6.3 },
-            { t: r.average != null ? String(r.average) : '—', align: 'center', size: 6.3 },
-            { t: r.cbc.code, align: 'center', size: 6.3, fg: gradeFg(r.cbc.level), bg: gradeBg(r.cbc.level) },
-            { t: r.cbc.points != null ? r.cbc.points.toFixed(1) : '—', align: 'center', size: 6.3, bold: true },
-            { t: r.remark, align: 'left', size: 5.3, color: '#555' },
+            { t: r.subject, align: 'left', bold: true, size: 5.8 },
+            { t: r.average != null ? String(r.average) : '—', align: 'center', size: 5.8 },
+            { t: r.cbc.code, align: 'center', size: 5.8, fg: gradeFg(r.cbc.level), bg: gradeBg(r.cbc.level) },
+            { t: r.cbc.points != null ? r.cbc.points.toFixed(1) : '—', align: 'center', size: 5.8, bold: true },
+            { t: r.remark, align: 'left', size: 4.8, color: '#555' },
         ];
         cells.forEach((c, i) => {
-            if (c.bg) doc.rect(rx, cy + 1, colW[i] - 4, rowH - 2).fill(c.bg);
+            if (c.bg) doc.rect(rx, cy + 0.8, colW[i] - 3, rowH - 1.6).fill(c.bg);
             doc.font(c.bold ? FONT_BOLD : FONT_REGULAR).fontSize(c.size)
                 .fillColor(c.fg || c.color || '#000')
-                .text(c.t, rx, cy + 2, { width: colW[i] - 4, align: c.align, ellipsis: true });
+                .text(c.t, rx, cy + 1.5, { width: colW[i] - 3, align: c.align, ellipsis: true });
             rx += colW[i];
         });
         cy += rowH;
     });
 
-    const summaryY = y + h - 22;
-    doc.rect(x + 6, summaryY, w - 12, 16).fillAndStroke('#f5f7fb', BORDER);
-    const summaryCellW = (w - 12) / 3;
+    // ---------- Bottom strip: summary + signature/stamp ----------
+    const summaryY = innerBottom - bottomStripH;
+    const summaryH = 12;
+    doc.rect(innerX, summaryY, innerW, summaryH).fillAndStroke('#f5f7fb', BORDER);
+
+    const summaryCellW = innerW / 3;
     const summaryItems = [
         { lbl: 'MEAN', val: report.assessedCount > 0 ? `${report.meanScore}%` : '—', color: PRIMARY },
         {
@@ -711,39 +723,38 @@ function drawTranscriptCard(doc, {
         { lbl: 'COVERED', val: `${report.assessedCount}/${report.totalSubjects}`, color: PRIMARY },
     ];
     summaryItems.forEach((item, i) => {
-        const sx = x + 6 + summaryCellW * i;
-        doc.font(FONT_REGULAR).fontSize(5).fillColor(GRAY)
-            .text(item.lbl, sx + 4, summaryY + 2, { width: summaryCellW - 8 });
-        doc.font(FONT_BOLD).fontSize(8).fillColor(item.color)
-            .text(item.val, sx + 4, summaryY + 7, { width: summaryCellW - 8 });
+        const sx = innerX + summaryCellW * i;
+        doc.font(FONT_REGULAR).fontSize(4.5).fillColor(GRAY)
+            .text(item.lbl, sx + 3, summaryY + 1, { width: summaryCellW - 6 });
+        doc.font(FONT_BOLD).fontSize(7).fillColor(item.color)
+            .text(item.val, sx + 3, summaryY + 5.5, { width: summaryCellW - 6 });
     });
 
+    // Signature (left) and stamp (right) below the summary bar
+    const signY = summaryY + summaryH + 1;
+    if (signatureImg) {
+        drawImage(doc, signatureImg, innerX + 4, signY, 44, bottomStripH - summaryH - 1);
+    }
     if (stampImg) {
         drawRotatedImage(
             doc, stampImg,
-            x + w - 34, y + h - 40,
-            STAMP_SIZE * 0.5, STAMP_SIZE * 0.5,
+            innerX + innerW - 22, signY + (bottomStripH - summaryH) / 2,
+            STAMP_SIZE * 0.32, STAMP_SIZE * 0.32,
             45
         );
     }
-    if (signatureImg) {
-        drawImage(doc, signatureImg, x + 8, y + h - 22, 60, 16);
-    }
 
-    const cornerLen = 6;
-    doc.lineWidth(0.4).strokeColor('#bbb');
-    doc.moveTo(x, y + cornerLen).lineTo(x, y).lineTo(x + cornerLen, y).stroke();
-    doc.moveTo(x + w - cornerLen, y).lineTo(x + w, y).lineTo(x + w, y + cornerLen).stroke();
-    doc.moveTo(x, y + h - cornerLen).lineTo(x, y).lineTo(x + cornerLen, y + h).stroke();
-    doc.moveTo(x + w - cornerLen, y + h).lineTo(x + w, y + h).lineTo(x + w, y + h - cornerLen).stroke();
+    // Cut guides (thin corner marks to help trimming)
+    const tick = 4;
+    doc.lineWidth(0.3).strokeColor('#bbb');
+    doc.moveTo(x, y + tick).lineTo(x, y).lineTo(x + tick, y).stroke();
+    doc.moveTo(x + w - tick, y).lineTo(x + w, y).lineTo(x + w, y + tick).stroke();
+    doc.moveTo(x, y + h - tick).lineTo(x, y + h).lineTo(x + tick, y + h).stroke();
+    doc.moveTo(x + w - tick, y + h).lineTo(x + w, y + h).lineTo(x + w, y + h - tick).stroke();
 }
 
 // ============================================================
 // Report form — one full page per student
-//
-// Layout is completely flowing: every section returns the y of its bottom
-// edge and the next section starts there. Long remarks or subject lists
-// push subsequent sections down — nothing overlaps.
 // ============================================================
 function drawReportForm(doc, {
     student, meta, subjects, term,
@@ -754,14 +765,12 @@ function drawReportForm(doc, {
     const PAGE_H = doc.page.height;
     const CONTENT_W = PAGE_W - MARGIN * 2;
 
-    // Per-student active assessment indices — no empty A2/A3 columns.
     const activeIndices = detectStudentActiveIndices(student);
     const assessmentCount = activeIndices.length;
 
     const report = computeReport(student, subjects);
     const assessmentAverages = computeAssessmentAverages(student, subjects, activeIndices);
 
-    // Client-supplied comments override the auto-generated ones.
     const teacherComment = (student.teacherComment && String(student.teacherComment).trim())
         || report.teacherComment;
     const principalComment = (student.principalComment && String(student.principalComment).trim())
@@ -769,8 +778,6 @@ function drawReportForm(doc, {
 
     const classTeacherName = meta.classTeacherName || '—';
     const principalName = meta.principalName || '—';
-
-    // Paper config map — { subject: [{name, weight}, ...] }
     const paperConfigBySubject = meta.paperConfigBySubject || {};
 
     // ---- Header ----
@@ -781,7 +788,6 @@ function drawReportForm(doc, {
     });
     y += 2;
 
-    // Term title
     doc.font(FONT_BOLD).fontSize(11.5).fillColor('#000')
         .text(`${(term || 'TERM').toUpperCase()} - ${meta.year || new Date().getFullYear()}`,
             MARGIN, y, { width: CONTENT_W, align: 'center' });
@@ -809,7 +815,6 @@ function drawReportForm(doc, {
         .text(marksText, MARGIN, y, { width: CONTENT_W, align: 'center' });
     y += 12;
 
-    // ---- Marks table (per-student assessment columns) ----
     const tableTop = y;
     const colSubject = Math.floor(CONTENT_W * 0.28);
     const colRemark = Math.floor(CONTENT_W * 0.18);
@@ -850,14 +855,12 @@ function drawReportForm(doc, {
     let ry = tableTop + headerH2;
     const rowH = 15;
 
-    // Draw every subject row, plus branch rows if configured.
     report.subjectRows.forEach((row, idx) => {
         const subjectPapers = Array.isArray(paperConfigBySubject[row.subject])
             ? paperConfigBySubject[row.subject]
             : [];
         const paperScores = (student.papersBySubject && student.papersBySubject[row.subject]) || {};
 
-        // --- Branch rows (NOT graded) ---
         subjectPapers.forEach((paper) => {
             const p = paperScores[paper.name] || null;
             const branchScore = p && p.score != null ? Number(p.score) : null;
@@ -865,7 +868,6 @@ function drawReportForm(doc, {
             doc.rect(MARGIN, ry, CONTENT_W, rowH)
                 .fillAndStroke('#fbfbff', '#e5e5e5');
 
-            // Indented subject label
             const cells = [{ t: `    └ ${paper.name}`, align: 'left' }];
             for (let i = 0; i < assessmentCount; i++) {
                 cells.push({ t: '—', align: 'center' });
@@ -889,7 +891,6 @@ function drawReportForm(doc, {
                 rx += col.w;
             });
 
-            // Cell separators
             let sepX = MARGIN + colSubject;
             doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH)
                 .lineWidth(0.3).strokeColor('#e5e5e5').stroke();
@@ -907,7 +908,6 @@ function drawReportForm(doc, {
             ry += rowH;
         });
 
-        // --- Subject total row (graded) ---
         doc.rect(MARGIN, ry, CONTENT_W, rowH)
             .fillAndStroke(idx % 2 === 1 ? '#f7f9fc' : '#ffffff', '#cccccc');
 
@@ -943,7 +943,6 @@ function drawReportForm(doc, {
             rx += col.w;
         });
 
-        // Cell separators
         let sepX = MARGIN + colSubject;
         doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH)
             .lineWidth(0.3).strokeColor('#cccccc').stroke();
@@ -961,7 +960,6 @@ function drawReportForm(doc, {
         ry += rowH;
     });
 
-    // TOTAL row
     doc.rect(MARGIN, ry, CONTENT_W, rowH).fillAndStroke('#f5f7fb', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('TOTAL', MARGIN + 4, ry + (rowH - 10) / 2, { width: colSubject - 8 });
@@ -991,7 +989,6 @@ function drawReportForm(doc, {
     });
     ry += rowH;
 
-    // AVG row
     doc.rect(MARGIN, ry, CONTENT_W, rowH).fillAndStroke('#f5f7fb', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('AVG', MARGIN + 4, ry + (rowH - 10) / 2, { width: colSubject - 8 });
@@ -1017,11 +1014,6 @@ function drawReportForm(doc, {
     doc.rect(MARGIN, tableTop, CONTENT_W, ry - tableTop - 4)
         .lineWidth(1).strokeColor('#000').stroke();
 
-    // ============================================================
-    // FLOWING SECTIONS — class teacher remark → head teacher remark →
-    // term dates table → chart → signatures → footer
-    // Every section measures its real height.
-    // ============================================================
     let flow = ry + 10;
 
     // ---- Class Teacher's remark ----
@@ -1035,7 +1027,6 @@ function drawReportForm(doc, {
         .text(teacherComment, { width: CONTENT_W - 60 });
     flow = doc.y + 4;
 
-    // Signature line
     doc.moveTo(MARGIN, flow).lineTo(MARGIN + 160, flow)
         .lineWidth(0.6).strokeColor('#333').stroke();
     doc.font(FONT_ITALIC).fontSize(7).fillColor('#666')
@@ -1053,7 +1044,6 @@ function drawReportForm(doc, {
         .text(principalComment, { width: CONTENT_W - 60 });
     flow = doc.y + 4;
 
-    // Signature line
     doc.moveTo(MARGIN, flow).lineTo(MARGIN + 160, flow)
         .lineWidth(0.6).strokeColor('#333').stroke();
     doc.font(FONT_ITALIC).fontSize(7).fillColor('#666')
@@ -1156,7 +1146,7 @@ function drawReportForm(doc, {
 
     flow = chartTop + chartH + 18;
 
-    // ---- Final signatures block (flows, not pinned) ----
+    // ---- Final signatures block ----
     const sigY = flow;
     const sigW = (CONTENT_W - 40) / 2;
 
@@ -1257,18 +1247,21 @@ async function buildPDF({
         doc.on('error', reject);
 
         if (isTranscript) {
-            const PAGE_W = 841.89;
-            const PAGE_H = 595.28;
-            const MARGIN = 20;
-            const GAP = 12;
-            const cardW = (PAGE_W - MARGIN * 2 - GAP) / 2;
-            const cardH = (PAGE_H - MARGIN * 2 - GAP) / 2;
+            const { width: PAGE_W, height: PAGE_H, margin: M, gap: G } = TRANSCRIPT_PAGE;
+
+            // Card dimensions:
+            //   horizontal: 2 cards + 1 gap inside usable width
+            //   vertical  : 2 cards + 1 gap inside usable height
+            const usableW = PAGE_W - M * 2;
+            const usableH = PAGE_H - M * 2;
+            const cardW = (usableW - G) / 2;
+            const cardH = (usableH - G) / 2;
 
             const positions = [
-                { x: MARGIN, y: MARGIN },
-                { x: MARGIN + cardW + GAP, y: MARGIN },
-                { x: MARGIN, y: MARGIN + cardH + GAP },
-                { x: MARGIN + cardW + GAP, y: MARGIN + cardH + GAP },
+                { x: M, y: M },                                    // top-left
+                { x: M + cardW + G, y: M },                        // top-right
+                { x: M, y: M + cardH + G },                        // bottom-left
+                { x: M + cardW + G, y: M + cardH + G },            // bottom-right
             ];
 
             students.forEach((student, idx) => {
