@@ -7,10 +7,11 @@ const DeviceSecurity = registerPlugin('DeviceSecurity');
 
 // Common PDF configuration
 const PDF_COLORS = {
-    primary: [26, 35, 126], // #1a237e
+    primary: [26, 35, 126],
     text: [44, 62, 80],
     border: [203, 213, 225],
-    accent: [248, 250, 252]
+    accent: [248, 250, 252],
+    gray: [120, 130, 145],
 };
 
 export async function saveGeneratedPdf(doc, filename) {
@@ -23,10 +24,9 @@ export async function saveGeneratedPdf(doc, filename) {
     return { filename };
 }
 
-async function addSchoolHeader(doc, school, title, pageNumber, totalPages) {
+async function addSchoolHeader(doc, school, title) {
     const pageHeight = doc.internal.pageSize.getHeight();
     const pageWidth = doc.internal.pageSize.getWidth();
-    // Logo
     if (school?.schoolLogo) {
         try {
             doc.addImage(school.schoolLogo, 'PNG', 10, 10, 20, 20);
@@ -35,11 +35,10 @@ async function addSchoolHeader(doc, school, title, pageNumber, totalPages) {
         }
     }
 
-    // Header info
     doc.setTextColor(...PDF_COLORS.primary);
     doc.setFontSize(18);
     doc.text(school?.schoolName || school?.name || 'SCHOOL REPORT', pageWidth / 2, 15, { align: 'center' });
-    
+
     doc.setFontSize(10);
     doc.setTextColor(...PDF_COLORS.text);
     const contact = [school?.schoolAddress || school?.address, school?.schoolPhone || school?.phone]
@@ -51,12 +50,11 @@ async function addSchoolHeader(doc, school, title, pageNumber, totalPages) {
     doc.setLineWidth(0.5);
     doc.line(10, 32, pageWidth - 10, 32);
 
-    // Footer
+    // Footer rule only — no page numbers.
     doc.setDrawColor(...PDF_COLORS.border);
     doc.line(10, pageHeight - 12, pageWidth - 10, pageHeight - 12);
     doc.setFontSize(8);
     doc.setTextColor(150);
-    doc.text(`Page ${pageNumber} of ${totalPages}`, pageWidth - 10, pageHeight - 7, { align: 'right' });
     doc.text(`Generated on ${new Date().toLocaleDateString()}`, 10, pageHeight - 7);
 }
 
@@ -65,37 +63,34 @@ export async function downloadStudentReportCardPDF({ students, meta, subjects, t
     const studentList = Array.isArray(students) ? students : [];
     if (!studentList.length) throw new Error('There are no student report cards to export.');
     const subjectList = Array.isArray(subjects) ? subjects : [];
-    const totalPages = studentList.length;
 
     for (let index = 0; index < studentList.length; index++) {
         const student = studentList[index];
         if (index > 0) doc.addPage();
 
-        await addSchoolHeader(doc, meta, 'ACADEMIC PROGRESS REPORT', index + 1, totalPages);
+        await addSchoolHeader(doc, meta, 'ACADEMIC PROGRESS REPORT');
 
-        // Student Info
         doc.setFontSize(10);
         doc.setTextColor(...PDF_COLORS.text);
-        doc.rect(10, 35, 190, 20); // Border
-        
+        doc.rect(10, 35, 190, 20);
+
         doc.text(`Name: ${[student.firstName, student.lastName].filter(Boolean).join(' ') || 'Student'}`, 15, 42);
         doc.text(`Adm No: ${student.admissionNumber || student.studentId || 'N/A'}`, 15, 48);
         doc.text(`Class: ${student.class || meta?.cls || '—'}`, 100, 42);
         doc.text(`Term: ${term}`, 100, 48);
 
-        // Subjects Table
         const tableData = subjectList.map(subject => [
             subject,
             (Array.isArray(student.scores?.[subject])
                 ? student.scores[subject][student.scores[subject].length - 1]
                 : student.scores?.[subject]) ?? '-',
             student.averages?.[subject] != null ? `${student.averages[subject]}%` : '-',
-            '-', // Rank
-            '-', // Grade
-            '-'  // Points
+            '-',
+            '-',
+            '-'
         ]);
-        
-       autoTable(doc, {
+
+        autoTable(doc, {
             startY: 60,
             head: [['Subject', 'ETRM', 'Avg', 'Rank', 'Grade', 'Pts']],
             body: tableData,
@@ -105,9 +100,10 @@ export async function downloadStudentReportCardPDF({ students, meta, subjects, t
             columnStyles: { 0: { halign: 'left' } }
         });
     }
-    
+
     return saveGeneratedPdf(doc, `ReportCard_${term}_${meta?.cls || 'Class'}.pdf`);
 }
+
 export async function downloadStudentReportPDF(student, scores, meta) {
     const doc = new jsPDF({
         orientation: 'portrait',
@@ -117,7 +113,6 @@ export async function downloadStudentReportPDF(student, scores, meta) {
 
     const subjects = meta?.subjects || [];
 
-    // Build school information in the format expected by the header
     const school = {
         schoolName: meta?.schoolName || 'TOPLINK EDU',
         schoolAddress: meta?.schoolAddress || '',
@@ -125,74 +120,28 @@ export async function downloadStudentReportPDF(student, scores, meta) {
         schoolLogo: meta?.schoolLogo || ''
     };
 
-    await addSchoolHeader(
-        doc,
-        school,
-        'ACADEMIC PROGRESS REPORT',
-        1,
-        1
-    );
+    await addSchoolHeader(doc, school, 'ACADEMIC PROGRESS REPORT');
 
-    // Student information
     doc.setFontSize(10);
     doc.setTextColor(...PDF_COLORS.text);
 
     doc.rect(10, 35, 190, 24);
 
     doc.setFont('helvetica', 'bold');
-    doc.text(
-        `Name: ${student?.firstName || ''} ${student?.lastName || ''}`.trim(),
-        15,
-        42
-    );
-
+    doc.text(`Name: ${student?.firstName || ''} ${student?.lastName || ''}`.trim(), 15, 42);
     doc.setFont('helvetica', 'normal');
+    doc.text(`Adm No: ${student?.admissionNumber || student?.studentId || 'N/A'}`, 15, 49);
+    doc.text(`Class: ${meta?.cls || 'N/A'}`, 105, 42);
+    doc.text(`Level: ${meta?.level || 'N/A'}`, 105, 49);
+    doc.text(`Term: ${meta?.term || 'N/A'}`, 15, 56);
+    doc.text(`Assessment: ${meta?.assessmentType || 'N/A'}`, 105, 56);
 
-    doc.text(
-        `Adm No: ${student?.admissionNumber || student?.studentId || 'N/A'}`,
-        15,
-        49
-    );
-
-    doc.text(
-        `Class: ${meta?.cls || 'N/A'}`,
-        105,
-        42
-    );
-
-    doc.text(
-        `Level: ${meta?.level || 'N/A'}`,
-        105,
-        49
-    );
-
-    doc.text(
-        `Term: ${meta?.term || 'N/A'}`,
-        15,
-        56
-    );
-
-    doc.text(
-        `Assessment: ${meta?.assessmentType || 'N/A'}`,
-        105,
-        56
-    );
-
-    // Normalize scores
     const studentScores = Array.isArray(scores) ? scores : [];
 
-    // Create subject rows
     const tableData = subjects.map(subject => {
-        const subjectEntries = studentScores.filter(
-            score => score?.subject === subject
-        );
-
-        const latest = subjectEntries.length
-            ? subjectEntries[subjectEntries.length - 1]
-            : null;
-
+        const subjectEntries = studentScores.filter(score => score?.subject === subject);
+        const latest = subjectEntries.length ? subjectEntries[subjectEntries.length - 1] : null;
         const score = latest?.score ?? '-';
-
         return [
             subject,
             score,
@@ -212,33 +161,16 @@ export async function downloadStudentReportPDF(student, scores, meta) {
             fontSize: 10,
             halign: 'center'
         },
-        bodyStyles: {
-            fontSize: 9,
-            halign: 'center'
-        },
-        columnStyles: {
-            0: {
-                halign: 'left'
-            }
-        },
-        margin: {
-            left: 10,
-            right: 10
-        }
+        bodyStyles: { fontSize: 9, halign: 'center' },
+        columnStyles: { 0: { halign: 'left' } },
+        margin: { left: 10, right: 10 }
     });
 
     const finalY = doc.lastAutoTable?.finalY || 65;
 
-    // Overall average
-    const numericScores = studentScores
-        .map(s => Number(s?.score))
-        .filter(score => Number.isFinite(score));
-
+    const numericScores = studentScores.map(s => Number(s?.score)).filter(score => Number.isFinite(score));
     const average = numericScores.length
-        ? Math.round(
-            numericScores.reduce((sum, score) => sum + score, 0) /
-            numericScores.length
-        )
+        ? Math.round(numericScores.reduce((sum, score) => sum + score, 0) / numericScores.length)
         : null;
 
     const summaryY = Math.min(finalY + 12, 265);
@@ -246,38 +178,20 @@ export async function downloadStudentReportPDF(student, scores, meta) {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
     doc.setTextColor(...PDF_COLORS.primary);
-
-    doc.text(
-        `Overall Average: ${average !== null ? `${average}%` : 'N/A'}`,
-        15,
-        summaryY
-    );
-
+    doc.text(`Overall Average: ${average !== null ? `${average}%` : 'N/A'}`, 15, summaryY);
     if (average !== null) {
-        doc.text(
-            `Overall Grade: ${getGradeFromScore(average)}`,
-            105,
-            summaryY
-        );
+        doc.text(`Overall Grade: ${getGradeFromScore(average)}`, 105, summaryY);
     }
 
     doc.setFont('helvetica', 'normal');
-
-    const studentName =
-        `${student?.firstName || ''}_${student?.lastName || ''}`
-            .trim()
-            .replace(/\s+/g, '_');
-
+    const studentName = `${student?.firstName || ''}_${student?.lastName || ''}`.trim().replace(/\s+/g, '_');
     const safeName = studentName || 'Student';
 
-    return saveGeneratedPdf(doc,
-        `Student_Report_${safeName}_${meta?.term || 'Term'}.pdf`
-    );
+    return saveGeneratedPdf(doc, `Student_Report_${safeName}_${meta?.term || 'Term'}.pdf`);
 }
 
 function getGradeFromScore(score) {
     const value = Number(score);
-
     if (!Number.isFinite(value)) return '-';
     if (value >= 80) return 'A';
     if (value >= 70) return 'B';
@@ -286,10 +200,9 @@ function getGradeFromScore(score) {
     return 'E';
 }
 
-
 export async function downloadRankingPDF(students, meta) {
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, meta, 'Student Ranking', 1, 1);
+    await addSchoolHeader(doc, meta, 'Student Ranking');
     doc.setFontSize(10);
     doc.setTextColor(...PDF_COLORS.text);
     doc.text(
@@ -322,7 +235,7 @@ export async function downloadRankingPDF(students, meta) {
 
 export async function downloadReceiptPDF(receipt, school) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, school, 'Official Fee Receipt', 1, 1);
+    await addSchoolHeader(doc, school, 'Official Fee Receipt');
     autoTable(doc, {
         startY: 40,
         head: [['Payment receipt', 'Details']],
@@ -350,7 +263,7 @@ export async function downloadReceiptPDF(receipt, school) {
 
 export async function downloadTeacherRecordPDF(record, meta, teacher) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, meta, 'Teacher Assessment Record', 1, 1);
+    await addSchoolHeader(doc, meta, 'Teacher Assessment Record');
     autoTable(doc, {
         startY: 40,
         head: [['Field', 'Record']],
@@ -376,7 +289,7 @@ export async function downloadTeacherRecordPDF(record, meta, teacher) {
 export async function downloadTeacherReportsAllPDF(records, meta, teacher) {
     if (!records?.length) throw new Error('There are no teacher records to export.');
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, meta, 'Teacher Assessment Records', 1, 1);
+    await addSchoolHeader(doc, meta, 'Teacher Assessment Records');
     doc.setFontSize(9);
     doc.setTextColor(...PDF_COLORS.text);
     doc.text(`Teacher: ${teacher?.firstName || ''} ${teacher?.lastName || ''}`.trim(), 10, 38);
@@ -548,7 +461,7 @@ export async function downloadExecutiveReportsPDF(kpis, school, term, year) {
 
 export async function downloadTranscriptPDF(student, scores, school) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, school, 'Official Academic Transcript', 1, 1);
+    await addSchoolHeader(doc, school, 'Official Academic Transcript');
     const fullName = [student?.firstName, student?.lastName].filter(Boolean).join(' ') || 'Student';
     const promotions = (student?.historicalRecords || student?.history || []).filter(
         (record) => record.type === 'promotion'
@@ -620,7 +533,7 @@ export async function downloadTranscriptPDF(student, scores, school) {
 
 export async function downloadTimetablePDF(scheduleData, title, school, term, year) {
     const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, school, title || 'Timetable', 1, 1);
+    await addSchoolHeader(doc, school, title || 'Timetable');
     const rows = Array.isArray(scheduleData) ? scheduleData : scheduleData?.rows || [];
     autoTable(doc, {
         startY: 40,
@@ -642,7 +555,7 @@ export async function downloadTimetablePDF(scheduleData, title, school, term, ye
 
 export async function downloadStudentInvoicePDF(invoice, school) {
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    await addSchoolHeader(doc, school, 'Student Fee Invoice', 1, 1);
+    await addSchoolHeader(doc, school, 'Student Fee Invoice');
     doc.setFontSize(10);
     doc.setTextColor(...PDF_COLORS.text);
     doc.text(`Invoice: ${invoice?.invoiceNumber || invoice?.id || '—'}`, 14, 40);
@@ -680,25 +593,27 @@ export async function downloadStudentInvoicePDF(invoice, school) {
     });
     return saveGeneratedPdf(doc, `Invoice_${invoice?.invoiceNumber || invoice?.id || Date.now()}.pdf`);
 }
+
 // ============================================================
 // CBC STUDENT REPORTS — consumed by src/pages/StudentReports.jsx
-// Three functions:
-//   downloadTranscripts({ students, meta, subjects, term, assessmentIndex })
-//   downloadClassReportForms({ students, meta, subjects, term })
-//   downloadStudentReportForm({ student, meta, subjects, term })
 // ============================================================
 
+// Aligned with the canonical key in src/utils/constants.js and
+// netlify/functions/generate-student-report.js.
+// BE is "Below Expectations" (never "Beginning").
 const CBC_GRADES = [
-    { min: 80, code: 'EE', level: 'EE', label: 'Exceeding Expectation', points: 4 },
-    { min: 65, code: 'ME', level: 'ME', label: 'Meeting Expectation',    points: 3 },
-    { min: 50, code: 'AE', level: 'AE', label: 'Approaching Expectation', points: 2 },
-    { min: 40, code: 'BE', level: 'BE', label: 'Beginning Expectation',   points: 1 },
-    { min: 0,  code: 'NA', level: 'NA', label: 'Not Assessed',            points: 0 }
+    { min: 80, code: 'EE', level: 'EE', label: 'Exceeding Expectations',   points: 8 },
+    { min: 65, code: 'ME', level: 'ME', label: 'Meeting Expectations',      points: 6 },
+    { min: 50, code: 'AE', level: 'AE', label: 'Approaching Expectations',  points: 4 },
+    { min: 40, code: 'BE', level: 'BE', label: 'Below Expectations',        points: 2 },
+    { min: 0,  code: 'BE', level: 'BE', label: 'Below Expectations',        points: 1 },
 ];
 
 function cbcGrade(score) {
     const n = Number(score);
-    if (!Number.isFinite(n)) return CBC_GRADES[CBC_GRADES.length - 1];
+    if (!Number.isFinite(n)) {
+        return { code: 'NA', level: 'NA', label: 'Not Assessed', points: null };
+    }
     return CBC_GRADES.find(g => n >= g.min) || CBC_GRADES[CBC_GRADES.length - 1];
 }
 
@@ -707,126 +622,257 @@ function safeName(student) {
     return (n || 'Student').replace(/[^A-Za-z0-9_-]+/g, '_');
 }
 
-/**
- * Draws the top header block (school name, contacts, title, term)
- * Used by all three CBC functions.
- */
-function drawCBCHeader(doc, meta, titleLine) {
-    const pageWidth = doc.internal.pageSize.getWidth();
-    let y = 12;
+function fmtDate(d) {
+    if (!d) return '—';
+    try {
+        return new Date(d).toLocaleDateString('en-KE', {
+            day: '2-digit', month: 'short', year: 'numeric',
+        });
+    } catch { return '—'; }
+}
 
-    if (meta?.schoolLogo) {
-        try { doc.addImage(meta.schoolLogo, 'PNG', 10, y, 18, 18); } catch { /* ignore */ }
+function detectActiveAssessmentIndices(student) {
+    const active = new Set();
+    const scores = student.scores || {};
+    for (const subject of Object.keys(scores)) {
+        const list = scores[subject] || [];
+        for (let i = 0; i < 3; i++) {
+            const v = list[i];
+            if (v != null && v !== '' && !isNaN(v)) active.add(i);
+        }
     }
+    const out = [...active].sort((a, b) => a - b);
+    return out.length ? out : [0];
+}
 
-    doc.setTextColor(...PDF_COLORS.primary);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(16);
-    doc.text(meta?.schoolName || 'SCHOOL', pageWidth / 2, y + 6, { align: 'center' });
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(...PDF_COLORS.text);
-    const contact = [meta?.schoolAddress, meta?.schoolPhone, meta?.schoolEmail].filter(Boolean).join(' • ');
-    if (contact) doc.text(contact, pageWidth / 2, y + 12, { align: 'center' });
-    if (meta?.schoolMotto) doc.text(meta.schoolMotto, pageWidth / 2, y + 17, { align: 'center', fontStyle: 'italic' });
+function buildClassTeacherComment({ meanScore, assessedCount, totalSubjects, subjectRows }) {
+    if (assessedCount === 0) return 'No assessments recorded for this student this term.';
+    const overall = cbcGrade(meanScore);
+    const assessed = subjectRows.filter((r) => r.average != null);
+    const sorted = [...assessed].sort((a, b) => b.average - a.average);
+    const best = sorted[0];
+    const weakest = sorted[sorted.length - 1];
 
-    doc.setDrawColor(...PDF_COLORS.primary);
-    doc.setLineWidth(0.6);
-    doc.line(10, y + 22, pageWidth - 10, y + 22);
+    const strength = best ? ` Strongest in ${best.subject} (${best.average}%).` : '';
+    const weakness = (weakest && weakest.subject !== best?.subject && weakest.average < 65)
+        ? ` Weakest in ${weakest.subject} (${weakest.average}%); needs attention.` : '';
+    const coverageRatio = totalSubjects > 0 ? assessedCount / totalSubjects : 0;
+    const caveat = coverageRatio < 0.7 ? ` Covers ${assessedCount}/${totalSubjects} learning areas.` : '';
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    doc.text(titleLine, pageWidth / 2, y + 28, { align: 'center' });
+    const head = overall.level === 'EE' ? 'Exceeding expectations. '
+        : overall.level === 'ME' ? 'Meeting expectations across most areas. '
+        : overall.level === 'AE' ? 'Approaching expectations. Practice will raise achievement. '
+        : 'Below expectations. Targeted intervention required. ';
 
-    return y + 34;
+    return `${head}${strength}${weakness}${caveat}`.trim();
+}
+
+function buildHeadTeacherComment({ meanScore, assessedCount, totalSubjects, subjectRows, student }) {
+    if (assessedCount === 0) {
+        return 'Awaiting assessments for the term. Please ensure the learner is assessed across all learning areas.';
+    }
+    const overall = cbcGrade(meanScore);
+    const assessed = subjectRows.filter((r) => r.average != null);
+    const sorted = [...assessed].sort((a, b) => b.average - a.average);
+    const weakest = sorted[sorted.length - 1];
+
+    const posText = (student?.position && student?.classSize)
+        ? ` Position ${student.position} of ${student.classSize}.` : '';
+
+    switch (overall.level) {
+        case 'EE':
+            return `Advisory: excellent term.${posText} Continue nurturing academic strengths.` +
+                (weakest && weakest.average < 65 ? ` Add a small focus on ${weakest.subject} next term.` : '');
+        case 'ME':
+            return `Advisory: solid, consistent performance.${posText}` +
+                (weakest && weakest.average < 50
+                    ? ` A targeted focus on ${weakest.subject} will lift the overall grade.`
+                    : ' Sustain the effort and broaden engagement.');
+        case 'AE':
+            return `Advisory: progress is being made.${posText}` +
+                (weakest ? ` Emphasise ${weakest.subject} next term and provide guided practice.` : '');
+        case 'BE':
+            return `Advisory: results are below expectations.${posText} A structured support plan for this learner is recommended for next term.`;
+        default:
+            return `Advisory: report covers ${assessedCount} of ${totalSubjects} learning areas.`;
+    }
 }
 
 /**
- * Draws the student-info block (name, admission, class, term).
- * Returns the y-coordinate below the block.
+ * Letterhead header for the jsPDF-based CBC report form.
+ * Draws logo (left) or centres text when no logo. Returns the y coordinate
+ * of the bottom rule.
+ */
+function drawCBCHeader(doc, meta, titleLine) {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const MARGIN = 10;
+    const HEADER_TOP = 10;
+    const LOGO_SIZE = 20;
+
+    const logoUrl = meta?.schoolLogo || meta?.logoUrl || meta?.logo || '';
+    let hasLogo = false;
+    if (logoUrl) {
+        try {
+            const ext = String(logoUrl).toLowerCase().endsWith('.jpg') || String(logoUrl).toLowerCase().endsWith('.jpeg')
+                ? 'JPEG'
+                : 'PNG';
+            doc.addImage(logoUrl, ext, MARGIN, HEADER_TOP, LOGO_SIZE, LOGO_SIZE);
+            hasLogo = true;
+        } catch (e) {
+            console.warn('Logo could not be embedded:', e?.message || e);
+        }
+    }
+
+    const textX = hasLogo ? MARGIN + LOGO_SIZE + 6 : MARGIN;
+    const textW = pageWidth - textX - MARGIN;
+    const align = hasLogo ? 'left' : 'center';
+    const centerX = hasLogo ? textX + textW / 2 : pageWidth / 2;
+
+    doc.setTextColor(...PDF_COLORS.primary);
+    doc.setFont('times', 'bold');
+    doc.setFontSize(15);
+    doc.text((meta?.schoolName || 'SCHOOL').toUpperCase(), centerX, HEADER_TOP + 6, { align, maxWidth: textW });
+
+    let cy = HEADER_TOP + 12;
+    if (meta?.schoolMotto) {
+        doc.setFont('times', 'italic');
+        doc.setFontSize(9);
+        doc.setTextColor(...PDF_COLORS.gray);
+        doc.text(`Motto: ${meta.schoolMotto}`, centerX, cy, { align, maxWidth: textW });
+        cy += 5;
+    }
+
+    doc.setFont('times', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(51, 51, 51);
+    const contactLines = [
+        meta?.schoolAddress,
+        meta?.schoolPhone ? `Tel: ${meta.schoolPhone}` : '',
+        meta?.schoolEmail ? `Email: ${meta.schoolEmail}` : '',
+        meta?.website ? `Website: ${meta.website}` : '',
+        meta?.schoolCode ? `School Code: ${meta.schoolCode}` : '',
+    ].filter(Boolean);
+
+    for (const line of contactLines) {
+        doc.text(line, centerX, cy, { align, maxWidth: textW });
+        cy += 4;
+    }
+
+    const blockBottom = Math.max(cy, HEADER_TOP + (hasLogo ? LOGO_SIZE : 0)) + 2;
+    doc.setDrawColor(...PDF_COLORS.primary);
+    doc.setLineWidth(0.6);
+    doc.line(MARGIN, blockBottom, pageWidth - MARGIN, blockBottom);
+
+    // Title line
+    doc.setFont('times', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(0, 0, 0);
+    doc.text(titleLine, pageWidth / 2, blockBottom + 6, { align: 'center' });
+
+    return blockBottom + 10;
+}
+
+/**
+ * Draws the student info panel; returns y below the block.
  */
 function drawStudentInfo(doc, student, meta, term, startY) {
     const pageWidth = doc.internal.pageSize.getWidth();
+    const MARGIN = 10;
+    const CONTENT_W = pageWidth - MARGIN * 2;
     const boxH = 16;
     doc.setDrawColor(...PDF_COLORS.border);
     doc.setLineWidth(0.3);
-    doc.rect(10, startY, pageWidth - 20, boxH);
+    doc.rect(MARGIN, startY, CONTENT_W, boxH);
 
     doc.setFontSize(9);
     doc.setTextColor(...PDF_COLORS.text);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Name:', 13, startY + 6);
-    doc.setFont('helvetica', 'normal');
-    doc.text(`${student.firstName || ''} ${student.lastName || ''}`.trim() || '—', 25, startY + 6);
+    doc.setFont('times', 'bold');
+    doc.text('Name:', MARGIN + 3, startY + 6);
+    doc.setFont('times', 'normal');
+    doc.text(`${student.firstName || ''} ${student.lastName || ''}`.trim() || '—', MARGIN + 15, startY + 6);
 
-    doc.setFont('helvetica', 'bold');
-    doc.text('Adm No:', 13, startY + 12);
-    doc.setFont('helvetica', 'normal');
-    doc.text(String(student.admissionNumber || student.studentId || '—'), 30, startY + 12);
+    doc.setFont('times', 'bold');
+    doc.text('Adm No:', MARGIN + 3, startY + 12);
+    doc.setFont('times', 'normal');
+    doc.text(String(student.admissionNumber || student.studentId || '—'), MARGIN + 20, startY + 12);
 
-    doc.setFont('helvetica', 'bold');
-    doc.text('Class:', pageWidth / 2, startY + 6);
-    doc.setFont('helvetica', 'normal');
-    doc.text(String(student.class || meta?.cls || '—'), pageWidth / 2 + 15, startY + 6);
+    doc.setFont('times', 'bold');
+    doc.text('Class:', MARGIN + CONTENT_W / 2, startY + 6);
+    doc.setFont('times', 'normal');
+    doc.text(String(student.class || meta?.cls || '—'), MARGIN + CONTENT_W / 2 + 15, startY + 6);
 
-    doc.setFont('helvetica', 'bold');
-    doc.text('Term:', pageWidth / 2, startY + 12);
-    doc.setFont('helvetica', 'normal');
-    doc.text(String(term || meta?.term || '—'), pageWidth / 2 + 15, startY + 12);
+    doc.setFont('times', 'bold');
+    doc.text('Term:', MARGIN + CONTENT_W / 2, startY + 12);
+    doc.setFont('times', 'normal');
+    doc.text(String(term || meta?.term || '—'), MARGIN + CONTENT_W / 2 + 15, startY + 12);
 
     return startY + boxH + 3;
 }
 
 // ------------------------------------------------------------
-// 1. TRANSCRIPTS — 4 students per A4 page, one assessment slice
+// 1. TRANSCRIPTS — 4 students per A4 portrait page.
+//    Each card is measured so it never overlaps the next.
 // ------------------------------------------------------------
 export async function downloadTranscripts({ students, meta, subjects, term, assessmentIndex = 0 }) {
     if (!Array.isArray(students) || students.length === 0) {
         throw new Error('No students supplied for transcripts.');
     }
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const pageHeight = doc.internal.pageSize.getHeight();
     const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
 
     const PER_PAGE = 4;
+    const MARGIN_X = 8;
+    const MARGIN_Y = 8;
+    const GAP = 6;
+    const contentH = pageHeight - MARGIN_Y * 2 - GAP * (PER_PAGE - 1);
+    const cardH = contentH / PER_PAGE;
     const subjectList = Array.isArray(subjects) ? subjects : [];
-    const totalPages = Math.ceil(students.length / PER_PAGE);
-    let pageNumber = 1;
 
     students.forEach((student, idx) => {
         const slot = idx % PER_PAGE;
-        if (idx > 0 && slot === 0) {
-            doc.addPage();
-            pageNumber++;
-        }
+        if (idx > 0 && slot === 0) doc.addPage();
 
-        const top = 10 + slot * ((pageHeight - 20) / PER_PAGE);
-        const slotHeight = (pageHeight - 20) / PER_PAGE - 2;
+        const cardTop = MARGIN_Y + slot * (cardH + GAP);
+        const cardLeft = MARGIN_X;
+        const cardW = pageWidth - MARGIN_X * 2;
 
-        // Header band per slot
+        // Card border
+        doc.setDrawColor(...PDF_COLORS.primary);
+        doc.setLineWidth(0.4);
+        doc.rect(cardLeft, cardTop, cardW, cardH);
+
+        // Header band
         doc.setFillColor(...PDF_COLORS.primary);
-        doc.rect(8, top, pageWidth - 16, 8, 'F');
+        doc.rect(cardLeft, cardTop, cardW, 7, 'F');
         doc.setTextColor(255, 255, 255);
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(9);
-        doc.text(`${meta?.schoolName || 'SCHOOL'} • TRANSCRIPT • ${term || meta?.term || ''}`, 11, top + 5.5);
-        doc.text(`Assessment ${assessmentIndex + 1}`, pageWidth - 11, top + 5.5, { align: 'right' });
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.text(
+            `${(meta?.schoolName || 'SCHOOL').toUpperCase()} • TRANSCRIPT • ${term || meta?.term || ''}`,
+            cardLeft + 3,
+            cardTop + 4.8
+        );
+        doc.text(`Assessment ${assessmentIndex + 1}`, cardLeft + cardW - 3, cardTop + 4.8, { align: 'right' });
 
         // Student info
         doc.setTextColor(...PDF_COLORS.text);
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(8.5);
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8);
         doc.text(
             `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—',
-            11, top + 13
+            cardLeft + 3,
+            cardTop + 11
         );
-        doc.setFont('helvetica', 'normal');
+        doc.setFont('times', 'normal');
+        doc.setFontSize(7);
         doc.text(
             `Adm: ${student.admissionNumber || student.studentId || '—'}   Class: ${student.class || meta?.cls || '—'}`,
-            11, top + 17
+            cardLeft + 3,
+            cardTop + 15
         );
 
-        // Table of subjects
+        // Subject table — bounded by card
         const body = subjectList.map(subject => {
             const list = Array.isArray(student.scores?.[subject]) ? student.scores[subject] : [];
             const score = list[assessmentIndex] ?? list[0] ?? null;
@@ -837,18 +883,22 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
                 score != null ? String(score) : '—',
                 avg != null ? `${avg}%` : '—',
                 avg != null ? grade.code : '—',
-                avg != null ? grade.points.toFixed(1) : '—'
+                avg != null && grade.points != null ? grade.points.toFixed(1) : '—'
             ];
         });
 
+        const tableStartY = cardTop + 17;
+        const tableBottomReserve = 10; // for the footer summary inside the card
+        const tableMaxBottom = cardTop + cardH - tableBottomReserve;
+
         autoTable(doc, {
-            startY: top + 19,
-            margin: { left: 10, right: 10, top: top + 19, bottom: 5 },
-            head: [['Subject', 'A' + (assessmentIndex + 1), 'Avg %', 'CBC', 'Pts']],
+            startY: tableStartY,
+            margin: { left: cardLeft + 2, right: cardLeft + 2, top: tableStartY, bottom: pageHeight - tableMaxBottom },
+            head: [[`Subject`, `A${assessmentIndex + 1}`, 'Avg %', 'CBC', 'Pts']],
             body: body.length ? body : [['No subjects', '—', '—', '—', '—']],
             theme: 'grid',
-            headStyles: { fillColor: PDF_COLORS.primary, fontSize: 7, halign: 'center', cellPadding: 0.8 },
-            bodyStyles: { fontSize: 7, cellPadding: 0.8 },
+            headStyles: { fillColor: PDF_COLORS.primary, fontSize: 6.5, halign: 'center', cellPadding: 0.6 },
+            bodyStyles: { fontSize: 6.5, cellPadding: 0.6 },
             columnStyles: {
                 0: { halign: 'left' },
                 1: { halign: 'center' },
@@ -856,40 +906,23 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
                 3: { halign: 'center' },
                 4: { halign: 'center' }
             },
-            styles: { overflow: 'hidden' }
+            styles: { overflow: 'linebreak' }
         });
 
-        const finalY = doc.lastAutoTable?.finalY || top + 30;
-        doc.setFontSize(7.5);
-        doc.setTextColor(...PDF_COLORS.primary);
-        doc.setFont('helvetica', 'bold');
+        // Summary line inside card
         const overall = student.overallAverage || 0;
         const og = cbcGrade(overall);
+        doc.setFont('times', 'bold');
+        doc.setFontSize(6.8);
+        doc.setTextColor(...PDF_COLORS.primary);
         doc.text(
-            `Overall: ${overall}%   CBC: ${og.code}   Points: ${og.points.toFixed(1)}   Assessed: ${student.assessedCount || 0}/${student.totalSubjects || subjectList.length}`,
-            11, Math.min(finalY + 4, top + slotHeight)
+            `Overall: ${overall}%   CBC: ${og.code}   Points: ${og.points != null ? og.points.toFixed(1) : '—'}   Assessed: ${student.assessedCount || 0}/${student.totalSubjects || subjectList.length}`,
+            cardLeft + 3,
+            cardTop + cardH - 3
         );
-
-        // Slot divider
-        if (slot < PER_PAGE - 1) {
-            doc.setDrawColor(...PDF_COLORS.border);
-            doc.setLineWidth(0.2);
-            doc.line(8, top + slotHeight, pageWidth - 8, top + slotHeight);
-        }
     });
 
-    // Page numbers
-    for (let p = 1; p <= pageNumber; p++) {
-        doc.setPage(p);
-        doc.setFontSize(7);
-        doc.setTextColor(150);
-        doc.text(
-            `Page ${p} of ${pageNumber}`,
-            pageWidth - 10,
-            pageHeight - 4,
-            { align: 'right' }
-        );
-    }
+    // No page numbers.
 
     const safeTerm = String(term || meta?.term || 'Term').replace(/\s+/g, '_');
     return saveGeneratedPdf(
@@ -899,17 +932,22 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
 }
 
 // ------------------------------------------------------------
-// 2. FULL REPORT FORMS — one student per A4 page
+// 2. FULL REPORT FORMS — one student per A4 page, flowing layout
 // ------------------------------------------------------------
 export async function downloadClassReportForms({ students, meta, subjects, term }) {
     if (!Array.isArray(students) || students.length === 0) {
         throw new Error('No students supplied for report forms.');
     }
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const pageHeight = doc.internal.pageSize.getHeight();
     const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const MARGIN = 10;
+    const CONTENT_W = pageWidth - MARGIN * 2;
+
     const subjectList = Array.isArray(subjects) ? subjects : [];
-    const totalPages = students.length;
+    const paperConfigBySubject = meta?.paperConfigBySubject || {};
+    const classTeacherName = meta?.classTeacherName || '—';
+    const principalName = meta?.principalName || '—';
 
     students.forEach((student, idx) => {
         if (idx > 0) doc.addPage();
@@ -917,109 +955,291 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         let y = drawCBCHeader(doc, meta, 'CBC ACADEMIC PROGRESS REPORT');
         y = drawStudentInfo(doc, student, meta, term, y);
 
-        // Summary row: overall grade + points + assessed
-        const overall = student.overallAverage || 0;
-        const og = cbcGrade(overall);
-        doc.setFillColor(248, 250, 252);
-        doc.rect(10, y, pageWidth - 20, 10, 'F');
-        doc.setFontSize(9);
-        doc.setTextColor(...PDF_COLORS.primary);
-        doc.setFont('helvetica', 'bold');
+        // Student-line
+        const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
+        const admissionNo = student.admissionNumber || student.studentId || '—';
+        const grade = student.class || meta?.cls || '—';
+        doc.setFont('times', 'bold');
+        doc.setFontSize(9.5);
+        doc.setTextColor(0, 0, 0);
         doc.text(
-            `Overall Average: ${overall}%     CBC Grade: ${og.code} (${og.label})     Points: ${og.points.toFixed(1)}     Assessed: ${student.assessedCount || 0}/${student.totalSubjects || subjectList.length}`,
-            13, y + 6.5
+            `Student: ${fullName}  |  Adm No: ${admissionNo}  |  Grade: ${grade}`,
+            pageWidth / 2, y + 2, { align: 'center' }
         );
-        y += 13;
+        y += 8;
 
-        // Main subject table
-        const body = subjectList.map(subject => {
+        // Compute rows
+        const subjectRows = subjectList.map(subject => {
             const list = Array.isArray(student.scores?.[subject]) ? student.scores[subject] : [];
-            const avg = student.averages?.[subject] ?? null;
-            const g = cbcGrade(avg);
-            return [
-                subject,
-                list[0] != null ? String(list[0]) : '—',
-                list[1] != null ? String(list[1]) : '—',
-                list[2] != null ? String(list[2]) : '—',
-                avg != null ? `${avg}%` : '—',
-                avg != null ? g.code : '—',
-                avg != null ? g.points.toFixed(1) : '—'
-            ];
+            const ass1 = list[0] ?? null;
+            const ass2 = list[1] ?? null;
+            const ass3 = list[2] ?? null;
+            const provided = student.averages?.[subject];
+            let average;
+            if (provided != null && !isNaN(provided)) average = Math.round(provided);
+            else {
+                const valid = list.filter(v => v != null && !isNaN(v));
+                average = valid.length > 0 ? Math.round(valid.reduce((a, b) => a + Number(b), 0) / valid.length) : null;
+            }
+            const cbc = cbcGrade(average);
+            return { subject, ass1, ass2, ass3, average, cbc };
         });
+
+        const assessedRows = subjectRows.filter(r => r.average != null);
+        const assessedCount = assessedRows.length;
+        const meanScore = assessedCount > 0
+            ? Math.round(assessedRows.reduce((s, r) => s + r.average, 0) / assessedCount)
+            : 0;
+        const totalMarks = assessedCount * 100;
+        const totalScore = assessedRows.reduce((s, r) => s + (r.average || 0), 0);
+        const totalPoints = assessedRows.reduce((s, r) => s + (r.cbc.points || 0), 0);
+        const avgPoints = assessedCount > 0 ? (totalPoints / assessedCount).toFixed(1) : '—';
+        const overall = cbcGrade(meanScore);
+
+        // Active indices per student
+        const activeIndices = detectActiveAssessmentIndices(student);
+        const assessmentCount = activeIndices.length;
+
+        // Marks line
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.text(
+            `Marks: ${totalScore}/${totalMarks}  |  Avg: ${meanScore.toFixed(2)}/100  |  ` +
+            `Overall Pos.: ${student.position || '—'}/${student.classSize || '—'}  |  ` +
+            `Grade: ${overall.code === 'NA' ? '—' : overall.code}`,
+            pageWidth / 2, y, { align: 'center' }
+        );
+        y += 4;
+
+        // Main table (dynamic columns per student)
+        const head = ['Learning Area'];
+        for (let i = 0; i < assessmentCount; i++) head.push(`A${activeIndices[i] + 1}`);
+        head.push('Avg', 'P.L', 'Points', 'Remark');
+
+        const body = [];
+        subjectRows.forEach((row, sIdx) => {
+            const subjectPapers = Array.isArray(paperConfigBySubject[row.subject])
+                ? paperConfigBySubject[row.subject]
+                : [];
+            const paperScores = (student.papersBySubject && student.papersBySubject[row.subject]) || {};
+
+            // Branch rows
+            subjectPapers.forEach((paper) => {
+                const p = paperScores[paper.name] || null;
+                const branchScore = p && p.score != null ? Number(p.score) : null;
+                const branchRow = [{ content: `    └ ${paper.name}`, styles: { textColor: PDF_COLORS.gray, fontStyle: 'italic' } }];
+                for (let i = 0; i < assessmentCount; i++) branchRow.push('—');
+                branchRow.push(branchScore != null ? String(branchScore) : '—', '', '', 'Branch');
+                body.push(branchRow);
+            });
+
+            // Subject total row
+            const assValues = [row.ass1, row.ass2, row.ass3];
+            const totalRow = [{ content: subjectPapers.length > 0 ? `${row.subject} — TOTAL` : row.subject, styles: { fontStyle: subjectPapers.length > 0 ? 'bold' : 'normal' } }];
+            for (let i = 0; i < assessmentCount; i++) {
+                const v = assValues[activeIndices[i]];
+                totalRow.push(v != null ? String(v) : '—');
+            }
+            totalRow.push(
+                row.average != null ? String(row.average) : '—',
+                row.cbc.code === 'NA' ? '—' : row.cbc.code,
+                row.cbc.points != null ? row.cbc.points.toFixed(2) : '—',
+                row.average == null ? 'Not assessed'
+                    : row.cbc.level === 'EE' ? 'Exceeding Expectations'
+                    : row.cbc.level === 'ME' ? 'Meeting Expectations'
+                    : row.cbc.level === 'AE' ? 'Approaching Expectations'
+                    : 'Below Expectations'
+            );
+            body.push(totalRow);
+        });
+
+        const columnStyles = {
+            0: { halign: 'left', cellWidth: Math.max(38, CONTENT_W * 0.28) },
+            [head.length - 1]: { halign: 'left' },
+        };
+        for (let i = 1; i <= assessmentCount; i++) {
+            columnStyles[i] = { halign: 'center', cellWidth: 12 };
+        }
+        columnStyles[assessmentCount + 1] = { halign: 'center', cellWidth: 12 };
+        columnStyles[assessmentCount + 2] = { halign: 'center', cellWidth: 12 };
+        columnStyles[assessmentCount + 3] = { halign: 'center', cellWidth: 14 };
 
         autoTable(doc, {
             startY: y,
-            head: [['Subject', 'A1', 'A2', 'A3', 'Average', 'CBC Grade', 'Points']],
-            body: body.length ? body : [['No subjects', '—', '—', '—', '—', '—', '—']],
+            head: [head],
+            body,
             theme: 'grid',
-            headStyles: { fillColor: PDF_COLORS.primary, fontSize: 9, halign: 'center' },
-            bodyStyles: { fontSize: 9 },
-            columnStyles: {
-                0: { halign: 'left' },
-                1: { halign: 'center' },
-                2: { halign: 'center' },
-                3: { halign: 'center' },
-                4: { halign: 'center' },
-                5: { halign: 'center' },
-                6: { halign: 'center' }
-            },
-            margin: { left: 10, right: 10 }
+            headStyles: { fillColor: PDF_COLORS.primary, textColor: [255, 255, 255], fontSize: 8, halign: 'center' },
+            bodyStyles: { fontSize: 7.5, valign: 'middle' },
+            columnStyles,
+            styles: { font: 'times', lineColor: PDF_COLORS.border, lineWidth: 0.1 },
+            margin: { left: MARGIN, right: MARGIN }
+        });
+        y = (doc.lastAutoTable?.finalY || y) + 4;
+
+        // TOTAL / AVG summary rows are implicit in the subject totals; skip
+        // explicit totals to keep flow clean — the "Marks" line already
+        // carries the overall total.
+
+        // Remarks — class teacher
+        const teacherComment = (student.teacherComment && String(student.teacherComment).trim())
+            || buildClassTeacherComment({
+                meanScore, assessedCount, totalSubjects: subjectList.length,
+                subjectRows: subjectRows.map(r => ({ subject: r.subject, average: r.average })),
+            });
+
+        if (y > pageHeight - 60) { doc.addPage(); y = 15; }
+
+        doc.setFont('times', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(0, 0, 0);
+        doc.text(`CLASS TEACHER: ${classTeacherName}`, MARGIN, y);
+        y += 5;
+
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('REMARKS: ', MARGIN, y);
+        doc.setFont('times', 'normal');
+        const teacherLines = doc.splitTextToSize(teacherComment, CONTENT_W - 20);
+        doc.text(teacherLines, MARGIN + 18, y);
+        y += teacherLines.length * 4 + 3;
+
+        doc.setDrawColor(51, 51, 51);
+        doc.setLineWidth(0.4);
+        doc.line(MARGIN, y + 4, MARGIN + 50, y + 4);
+        doc.setFont('times', 'italic');
+        doc.setFontSize(7);
+        doc.setTextColor(...PDF_COLORS.gray);
+        doc.text('Signature / Date', MARGIN, y + 7);
+        y += 11;
+
+        // Head teacher remark
+        const headTeacherComment = (student.principalComment && String(student.principalComment).trim())
+            || buildHeadTeacherComment({
+                meanScore, assessedCount, totalSubjects: subjectList.length,
+                subjectRows: subjectRows.map(r => ({ subject: r.subject, average: r.average })),
+                student,
+            });
+
+        if (y > pageHeight - 50) { doc.addPage(); y = 15; }
+
+        doc.setFont('times', 'bold');
+        doc.setFontSize(9);
+        doc.setTextColor(0, 0, 0);
+        doc.text(`HEAD TEACHER: ${principalName}`, MARGIN, y);
+        y += 5;
+
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.text('REMARKS: ', MARGIN, y);
+        doc.setFont('times', 'normal');
+        const headTeacherLines = doc.splitTextToSize(headTeacherComment, CONTENT_W - 20);
+        doc.text(headTeacherLines, MARGIN + 18, y);
+        y += headTeacherLines.length * 4 + 3;
+
+        doc.setDrawColor(51, 51, 51);
+        doc.setLineWidth(0.4);
+        doc.line(MARGIN, y + 4, MARGIN + 50, y + 4);
+        doc.setFont('times', 'italic');
+        doc.setFontSize(7);
+        doc.setTextColor(...PDF_COLORS.gray);
+        doc.text('Signature / Date', MARGIN, y + 7);
+        y += 11;
+
+        // Term & Signatory table
+        if (y > pageHeight - 40) { doc.addPage(); y = 15; }
+        const infoRowH = 6;
+        const infoLabelW = 32;
+        const col2X = MARGIN + CONTENT_W / 2;
+        const infoRows = [
+            [
+                { label: 'Term Started', value: fmtDate(meta?.currentTermStart || meta?.termStart) },
+                { label: 'Class Teacher', value: classTeacherName },
+            ],
+            [
+                { label: 'Closing Date', value: fmtDate(meta?.currentTermEnd) },
+                { label: 'Head Teacher', value: principalName },
+            ],
+            [
+                { label: 'Next Opening', value: fmtDate(meta?.nextTermStart) },
+                { label: '', value: '' },
+            ],
+        ];
+
+        // Header strip
+        doc.setFillColor(238, 242, 255);
+        doc.rect(MARGIN, y, CONTENT_W, infoRowH, 'F');
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.3);
+        doc.rect(MARGIN, y, CONTENT_W, infoRowH);
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(0, 0, 0);
+        doc.text('Term & Signatory Information', MARGIN + 2, y + 4);
+        y += infoRowH;
+
+        infoRows.forEach((row, iIdx) => {
+            if (iIdx % 2 === 1) {
+                doc.setFillColor(250, 251, 254);
+                doc.rect(MARGIN, y, CONTENT_W, infoRowH, 'F');
+            }
+            doc.setDrawColor(204, 204, 204);
+            doc.setLineWidth(0.2);
+            doc.rect(MARGIN, y, CONTENT_W, infoRowH);
+            doc.line(col2X, y, col2X, y + infoRowH);
+
+            const drawCell = (cx, cell, cw) => {
+                if (!cell.label) return;
+                doc.setFont('times', 'bold');
+                doc.setFontSize(8);
+                doc.setTextColor(51, 51, 51);
+                doc.text(`${cell.label}:`, cx + 2, y + 4);
+                doc.setFont('times', 'normal');
+                doc.setTextColor(0, 0, 0);
+                doc.text(String(cell.value || '—'), cx + 2 + infoLabelW, y + 4, {
+                    maxWidth: cw - infoLabelW - 4,
+                });
+            };
+
+            drawCell(MARGIN, row[0], CONTENT_W / 2);
+            drawCell(col2X, row[1], CONTENT_W / 2);
+
+            y += infoRowH;
         });
 
-        y = (doc.lastAutoTable?.finalY || y) + 8;
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.5);
+        doc.rect(MARGIN, y - infoRowH * (infoRows.length + 1), CONTENT_W, infoRowH * (infoRows.length + 1));
+        y += 5;
 
-        // Grade key legend
-        doc.setFontSize(8);
-        doc.setTextColor(...PDF_COLORS.text);
-        doc.setFont('helvetica', 'bold');
-        doc.text('CBC Grading Key:', 11, y);
-        doc.setFont('helvetica', 'normal');
-        doc.text(
-            'EE = Exceeding (80-100, 4pts)   •   ME = Meeting (65-79, 3pts)   •   AE = Approaching (50-64, 2pts)   •   BE = Beginning (40-49, 1pt)   •   NA = Not Assessed',
-            11, y + 5
-        );
-        y += 12;
+        // Final signatures
+        if (y > pageHeight - 30) { doc.addPage(); y = 15; }
+        const sigW = (CONTENT_W - 20) / 2;
+        doc.setFont('times', 'bold');
+        doc.setFontSize(8.5);
+        doc.setTextColor(0, 0, 0);
+        doc.text('Class Teacher', MARGIN, y, { align: 'left' });
+        doc.text('Head Of Institution (HOI)', col2X + 10, y, { align: 'left' });
+        y += 4;
+        doc.setFont('times', 'normal');
+        doc.text(classTeacherName, MARGIN, y + 30);
+        doc.text(principalName, col2X + 10, y + 30);
 
-        // Remarks box
-        if (y < pageHeight - 45) {
-            doc.setDrawColor(...PDF_COLORS.border);
-            doc.rect(10, y, pageWidth - 20, 22);
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(9);
-            doc.text("Class Teacher's Remarks:", 13, y + 6);
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            doc.text('____________________________________________________________', 13, y + 14);
-            doc.text('____________________________________________________________', 13, y + 19);
-            y += 26;
-        }
-
-        if (y < pageHeight - 30) {
-            doc.setDrawColor(...PDF_COLORS.border);
-            doc.rect(10, y, pageWidth - 20, 20);
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(9);
-            doc.text("Principal's Remarks & Signature:", 13, y + 6);
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8);
-            doc.text('Signature: ______________________     Date: ______________________', 13, y + 15);
-            y += 24;
-        }
-
-        // Page footer
-        doc.setDrawColor(...PDF_COLORS.border);
-        doc.line(10, pageHeight - 10, pageWidth - 10, pageHeight - 10);
+        // Footer (no page numbers)
+        doc.setDrawColor(153, 153, 153);
+        doc.setLineWidth(0.2);
+        doc.line(MARGIN, pageHeight - 10, pageWidth - MARGIN, pageHeight - 10);
+        doc.setFont('times', 'normal');
         doc.setFontSize(7);
-        doc.setTextColor(150);
-        doc.text(`Page ${idx + 1} of ${totalPages}`, pageWidth - 10, pageHeight - 5, { align: 'right' });
-        doc.text(`Generated ${new Date().toLocaleDateString()}`, 10, pageHeight - 5);
+        doc.setTextColor(102, 102, 102);
+        doc.text(
+            `© ${new Date().getFullYear()} ${meta?.schoolName || 'EDUPRIVA'}. All rights reserved.  |  System designed and maintained by Edupriva  |  info.edupriva@gmail.com`,
+            pageWidth / 2, pageHeight - 5, { align: 'center' }
+        );
     });
 
     const safeTerm = String(term || meta?.term || 'Term').replace(/\s+/g, '_');
-    return saveGeneratedPdf(
-        doc,
-        `ReportForms_${safeTerm}_${meta?.cls || 'Class'}.pdf`
-    );
+    return saveGeneratedPdf(doc, `ReportForms_${safeTerm}_${meta?.cls || 'Class'}.pdf`);
 }
 
 // ------------------------------------------------------------
