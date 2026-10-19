@@ -85,6 +85,8 @@ export default function Results() {
     const [paperConfig, setPaperConfig] = useState([]);
     const [allPaperConfigs, setAllPaperConfigs] = useState({});
     const [showPaperConfigModal, setShowPaperConfigModal] = useState(false);
+    const [showBranchesOnReport, setShowBranchesOnReport] = useState(false);
+    const [allPaperFlags, setAllPaperFlags] = useState({});
 
     const [assessmentDeadline, setAssessmentDeadline] = useState('');
     const [deadlineAssessmentType, setDeadlineAssessmentType] = useState('Assessment 1');
@@ -286,24 +288,46 @@ export default function Results() {
     const isLevelOpen = selectedLevel ? (levelPermissions[selectedLevel]?.[assessmentType] !== false) : true;
     const isReadOnly = !isLevelOpen && !isAdmin;
 
-    useEffect(() => {
+      useEffect(() => {
         const schoolId = userData?.schoolId || userData?.school?.id;
-        if (!schoolId || !selectedLevel) { setAllPaperConfigs({}); return; }
+        if (!schoolId || !selectedLevel) {
+            setAllPaperConfigs({});
+            setAllPaperFlags({});
+            return;
+        }
         (async () => {
             try {
-                const configs = await getAllPaperConfigsForLevel(schoolId, selectedLevel);
-                setAllPaperConfigs(configs || {});
+                const raw = (await getAllPaperConfigsForLevel(schoolId, selectedLevel)) || {};
+                const papersMap = {};
+                const flagsMap = {};
+                Object.entries(raw).forEach(([subj, val]) => {
+                    if (Array.isArray(val)) {
+                        papersMap[subj] = val;
+                        flagsMap[subj] = false;
+                    } else if (val && typeof val === 'object') {
+                        papersMap[subj] = Array.isArray(val.papers) ? val.papers : [];
+                        flagsMap[subj] = !!val.showBranchesOnReport;
+                    }
+                });
+                setAllPaperConfigs(papersMap);
+                setAllPaperFlags(flagsMap);
             } catch (e) {
                 console.warn('Failed to load paper configs:', e);
                 setAllPaperConfigs({});
+                setAllPaperFlags({});
             }
         })();
     }, [userData, selectedLevel]);
 
-    useEffect(() => {
-        if (!selectedSubject) { setPaperConfig([]); return; }
+        useEffect(() => {
+        if (!selectedSubject) {
+            setPaperConfig([]);
+            setShowBranchesOnReport(false);
+            return;
+        }
         setPaperConfig(allPaperConfigs[selectedSubject] || []);
-    }, [selectedSubject, allPaperConfigs]);
+        setShowBranchesOnReport(!!allPaperFlags[selectedSubject]);
+    }, [selectedSubject, allPaperConfigs, allPaperFlags]);
 
     const handleLevelChange = (e) => {
         const level = e.target.value;
@@ -612,18 +636,27 @@ export default function Results() {
         }
     };
 
-    const handleSavePaperConfig = async (papers) => {
+    const handleSavePaperConfig = async ({ papers, showBranchesOnReport: showFlag }) => {
         try {
             const schoolId = requireSchoolId(userData);
-            await savePaperConfig(schoolId, selectedLevel, selectedSubject, papers, currentUser?.uid);
+            await savePaperConfig(
+                schoolId,
+                selectedLevel,
+                selectedSubject,
+                papers,
+                currentUser?.uid,
+                { showBranchesOnReport: !!showFlag }
+            );
             await AuditLogService.logAction(
                 schoolId,
                 { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
                 'PAPER_CONFIG_UPDATED',
-                { entityId: `${selectedLevel}-${selectedSubject}`, message: `Updated paper config: ${papers.length} paper(s).` }
+                { entityId: `${selectedLevel}-${selectedSubject}`, message: `Updated paper config: ${papers.length} paper(s), branches ${showFlag ? 'shown' : 'hidden'}.` }
             );
             setAllPaperConfigs(prev => ({ ...prev, [selectedSubject]: papers }));
+            setAllPaperFlags(prev => ({ ...prev, [selectedSubject]: !!showFlag }));
             setPaperConfig(papers);
+            setShowBranchesOnReport(!!showFlag);
             setShowPaperConfigModal(false);
             showNotification('Paper configuration saved', 'success');
         } catch (e) {
@@ -631,7 +664,6 @@ export default function Results() {
             showNotification('Failed to save paper config', 'error');
         }
     };
-
     const getSubjectScoreForStudent = useCallback((studentId, subject) => {
         const scores = studentScores[studentId] || [];
         const hit = scores.find(s => s.subject === subject);
@@ -1122,12 +1154,16 @@ export default function Results() {
                             </button>
                         )}
                     </div>
-                    {paperConfig.length > 0 && (
+                                       {paperConfig.length > 0 && (
                         <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 3, fontWeight: 600 }}>
-                            <i className="fas fa-layer-group"></i> Multi-paper: {paperConfig.map(p => `${p.name} (${p.weight}%)`).join(' • ')}
+                            <i className="fas fa-layer-group"></i> Multi-paper:{' '}
+                            {paperConfig.map(p => `${p.name} (${p.weight}%)`).join(' • ')}
+                            {' '}
+                            <span style={{ color: showBranchesOnReport ? 'var(--success)' : 'var(--gray)' }}>
+                                {showBranchesOnReport ? '• shown on report' : '• hidden on report'}
+                            </span>
                         </div>
                     )}
-                </div>
 
                 <div className="form-group" style={{ marginBottom: '0' }}>
                     <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--secondary)', marginBottom: '5px' }}>
@@ -1459,11 +1495,12 @@ export default function Results() {
                 />
             )}
 
-            {showPaperConfigModal && selectedSubject && (
+                      {showPaperConfigModal && selectedSubject && (
                 <PaperConfigModal
                     subject={selectedSubject}
                     level={LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel}
                     initialPapers={paperConfig}
+                    initialShowBranchesOnReport={showBranchesOnReport}
                     onSave={handleSavePaperConfig}
                     onClose={() => setShowPaperConfigModal(false)}
                 />
