@@ -6,32 +6,22 @@ const { withCors } = require('./_lib/cors');
 //   docType = 'transcript'   → 4 landscape cards per A4 landscape page
 //   docType = 'report-form'  → 1 full report card per A4 portrait page
 //
-// Features:
-//   - Letterhead-style header (logo left, school name / motto / contact stack)
-//     with a coloured underline rule, matching the printed school letterhead
-//   - Logo drawn only when present; when absent, header text is centred
-//   - Dynamic table columns based on assessments recorded (1-3 columns)
-//   - Bar chart reflects actual per-assessment averages
-//   - School logo, stamp, and principal signature embedded when available
-//   - Full printable-space utilisation on the report form
-//   - Times New Roman typography throughout (PDFKit standard-14 Times family)
-//   - Overall position/rank is supplied by the client via `student.position`
-//     and `student.classSize` and printed on the report form's marks line.
-//   - AUTO-GENERATED Class Teacher's Remark and Principal's Remark, derived
-//     from the report data (mean score, coverage, strongest/weakest area).
-//     If the client sends `student.teacherComment` / `student.principalComment`,
-//     those override the auto-generated text.
-//   - Term Dates, Principal, and Class Teacher are shown in a small
-//     information table below the remarks.
-//
-// Size strategy:
-//   - Images (logo / stamp / signature) are fetched ONCE per request and
-//     opened as reusable PDF XObjects via doc.openImage(). Every page then
-//     references the same XObject instead of re-embedding the bytes, which
-//     cuts multi-page PDF size by roughly 5–10×.
-//   - An early estimate rejects oversized batches with a 413 BEFORE PDFKit
-//     starts streaming, so callers get a clear "split into smaller batches"
-//     message instead of an opaque mid-stream 500.
+// Feature highlights:
+//   - Letterhead header with logo (left) OR centred text when no logo.
+//   - PER-STUDENT dynamic assessment columns: only the assessments this
+//     student actually has scores for are shown.
+//   - Subject BRANCH rows: if the school configured a multi-paper subject
+//     (e.g. Kiswahili → LUGHA, KUSOMA), each branch appears as its own
+//     indented row with the branch score, followed by the subject TOTAL.
+//     Only the subject total is graded.
+//   - Auto-generated class-teacher remark: strength + weakness.
+//   - Auto-generated head-teacher remark: advisory based on performance.
+//   - Class teacher / head teacher names printed with a signature line.
+//   - Term dates table driven by school profile settings.
+//   - NO page numbers anywhere.
+//   - Flowing layout — sections measure themselves and stack downward so
+//     nothing overlaps even when remarks are long.
+//   - Times New Roman typography (PDFKit standard-14 Times family).
 
 const PDFDocument = require('pdfkit');
 const axios = require('axios');
@@ -41,7 +31,6 @@ const FALLBACK_MOTTO = 'Powering Modern Education';
 
 const MAX_RESPONSE_BYTES = 5_500_000;
 const MAX_STUDENTS_PER_REQUEST = 300;
-const MAX_ASSESSMENTS = 3;
 
 const EST_BYTES_PER_STUDENT = {
     'transcript': 60_000,
@@ -242,128 +231,140 @@ function subjectRemark(avg, cbc) {
     return '—';
 }
 
-function buildTeacherComment(report) {
+// ============================================================
+// AUTO-GENERATED REMARKS
+// ============================================================
+
+/**
+ * Class teacher's remark — strength + weakness.
+ * Deliberately splits them into two short sentences so the marker can
+ * spot both at a glance.
+ */
+function buildClassTeacherComment(report) {
     const { meanScore, assessedCount, totalSubjects, subjectRows } = report;
     if (assessedCount === 0) {
         return 'No assessments recorded for this student this term.';
     }
-    const overall = cbcGrade(meanScore);
     const assessed = subjectRows.filter((r) => r.average != null);
     const sorted = [...assessed].sort((a, b) => b.average - a.average);
     const best = sorted[0];
     const weakest = sorted[sorted.length - 1];
 
-    const strength = best && best.average >= 65
-        ? ` Strongest in ${best.subject} (${best.average}%).` : '';
-    const improvement = weakest && weakest.average < 50 && weakest.subject !== best?.subject
-        ? ` Support needed in ${weakest.subject} (${weakest.average}%).` : '';
+    const overall = cbcGrade(meanScore);
+    const strength = best
+        ? ` Strongest in ${best.subject} (${best.average}%).`
+        : '';
+    const weakness = (weakest && (best == null || weakest.subject !== best.subject) && weakest.average < 65)
+        ? ` Weakest in ${weakest.subject} (${weakest.average}%); needs attention.`
+        : '';
     const coverageRatio = totalSubjects > 0 ? assessedCount / totalSubjects : 0;
     const caveat = coverageRatio < 0.7
         ? ` Covers ${assessedCount}/${totalSubjects} learning areas.` : '';
 
-    switch (overall.level) {
-        case 'EE': return `Exceeding expectations.${strength}${improvement}${caveat}`;
-        case 'ME': return `Meeting expectations across most areas.${strength}${improvement}${caveat}`;
-        case 'AE': return `Approaching expectations. Practice will raise achievement.${strength}${improvement}${caveat}`;
-        case 'BE': return `Below expectations. Targeted intervention required.${strength}${improvement}${caveat}`;
-        default: return `Report covers ${assessedCount}/${totalSubjects} learning areas.${caveat}`;
-    }
+    const head = overall.level === 'EE' ? 'Exceeding expectations. '
+        : overall.level === 'ME' ? 'Meeting expectations across most areas. '
+        : overall.level === 'AE' ? 'Approaching expectations. Practice will raise achievement. '
+        : 'Below expectations. Targeted intervention required. ';
+
+    return `${head}${strength}${weakness}${caveat}`.trim();
 }
 
 /**
- * Auto-generated Principal's Remark. Framed for the head of institution:
- * brief, outcome-focused, mentions overall standing and next-term focus.
- * The client can override with student.principalComment.
+ * Head teacher's advisory remark — based on performance level, pointing
+ * to next steps and (if relevant) the class position.
  */
-function buildPrincipalComment(report) {
+function buildHeadTeacherComment(report) {
     const { meanScore, assessedCount, totalSubjects, subjectRows, student } = report;
     if (assessedCount === 0) {
-        return 'Awaiting assessments for the term. Please ensure learner is assessed across all learning areas.';
+        return 'Awaiting assessments for the term. Please ensure the learner is assessed across all learning areas.';
     }
     const overall = cbcGrade(meanScore);
     const assessed = subjectRows.filter((r) => r.average != null);
     const sorted = [...assessed].sort((a, b) => b.average - a.average);
-    const best = sorted[0];
     const weakest = sorted[sorted.length - 1];
 
-    const position = student?.position ? `${student.position}` : null;
-    const classSize = student?.classSize ? `${student.classSize}` : null;
-    const posText = position && classSize
-        ? ` Position ${position} of ${classSize} in class.` : '';
+    const posText = (student?.position && student?.classSize)
+        ? ` Position ${student.position} of ${student.classSize}.` : '';
 
     switch (overall.level) {
         case 'EE':
-            return `An excellent term overall.${posText}` +
-                (best ? ` Continue to nurture the strong performance in ${best.subject}.` : '') +
-                (weakest && weakest.average < 65 ? ` A little extra polish in ${weakest.subject} will complete the picture.` : '');
+            return `Advisory: excellent term.${posText} Continue nurturing academic strengths.` +
+                (weakest && weakest.average < 65 ? ` Add a small focus on ${weakest.subject} next term.` : '');
         case 'ME':
-            return `A solid, consistent term.${posText}` +
-                (best ? ` The learner performs well in ${best.subject}.` : '') +
-                (weakest && weakest.average < 50 ? ` Targeted support in ${weakest.subject} will lift the overall grade.` : ' Continue the steady effort.');
+            return `Advisory: solid, consistent performance.${posText}` +
+                (weakest && weakest.average < 50
+                    ? ` A targeted focus on ${weakest.subject} will lift the overall grade.`
+                    : ' Sustain the effort and broaden engagement.');
         case 'AE':
-            return `Progress is being made, but more consistency is needed.${posText}` +
-                (weakest ? ` Focus next term should be on ${weakest.subject}.` : '');
+            return `Advisory: progress is being made.${posText}` +
+                (weakest ? ` Emphasise ${weakest.subject} next term and provide guided practice.` : '');
         case 'BE':
-            return `Results are below expectations and require attention.${posText} A structured support plan for the learner is recommended for next term.`;
+            return `Advisory: results are below expectations.${posText} A structured support plan for this learner is recommended for next term.`;
         default:
-            return `Report covers ${assessedCount} of ${totalSubjects} learning areas.`;
+            return `Advisory: report covers ${assessedCount} of ${totalSubjects} learning areas.`;
     }
 }
 
-function detectAssessmentCount(students) {
-    let max = 0;
-    for (const student of students) {
-        const scores = student.scores || {};
-        for (const subject of Object.keys(scores)) {
-            const list = scores[subject] || [];
-            const nonNull = list.filter((v) => v != null && v !== '' && !isNaN(v));
-            if (nonNull.length > max) max = nonNull.length;
+// ============================================================
+// Per-student helpers
+// ============================================================
+
+/**
+ * Return the assessment indices (0,1,2) the student actually has scores
+ * for. Never shows columns the student hasn't been assessed on.
+ * Guarantees at least one entry so the table never has zero score columns.
+ */
+function detectStudentActiveIndices(student) {
+    const active = new Set();
+    const scores = student.scores || {};
+    for (const subject of Object.keys(scores)) {
+        const list = scores[subject] || [];
+        for (let i = 0; i < 3; i++) {
+            const v = list[i];
+            if (v != null && v !== '' && !isNaN(v)) active.add(i);
         }
     }
-    return Math.min(Math.max(max, 1), MAX_ASSESSMENTS);
+    const out = [...active].sort((a, b) => a - b);
+    return out.length ? out : [0];
 }
 
-function computeAssessmentAverages(student, subjects, assessmentCount) {
-    const result = [];
-    for (let i = 0; i < assessmentCount; i++) {
+function computeAssessmentAverages(student, subjects, activeIndices) {
+    return activeIndices.map((idx) => {
         let sum = 0;
         let count = 0;
         for (const subject of subjects) {
             const scores = (student.scores && student.scores[subject]) || [];
-            const raw = scores[i];
+            const raw = scores[idx];
             if (raw != null && raw !== '' && !isNaN(raw)) {
                 sum += Number(raw);
                 count++;
             }
         }
-        result.push(count > 0 ? Math.round(sum / count) : null);
-    }
-    return result;
+        return {
+            index: idx,
+            value: count > 0 ? Math.round(sum / count) : null,
+        };
+    });
 }
 
-function computeReport(student, subjects, assessmentIndex) {
+function computeReport(student, subjects) {
     const subjectRows = subjects.map((subject) => {
         const scores = (student.scores && student.scores[subject]) || [];
         const ass1 = scores[0] ?? null;
         const ass2 = scores[1] ?? null;
         const ass3 = scores[2] ?? null;
 
+        const provided = student.averages && student.averages[subject];
         let average;
-        if (assessmentIndex != null) {
-            const raw = scores[assessmentIndex];
-            average = raw != null && !isNaN(raw) ? Math.round(Number(raw)) : null;
+        if (provided != null && !isNaN(provided)) {
+            average = Math.round(provided);
+        } else if (scores.length > 0) {
+            const valid = scores.filter((v) => v != null && !isNaN(v));
+            average = valid.length > 0
+                ? Math.round(valid.reduce((a, b) => a + Number(b), 0) / valid.length)
+                : null;
         } else {
-            const provided = student.averages && student.averages[subject];
-            if (provided != null && !isNaN(provided)) {
-                average = Math.round(provided);
-            } else if (scores.length > 0) {
-                const valid = scores.filter((v) => v != null && !isNaN(v));
-                average = valid.length > 0
-                    ? Math.round(valid.reduce((a, b) => a + Number(b), 0) / valid.length)
-                    : null;
-            } else {
-                average = null;
-            }
+            average = null;
         }
 
         const cbc = cbcGrade(average);
@@ -392,9 +393,8 @@ function computeReport(student, subjects, assessmentIndex) {
         student, subjectRows, assessedCount, totalSubjects,
         meanScore, totalMarks, totalScore, totalPoints, avgPoints, overall,
     };
-    // Auto-generated remarks (can be overridden per-student below)
-    report.teacherComment = buildTeacherComment(report);
-    report.principalComment = buildPrincipalComment(report);
+    report.teacherComment = buildClassTeacherComment(report);
+    report.principalComment = buildHeadTeacherComment(report);
     return report;
 }
 
@@ -429,36 +429,6 @@ async function fetchImageBuffer(url, maxBytes = 1 * 1024 * 1024) {
 // ============================================================
 // Primitives
 // ============================================================
-function hexToRgb(hex) {
-    const h = hex.replace('#', '');
-    return [
-        parseInt(h.substring(0, 2), 16),
-        parseInt(h.substring(2, 4), 16),
-        parseInt(h.substring(4, 6), 16),
-    ];
-}
-
-function interpolateHex(a, b, t) {
-    const [r1, g1, b1] = hexToRgb(a);
-    const [r2, g2, b2] = hexToRgb(b);
-    const r = Math.round(r1 + (r2 - r1) * t);
-    const g = Math.round(g1 + (g2 - g1) * t);
-    const bl = Math.round(b1 + (b2 - b1) * t);
-    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${bl.toString(16).padStart(2, '0')}`;
-}
-
-function gradientBand(doc, x, y, w, h, from, to) {
-    const stops = [
-        interpolateHex(from, to, 0),
-        interpolateHex(from, to, 0.5),
-        interpolateHex(from, to, 1),
-    ];
-    const bandW = w / 3;
-    stops.forEach((color, i) => {
-        doc.rect(x + i * bandW, y, bandW + 0.5, h).fill(color);
-    });
-}
-
 function openImages(doc, { logoBuffer, stampBuffer, signatureBuffer }) {
     const safeOpen = (buf, label) => {
         if (!buf) return null;
@@ -503,10 +473,6 @@ function drawRotatedImage(doc, img, cx, cy, w, h, angleDeg) {
     }
 }
 
-/**
- * Letterhead header. Logo is drawn only when present; when absent, header
- * text is centred across the full content width.
- */
 function drawLetterheadHeader(doc, {
     x, y, w,
     meta, logoImg,
@@ -554,9 +520,7 @@ function drawLetterheadHeader(doc, {
     if (meta.schoolPhone) contactLines.push(`Tel: ${meta.schoolPhone}`);
     if (meta.schoolEmail) contactLines.push(`Email: ${meta.schoolEmail}`);
     if (meta.website) contactLines.push(`Website: ${meta.website}`);
-    if (meta.schoolCode || meta.schoolId) {
-        contactLines.push(`School Code: ${meta.schoolCode || meta.schoolId}`);
-    }
+    if (meta.schoolCode) contactLines.push(`School Code: ${meta.schoolCode}`);
 
     for (const line of contactLines) {
         doc.text(line, textX, cy, {
@@ -593,6 +557,37 @@ function fmtDate(d) {
 }
 
 // ============================================================
+// VERTICAL bar chart
+// ============================================================
+function drawVerticalBarChart(doc, { x, y, w, h, data, assessLabels }) {
+    doc.moveTo(x, y + h).lineTo(x + w, y + h)
+        .lineWidth(0.5).strokeColor('#999').stroke();
+
+    const count = Math.max(data.length, 1);
+    const gap = Math.max(6, w * 0.04);
+    const barW = (w - gap * (count - 1)) / count;
+
+    data.forEach((d, i) => {
+        const bx = x + i * (barW + gap);
+        const value = d.value != null ? d.value : 0;
+        const barH = Math.max(2, (value / 100) * (h - 8));
+        const by = y + h - barH;
+
+        doc.rect(bx, by, barW, barH).fill(PRIMARY);
+
+        doc.font(FONT_BOLD).fontSize(7.5).fillColor('#000')
+            .text(d.value != null ? String(d.value) : '—', bx, by - 9, {
+                width: barW, align: 'center',
+            });
+
+        doc.font(FONT_REGULAR).fontSize(7).fillColor('#000')
+            .text(assessLabels[i] || `A${d.index + 1}`, bx, y + h + 3, {
+                width: barW, align: 'center',
+            });
+    });
+}
+
+// ============================================================
 // Transcript card
 // ============================================================
 function drawTranscriptCard(doc, {
@@ -600,7 +595,7 @@ function drawTranscriptCard(doc, {
     logoImg, stampImg, signatureImg,
     x, y, w, h,
 }) {
-    const report = computeReport(student, subjects, assessmentIndex);
+    const report = computeReport(student, subjects);
 
     doc.rect(x, y, w, h).lineWidth(0.8).strokeColor(PRIMARY).stroke();
 
@@ -744,44 +739,49 @@ function drawTranscriptCard(doc, {
 }
 
 // ============================================================
-// Report form — full page per student
+// Report form — one full page per student
+//
+// Layout is completely flowing: every section returns the y of its bottom
+// edge and the next section starts there. Long remarks or subject lists
+// push subsequent sections down — nothing overlaps.
 // ============================================================
 function drawReportForm(doc, {
     student, meta, subjects, term,
     logoImg, stampImg, signatureImg,
-    assessmentCount = MAX_ASSESSMENTS,
 }) {
     const MARGIN = 28;
     const PAGE_W = doc.page.width;
     const PAGE_H = doc.page.height;
     const CONTENT_W = PAGE_W - MARGIN * 2;
 
-    const report = computeReport(student, subjects, null);
-    const assessmentAverages = computeAssessmentAverages(student, subjects, assessmentCount);
+    // Per-student active assessment indices — no empty A2/A3 columns.
+    const activeIndices = detectStudentActiveIndices(student);
+    const assessmentCount = activeIndices.length;
 
-    // Client-supplied comments override auto-generated ones.
+    const report = computeReport(student, subjects);
+    const assessmentAverages = computeAssessmentAverages(student, subjects, activeIndices);
+
+    // Client-supplied comments override the auto-generated ones.
     const teacherComment = (student.teacherComment && String(student.teacherComment).trim())
         || report.teacherComment;
     const principalComment = (student.principalComment && String(student.principalComment).trim())
         || report.principalComment;
 
-    const headerBottom = drawLetterheadHeader(doc, {
-        x: MARGIN,
-        y: MARGIN,
-        w: CONTENT_W,
-        meta,
-        logoImg,
-        logoSize: 58,
-        padding: 10,
-        nameSize: 15,
-        mottoSize: 8.5,
-        contactSize: 7.5,
-        lineGap: 2.5,
-        ruleGap: 6,
+    const classTeacherName = meta.classTeacherName || '—';
+    const principalName = meta.principalName || '—';
+
+    // Paper config map — { subject: [{name, weight}, ...] }
+    const paperConfigBySubject = meta.paperConfigBySubject || {};
+
+    // ---- Header ----
+    let y = drawLetterheadHeader(doc, {
+        x: MARGIN, y: MARGIN, w: CONTENT_W, meta, logoImg,
+        logoSize: 58, padding: 10, nameSize: 15, mottoSize: 8.5,
+        contactSize: 7.5, lineGap: 2.5, ruleGap: 6,
     });
+    y += 2;
 
-    let y = headerBottom + 2;
-
+    // Term title
     doc.font(FONT_BOLD).fontSize(11.5).fillColor('#000')
         .text(`${(term || 'TERM').toUpperCase()} - ${meta.year || new Date().getFullYear()}`,
             MARGIN, y, { width: CONTENT_W, align: 'center' });
@@ -809,6 +809,7 @@ function drawReportForm(doc, {
         .text(marksText, MARGIN, y, { width: CONTENT_W, align: 'center' });
     y += 12;
 
+    // ---- Marks table (per-student assessment columns) ----
     const tableTop = y;
     const colSubject = Math.floor(CONTENT_W * 0.28);
     const colRemark = Math.floor(CONTENT_W * 0.18);
@@ -824,9 +825,9 @@ function drawReportForm(doc, {
     ];
     for (let i = 0; i < assessmentCount; i++) {
         columns.push({
-            key: `a${i + 1}`,
+            key: `a${activeIndices[i] + 1}`,
             w: colAss,
-            label: `A${i + 1}`,
+            label: `A${activeIndices[i] + 1}`,
             align: 'center',
         });
     }
@@ -847,23 +848,79 @@ function drawReportForm(doc, {
     });
 
     let ry = tableTop + headerH2;
-    const tableMaxBottom = PAGE_H - 240;
-    const availableTableHeight = tableMaxBottom - ry;
-    const baseRowH = 15;
-    const minRowH = 15;
-    const maxRowH = 22;
-    const idealRowH = Math.floor(availableTableHeight / (report.subjectRows.length + 2));
-    const rowH = Math.max(minRowH, Math.min(maxRowH, idealRowH || baseRowH));
+    const rowH = 15;
 
+    // Draw every subject row, plus branch rows if configured.
     report.subjectRows.forEach((row, idx) => {
+        const subjectPapers = Array.isArray(paperConfigBySubject[row.subject])
+            ? paperConfigBySubject[row.subject]
+            : [];
+        const paperScores = (student.papersBySubject && student.papersBySubject[row.subject]) || {};
+
+        // --- Branch rows (NOT graded) ---
+        subjectPapers.forEach((paper) => {
+            const p = paperScores[paper.name] || null;
+            const branchScore = p && p.score != null ? Number(p.score) : null;
+
+            doc.rect(MARGIN, ry, CONTENT_W, rowH)
+                .fillAndStroke('#fbfbff', '#e5e5e5');
+
+            // Indented subject label
+            const cells = [{ t: `    └ ${paper.name}`, align: 'left' }];
+            for (let i = 0; i < assessmentCount; i++) {
+                cells.push({ t: '—', align: 'center' });
+            }
+            cells.push(
+                { t: branchScore != null ? String(branchScore) : '—', align: 'center', bold: true },
+                { t: '', align: 'center' },
+                { t: '', align: 'center' },
+                { t: 'Branch', align: 'left', size: 7.5, color: '#666' }
+            );
+
+            let rx = MARGIN + 4;
+            cells.forEach((c, i) => {
+                const col = columns[i];
+                doc.fontSize(c.size || 8)
+                    .font(c.bold ? FONT_BOLD : FONT_REGULAR)
+                    .fillColor(c.color || '#000')
+                    .text(c.t, rx, ry + (rowH - 10) / 2, {
+                        width: col.w - 8, align: c.align, ellipsis: true,
+                    });
+                rx += col.w;
+            });
+
+            // Cell separators
+            let sepX = MARGIN + colSubject;
+            doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH)
+                .lineWidth(0.3).strokeColor('#e5e5e5').stroke();
+            for (let i = 0; i < assessmentCount; i++) {
+                sepX += colAss;
+                doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).stroke();
+            }
+            sepX += colAvg;
+            doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).stroke();
+            sepX += colPl;
+            doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).stroke();
+            sepX += colPoints;
+            doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).stroke();
+
+            ry += rowH;
+        });
+
+        // --- Subject total row (graded) ---
         doc.rect(MARGIN, ry, CONTENT_W, rowH)
             .fillAndStroke(idx % 2 === 1 ? '#f7f9fc' : '#ffffff', '#cccccc');
 
-        const cells = [{ t: row.subject, align: 'left' }];
         const assValues = [row.ass1, row.ass2, row.ass3];
+        const cells = [{
+            t: subjectPapers.length > 0 ? `${row.subject} — TOTAL` : row.subject,
+            align: 'left',
+            bold: subjectPapers.length > 0,
+        }];
         for (let i = 0; i < assessmentCount; i++) {
+            const v = assValues[activeIndices[i]];
             cells.push({
-                t: assValues[i] != null ? String(assValues[i]) : '—',
+                t: v != null ? String(v) : '—',
                 align: 'center',
             });
         }
@@ -886,8 +943,10 @@ function drawReportForm(doc, {
             rx += col.w;
         });
 
+        // Cell separators
         let sepX = MARGIN + colSubject;
-        doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).lineWidth(0.3).strokeColor('#cccccc').stroke();
+        doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH)
+            .lineWidth(0.3).strokeColor('#cccccc').stroke();
         for (let i = 0; i < assessmentCount; i++) {
             sepX += colAss;
             doc.moveTo(sepX, ry).lineTo(sepX, ry + rowH).stroke();
@@ -902,16 +961,18 @@ function drawReportForm(doc, {
         ry += rowH;
     });
 
+    // TOTAL row
     doc.rect(MARGIN, ry, CONTENT_W, rowH).fillAndStroke('#f5f7fb', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('TOTAL', MARGIN + 4, ry + (rowH - 10) / 2, { width: colSubject - 8 });
 
     let tx = MARGIN + 4 + colSubject;
     for (let i = 0; i < assessmentCount; i++) {
+        const ai = activeIndices[i];
         let sum = 0;
         let hasAny = false;
         for (const r of report.subjectRows) {
-            const v = [r.ass1, r.ass2, r.ass3][i];
+            const v = [r.ass1, r.ass2, r.ass3][ai];
             if (v != null && !isNaN(v)) { sum += Number(v); hasAny = true; }
         }
         doc.text(hasAny ? String(Math.round(sum)) : '—', tx, ry + (rowH - 10) / 2, {
@@ -930,13 +991,14 @@ function drawReportForm(doc, {
     });
     ry += rowH;
 
+    // AVG row
     doc.rect(MARGIN, ry, CONTENT_W, rowH).fillAndStroke('#f5f7fb', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('AVG', MARGIN + 4, ry + (rowH - 10) / 2, { width: colSubject - 8 });
 
     tx = MARGIN + 4 + colSubject;
     for (let i = 0; i < assessmentCount; i++) {
-        const v = assessmentAverages[i];
+        const v = assessmentAverages[i].value;
         doc.text(v != null ? String(v) : '—', tx, ry + (rowH - 10) / 2, {
             width: colAss - 8, align: 'center',
         });
@@ -955,23 +1017,51 @@ function drawReportForm(doc, {
     doc.rect(MARGIN, tableTop, CONTENT_W, ry - tableTop - 4)
         .lineWidth(1).strokeColor('#000').stroke();
 
-    // ---- Remarks (auto-generated unless overridden) ----
-    doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
-        .text(`Class Teacher's Remark: `, MARGIN, ry, { continued: true });
-    doc.font(FONT_REGULAR).fontSize(9)
-        .text(teacherComment, { width: CONTENT_W - 130 });
-    ry += 13;
+    // ============================================================
+    // FLOWING SECTIONS — class teacher remark → head teacher remark →
+    // term dates table → chart → signatures → footer
+    // Every section measures its real height.
+    // ============================================================
+    let flow = ry + 10;
 
+    // ---- Class Teacher's remark ----
     doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
-        .text(`Principal's Remark: `, MARGIN, ry, { continued: true });
-    doc.font(FONT_REGULAR).fontSize(9)
-        .text(principalComment, { width: CONTENT_W - 110 });
-    ry += 16;
+        .text(`CLASS TEACHER: ${classTeacherName}`, MARGIN, flow, { width: CONTENT_W });
+    flow = doc.y + 2;
 
-    // ---- Term dates + signatory info table ----
-    // A compact two-column info table: left column has term dates,
-    // right column has class teacher and principal names.
-    const infoTop = ry;
+    doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
+        .text(`REMARKS: `, MARGIN, flow, { continued: true });
+    doc.font(FONT_REGULAR).fontSize(8.5)
+        .text(teacherComment, { width: CONTENT_W - 60 });
+    flow = doc.y + 4;
+
+    // Signature line
+    doc.moveTo(MARGIN, flow).lineTo(MARGIN + 160, flow)
+        .lineWidth(0.6).strokeColor('#333').stroke();
+    doc.font(FONT_ITALIC).fontSize(7).fillColor('#666')
+        .text('Signature / Date', MARGIN, flow + 2, { width: 160 });
+    flow = doc.y + 8;
+
+    // ---- Head Teacher's remark ----
+    doc.font(FONT_BOLD).fontSize(9).fillColor('#000')
+        .text(`HEAD TEACHER: ${principalName}`, MARGIN, flow, { width: CONTENT_W });
+    flow = doc.y + 2;
+
+    doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
+        .text(`REMARKS: `, MARGIN, flow, { continued: true });
+    doc.font(FONT_REGULAR).fontSize(8.5)
+        .text(principalComment, { width: CONTENT_W - 60 });
+    flow = doc.y + 4;
+
+    // Signature line
+    doc.moveTo(MARGIN, flow).lineTo(MARGIN + 160, flow)
+        .lineWidth(0.6).strokeColor('#333').stroke();
+    doc.font(FONT_ITALIC).fontSize(7).fillColor('#666')
+        .text('Signature / Date', MARGIN, flow + 2, { width: 160 });
+    flow = doc.y + 10;
+
+    // ---- Term & Signatory Information table ----
+    const infoTop = flow;
     const infoRowH = 11;
     const infoLabelW = 78;
     const infoValueW = (CONTENT_W / 2) - infoLabelW;
@@ -980,11 +1070,11 @@ function drawReportForm(doc, {
     const infoRows = [
         {
             left: { label: 'Term Started', value: fmtDate(meta.currentTermStart || meta.termStart) },
-            right: { label: 'Class Teacher', value: meta.classTeacherName || '—' },
+            right: { label: 'Class Teacher', value: classTeacherName },
         },
         {
             left: { label: 'Closing Date', value: fmtDate(meta.currentTermEnd) },
-            right: { label: 'Principal', value: meta.principalName || '—' },
+            right: { label: 'Head Teacher', value: principalName },
         },
         {
             left: { label: 'Next Opening', value: fmtDate(meta.nextTermStart) },
@@ -992,7 +1082,6 @@ function drawReportForm(doc, {
         },
     ];
 
-    // Header strip
     doc.rect(MARGIN, infoTop, CONTENT_W, infoRowH).fillAndStroke('#eef2f7', '#000');
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000');
     doc.text('Term & Signatory Information', MARGIN + 4, infoTop + 2, {
@@ -1001,15 +1090,12 @@ function drawReportForm(doc, {
 
     let iy = infoTop + infoRowH;
     infoRows.forEach((row, idx) => {
-        // Row background
         doc.rect(MARGIN, iy, CONTENT_W, infoRowH)
             .fillAndStroke(idx % 2 === 1 ? '#fafbfe' : '#ffffff', '#cccccc');
 
-        // Middle divider
         doc.moveTo(col2X, iy).lineTo(col2X, iy + infoRowH)
             .lineWidth(0.3).strokeColor('#cccccc').stroke();
 
-        // Left cell
         if (row.left.label) {
             doc.font(FONT_BOLD).fontSize(8.5).fillColor('#333')
                 .text(`${row.left.label}:`, MARGIN + 4, iy + 2, {
@@ -1021,7 +1107,6 @@ function drawReportForm(doc, {
                 });
         }
 
-        // Right cell
         if (row.right.label) {
             doc.font(FONT_BOLD).fontSize(8.5).fillColor('#333')
                 .text(`${row.right.label}:`, col2X + 4, iy + 2, {
@@ -1036,34 +1121,22 @@ function drawReportForm(doc, {
         iy += infoRowH;
     });
 
-    // Outer border of the info table
     doc.rect(MARGIN, infoTop, CONTENT_W, iy - infoTop)
         .lineWidth(0.8).strokeColor('#000').stroke();
 
-    ry = iy + 8;
+    flow = iy + 10;
 
+    // ---- Bar chart ----
     const chartH = 55;
-    const chartTop = ry;
+    const chartTop = flow;
     const chartW = CONTENT_W * 0.55;
     const legendX = MARGIN + chartW + 20;
 
-    const assessLabels = ['A1', 'A2', 'A3'].slice(0, assessmentCount);
-    const barSpacing = 8;
-    const barW = (chartW - barSpacing * (assessmentCount - 1)) / assessmentCount;
-
-    assessmentAverages.forEach((val, i) => {
-        const bx = MARGIN + i * (barW + barSpacing);
-        const displayVal = val != null ? val : 0;
-        const barH = Math.max(6, (displayVal / 100) * chartH);
-        doc.rect(bx, chartTop + chartH - barH, barW, barH).fill(PRIMARY);
-        doc.font(FONT_BOLD).fontSize(7.5).fillColor('#000')
-            .text(val != null ? String(val) : '—', bx, chartTop + chartH - barH - 9, {
-                width: barW, align: 'center',
-            });
-        doc.font(FONT_REGULAR).fontSize(7).fillColor('#000')
-            .text(assessLabels[i] || '', bx, chartTop + chartH + 3, {
-                width: barW, align: 'center',
-            });
+    const assessLabels = activeIndices.map((idx) => `A${idx + 1}`);
+    drawVerticalBarChart(doc, {
+        x: MARGIN, y: chartTop, w: chartW, h: chartH,
+        data: assessmentAverages,
+        assessLabels,
     });
 
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
@@ -1081,15 +1154,16 @@ function drawReportForm(doc, {
         doc.font(FONT_REGULAR).fillColor('#000').text(` - ${item.label}`);
     });
 
-    ry = chartTop + chartH + 18;
+    flow = chartTop + chartH + 18;
 
-    const sigY = Math.max(ry, PAGE_H - 110);
+    // ---- Final signatures block (flows, not pinned) ----
+    const sigY = flow;
     const sigW = (CONTENT_W - 40) / 2;
 
     doc.font(FONT_BOLD).fontSize(8.5).fillColor('#000')
         .text('Class Teacher', MARGIN, sigY, { width: sigW, align: 'center' });
     doc.font(FONT_REGULAR).fontSize(8.5).fillColor('#000')
-        .text(meta.classTeacherName || '—', MARGIN, sigY + 34, {
+        .text(classTeacherName, MARGIN, sigY + 34, {
             width: sigW, align: 'center',
         });
 
@@ -1105,7 +1179,7 @@ function drawReportForm(doc, {
         );
     }
     doc.font(FONT_REGULAR).fontSize(8.5).fillColor('#000')
-        .text(meta.principalName || '—', rightX, sigY + 34, {
+        .text(principalName, rightX, sigY + 34, {
             width: sigW, align: 'center',
         });
 
@@ -1118,6 +1192,7 @@ function drawReportForm(doc, {
         );
     }
 
+    // ---- Footer (no page numbers) ----
     const footerY = PAGE_H - 26;
     doc.moveTo(MARGIN, footerY)
         .lineTo(MARGIN + CONTENT_W, footerY)
@@ -1208,15 +1283,11 @@ async function buildPDF({
                 });
             });
         } else {
-            const assessmentCount = detectAssessmentCount(students);
-            console.log(`[PDF] Detected assessment count: ${assessmentCount}`);
-
             students.forEach((student) => {
                 doc.addPage();
                 drawReportForm(doc, {
                     student, meta, subjects, term,
                     logoImg, stampImg, signatureImg,
-                    assessmentCount,
                 });
             });
         }
