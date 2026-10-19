@@ -1,1345 +1,1008 @@
 // src/pages/StudentReports.jsx
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useSchool } from '../context/SchoolContext';
 import { db } from '../firebase';
-import { 
-    collection, query, where, getDocs, onSnapshot,
-    doc, getDoc, orderBy 
-} from 'firebase/firestore';
+import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
+import { showAppNotice } from '../utils/appNotice';
 import {
-    LEVEL_CLASSES,
-    LEVEL_DISPLAY_NAMES,
-    LEVEL_BADGE_CLASSES,
-    LEVEL_SUBJECTS,
-    CBC_GRADING_SYSTEM,
-    getCBCGrade
+    LEVEL_CLASSES, LEVEL_DISPLAY_NAMES, LEVEL_SUBJECTS, getCBCGrade,
 } from '../utils/constants';
+import {
+    downloadTranscripts,
+    downloadClassReportForms,
+    downloadStudentReportForm,
+} from '../services/pdf';
+import { loadStudentRoster } from '../services/studentRosterService';
+import { getAllPaperConfigsForLevel } from '../services/firestore';
 
-// Utility function for time formatting
-const formatTimeAgo = (date) => {
-    if (!date) return 'Just now';
-    const now = new Date();
-    const diff = now - date;
-    
-    if (diff < 60000) return 'Just now';
-    if (diff < 3600000) return Math.floor(diff / 60000) + ' minutes ago';
-    if (diff < 86400000) return Math.floor(diff / 3600000) + ' hours ago';
-    if (diff < 604800000) return Math.floor(diff / 86400000) + ' days ago';
-    return date.toLocaleDateString();
-};
-
-// Sample data for template
-const sampleSubjects = [
-    'English', 'Kiswahili', 'Mathematics', 'Integrated Science', 
-    'Social Studies', 'Religious Education', 'Pre-Technical Studies', 'Agriculture & Nutrition'
+const MAX_STUDENTS = 500;
+const MAX_SCORES = 4000;
+const ASSESSMENTS = [
+    { index: 0, label: 'Assessment 1' },
+    { index: 1, label: 'Assessment 2' },
+    { index: 2, label: 'Assessment 3' },
 ];
 
-const sampleStudent = {
-    firstName: 'John',
-    lastName: 'Doe',
-    studentId: 'STU-2024-001',
-    admissionNumber: 'ADM-001',
-    class: 'Grade 7',
+const SAMPLE_SUBJECTS = [
+    'English', 'Kiswahili', 'Mathematics', 'Integrated Science',
+    'Social Studies', 'Religious Education', 'Pre-Technical Studies',
+    'Agriculture & Nutrition',
+];
+
+const SAMPLE_STUDENT = {
+    id: 'sample',
+    firstName: 'John', lastName: 'Doe',
+    admissionNumber: 'STU-2024-001', class: 'Grade 7',
     scores: {
-        'English': [85, 78, 92],
-        'Kiswahili': [72, 68, 75],
-        'Mathematics': [68, 72, 65],
-        'Integrated Science': [90, 85, 88],
-        'Social Studies': [75, 70, 80],
-        'Religious Education': [80, 75, 85],
-        'Pre-Technical Studies': [65, 70, 60],
-        'Agriculture & Nutrition': [88, 82, 90]
-    }
+        English: [85, 78, 92], Kiswahili: [72, 68, 75],
+        Mathematics: [68, 72, 65], 'Integrated Science': [90, 85, 88],
+        'Social Studies': [75, 70, 80], 'Religious Education': [80, 75, 85],
+        'Pre-Technical Studies': [65, 70, 60], 'Agriculture & Nutrition': [88, 82, 90],
+    },
+    averages: {
+        English: 85, Kiswahili: 72, Mathematics: 68, 'Integrated Science': 88,
+        'Social Studies': 75, 'Religious Education': 80,
+        'Pre-Technical Studies': 65, 'Agriculture & Nutrition': 87,
+    },
+};
+
+const resolveClassList = (level, getLevelClassesFn) => {
+    if (!level) return [];
+    const custom = getLevelClassesFn ? getLevelClassesFn(level) : null;
+    if (Array.isArray(custom) && custom.length > 0) return custom;
+    return LEVEL_CLASSES[level] || [];
 };
 
 export default function StudentReports() {
-    const navigate = useNavigate();
-    const { currentUser, userData, userRole } = useAuth();
-    
-    // State for filters
+    const { userData } = useAuth();
+    const { getLevelClasses, schoolData } = useSchool();
+
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
     const [selectedTerm, setSelectedTerm] = useState('2');
-    const [schoolData, setSchoolData] = useState(null);
-    
-    // State for data
+
     const [students, setStudents] = useState([]);
-    const [studentScores, setStudentScores] = useState({});
-    const [subjects, setSubjects] = useState([]);
     const [loading, setLoading] = useState(false);
     const [generating, setGenerating] = useState(false);
-    
-    // State for modal
-    const [showModal, setShowModal] = useState(false);
-    const [selectedStudent, setSelectedStudent] = useState(null);
-    const [reportHTML, setReportHTML] = useState('');
-    
-    // Refs
-    const reportContentRef = useRef(null);
-    const classContainerRef = useRef(null);
+    const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
-    // Load school data on mount
+    const [previewStudent, setPreviewStudent] = useState(null);
+    const [previewAssessment, setPreviewAssessment] = useState(0);
+
+    // Paper configuration per subject — needed so the report can display
+    // subject branches (e.g. Kiswahili → LUGHA, KUSOMA) alongside the
+    // subject total when the admin enabled "show branches on report".
+    const [paperConfigBySubject, setPaperConfigBySubject] = useState({});
+
+    const [classTeacherName, setClassTeacherName] = useState('');
+    const [headTeacherName, setHeadTeacherName] = useState('');
+
+    const subjects = useMemo(() => LEVEL_SUBJECTS[selectedLevel] || [], [selectedLevel]);
+
+    const classOptions = useMemo(
+        () => resolveClassList(selectedLevel, getLevelClasses),
+        [selectedLevel, getLevelClasses]
+    );
+
+    const schoolBranding = useMemo(() => ({
+        schoolName: userData?.schoolName || schoolData?.schoolName || 'EDUPRIVA',
+        schoolMotto: userData?.schoolMotto || schoolData?.motto || 'Powering Modern Education',
+        schoolLogo: userData?.schoolLogo || schoolData?.logoUrl || '',
+        schoolAddress: userData?.schoolAddress || schoolData?.address || '',
+        schoolPhone: userData?.schoolPhone || schoolData?.phone || '',
+        schoolEmail: userData?.schoolEmail || schoolData?.email || '',
+        website: userData?.website || schoolData?.website || '',
+        schoolCode: userData?.schoolCode || schoolData?.schoolCode || '',
+        schoolStamp: userData?.schoolStamp || schoolData?.stampUrl || '',
+        principalSignature: userData?.principalSignature || schoolData?.principalSignatureUrl || '',
+        principalName: userData?.principalName || schoolData?.principalName || '',
+        currentTermStart: schoolData?.termStart || userData?.currentTermStart || '',
+        currentTermEnd: schoolData?.currentTermEnd || userData?.currentTermEnd || '',
+        nextTermStart: schoolData?.nextTermStart || userData?.nextTermStart || '',
+        year: new Date().getFullYear(),
+    }), [userData, schoolData]);
+
+    const sortedStudents = useMemo(
+        () => [...students].sort((a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)),
+        [students]
+    );
+
+    const ready = students.length > 0;
+
+    const showNotification = useCallback((message, type = 'info') => {
+        showAppNotice(message, type);
+    }, []);
+
+    const buildMeta = useCallback(() => ({
+        ...schoolBranding,
+        level: selectedLevel,
+        levelDisplay: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
+        cls: selectedClass,
+        term: `Term ${selectedTerm}`,
+        year: new Date().getFullYear(),
+        // Class teacher for this class (falls back to the school-level one).
+        classTeacherName: classTeacherName || schoolBranding.principalName || '',
+        // Head teacher / principal
+        principalName: headTeacherName || schoolBranding.principalName || '',
+        // Paper config — the function uses this to build branch rows.
+        paperConfigBySubject,
+    }), [schoolBranding, selectedLevel, selectedClass, selectedTerm, classTeacherName, headTeacherName, paperConfigBySubject]);
+
+    // Resolve class teacher name for the current class from schoolData.classTeachers
     useEffect(() => {
-        if (currentUser && userData) {
-            loadSchoolData();
-        }
-    }, [currentUser, userData]);
-
-    const loadSchoolData = async () => {
-        try {
-            if (userData?.schoolId) {
-                const schoolDoc = await getDoc(doc(db, 'schools', userData.schoolId));
-                if (schoolDoc.exists()) {
-                    setSchoolData({
-                        id: schoolDoc.id,
-                        ...schoolDoc.data()
-                    });
+        let cancelled = false;
+        async function resolveClassTeacher() {
+            const schoolId = userData?.schoolId;
+            if (!schoolId || !selectedClass) { setClassTeacherName(''); return; }
+            try {
+                const map = schoolData?.classTeachers || {};
+                const teacherUid = map[selectedClass];
+                if (!teacherUid) { setClassTeacherName(''); return; }
+                const snap = await getDocs(query(
+                    collection(db, 'users'),
+                    where('uid', '==', teacherUid)
+                ));
+                if (cancelled) return;
+                const doc0 = snap.docs[0];
+                if (doc0) {
+                    const t = doc0.data();
+                    setClassTeacherName(`${t.firstName || ''} ${t.lastName || ''}`.trim());
                 }
+            } catch (e) {
+                console.warn('Could not resolve class teacher:', e?.message || e);
             }
-        } catch (error) {
-            console.error('Error loading school data:', error);
         }
-    };
+        resolveClassTeacher();
+        return () => { cancelled = true; };
+    }, [selectedClass, schoolData?.classTeachers, userData?.schoolId]);
 
-    // Handle level change
-    const handleLevelChange = (e) => {
-        const level = e.target.value;
-        setSelectedLevel(level);
-        setSelectedClass('');
-        
-        // Update subjects based on level
-        const levelSubjects = LEVEL_SUBJECTS[level] || [];
-        setSubjects(levelSubjects);
-    };
+    // Resolve head teacher / principal name
+    useEffect(() => {
+        const name = schoolData?.principalName || userData?.principalName || '';
+        setHeadTeacherName(name);
+    }, [schoolData?.principalName, userData?.principalName]);
 
-    // Handle class change
-    const handleClassChange = (e) => {
-        setSelectedClass(e.target.value);
-    };
+    // Load paper configs for the selected level
+    useEffect(() => {
+        let cancelled = false;
+        const schoolId = userData?.schoolId;
+        if (!schoolId || !selectedLevel) { setPaperConfigBySubject({}); return; }
+        (async () => {
+            try {
+                const configs = await getAllPaperConfigsForLevel(schoolId, selectedLevel);
+                if (!cancelled) setPaperConfigBySubject(configs || {});
+            } catch (e) {
+                console.warn('Failed to load paper configs:', e);
+                if (!cancelled) setPaperConfigBySubject({});
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [userData?.schoolId, selectedLevel]);
 
-    // Handle term change
-    const handleTermChange = (e) => {
-        setSelectedTerm(e.target.value);
-    };
-
-    // Load students
-    const loadStudents = async () => {
+    const loadStudents = useCallback(async () => {
         if (!selectedLevel || !selectedClass) {
             showNotification('Please select level and class', 'warning');
             return;
         }
+        const schoolId = userData?.schoolId;
+        if (!schoolId) {
+            showNotification('School context missing', 'error');
+            return;
+        }
 
         setLoading(true);
-
         try {
-            const schoolId = userData?.schoolId || 'default_school';
-            
-            // Get students
-            const studentsQuery = query(
-                collection(db, 'students'),
-                where('schoolId', '==', schoolId),
-                where('level', '==', selectedLevel),
-                where('class', '==', selectedClass),
-                orderBy('firstName')
-            );
-            const studentsSnapshot = await getDocs(studentsQuery);
-            
-            const studentsData = [];
-            studentsSnapshot.forEach(doc => {
-                studentsData.push({
-                    id: doc.id,
-                    ...doc.data()
-                });
-            });
+            const studentsData = (await loadStudentRoster(schoolId))
+                .filter((student) => student.level === selectedLevel && student.class === selectedClass)
+                .sort((a, b) => String(a.firstName || '').localeCompare(String(b.firstName || '')))
+                .slice(0, MAX_STUDENTS);
 
             if (studentsData.length === 0) {
                 showNotification('No students found for this class', 'warning');
                 setStudents([]);
-                setLoading(false);
+                setHasLoadedOnce(true);
                 return;
             }
 
-            setStudents(studentsData);
-            
-            // Load scores
-            await loadScores(studentsData);
-            
-            showNotification(`Loaded ${studentsData.length} students`, 'success');
-
-        } catch (error) {
-            console.error('Error loading students:', error);
-            showNotification('Failed to load students', 'error');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Load scores
-    const loadScores = async (studentsData) => {
-        try {
-            const schoolId = userData?.schoolId || 'default_school';
-            const levelSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
-            setSubjects(levelSubjects);
-
-            const scoresQuery = query(
+            const termName = `Term ${selectedTerm}`;
+            const scoresSnap = await getDocs(query(
                 collection(db, 'student_scores'),
                 where('schoolId', '==', schoolId),
                 where('level', '==', selectedLevel),
-                where('class', '==', selectedClass)
-            );
-            const scoresSnapshot = await getDocs(scoresQuery);
-            
-            const scoresMap = {};
-            studentsData.forEach(student => {
-                scoresMap[student.id] = {};
-                levelSubjects.forEach(subject => {
-                    scoresMap[student.id][subject] = [];
-                });
-            });
+                where('class', '==', selectedClass),
+                where('term', '==', termName),
+                limit(MAX_SCORES)
+            ));
 
-            scoresSnapshot.forEach(doc => {
-                const data = doc.data();
-                if (scoresMap[data.studentId] && scoresMap[data.studentId][data.subject]) {
-                    scoresMap[data.studentId][data.subject].push(data.score || 0);
+            // Group per student, per subject, per assessment.
+            const bucket = new Map();
+            scoresSnap.forEach((d) => {
+                const s = d.data();
+                if (!s.studentId || !s.subject) return;
+                if (!bucket.has(s.studentId)) bucket.set(s.studentId, new Map());
+                const bySubj = bucket.get(s.studentId);
+                if (!bySubj.has(s.subject)) {
+                    bySubj.set(s.subject, {
+                        assessmentScores: [null, null, null],
+                        papers: {}, // branch name -> { score, maxScore }
+                    });
+                }
+                const entry = bySubj.get(s.subject);
+                const aType = String(s.assessmentType || '');
+                const idx = aType.match(/Assessment\s+(\d+)/i)
+                    ? parseInt(aType.match(/Assessment\s+(\d+)/i)[1], 10) - 1
+                    : null;
+                if (idx != null && idx >= 0 && idx < 3) {
+                    const val = s.computedPercentage != null ? s.computedPercentage : s.score;
+                    entry.assessmentScores[idx] = Number.isFinite(Number(val)) ? Number(val) : null;
+                }
+                // Paper-level scores (if the score record has a `papers` map)
+                if (s.papers && typeof s.papers === 'object') {
+                    Object.assign(entry.papers, s.papers);
                 }
             });
 
-            // Calculate averages
-            studentsData.forEach(student => {
-                student.scores = {};
-                student.averages = {};
-                let totalScore = 0;
-                let subjectCount = 0;
-                
-                levelSubjects.forEach(subject => {
-                    const scores = scoresMap[student.id]?.[subject] || [];
-                    if (scores.length > 0) {
-                        student.scores[subject] = scores;
-                        const avg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-                        student.averages[subject] = avg;
-                        totalScore += avg;
-                        subjectCount++;
+            const enriched = studentsData.map((student) => {
+                const bySubj = bucket.get(student.id) || new Map();
+                const scores = {};
+                const averages = {};
+                const papersBySubject = {};
+                let sumOfAverages = 0;
+                let assessedCount = 0;
+
+                subjects.forEach((subject) => {
+                    const entry = bySubj.get(subject);
+                    if (!entry) {
+                        scores[subject] = [null, null, null];
+                        averages[subject] = null;
+                        papersBySubject[subject] = {};
+                        return;
+                    }
+                    scores[subject] = entry.assessmentScores;
+                    papersBySubject[subject] = entry.papers || {};
+
+                    const valid = entry.assessmentScores.filter((v) => v != null);
+                    if (valid.length > 0) {
+                        const avg = Math.round(valid.reduce((a, b) => a + Number(b), 0) / valid.length);
+                        averages[subject] = avg;
+                        sumOfAverages += avg;
+                        assessedCount++;
                     } else {
-                        student.scores[subject] = [];
-                        student.averages[subject] = null;
+                        averages[subject] = null;
                     }
                 });
-                
-                student.overallAverage = subjectCount > 0 ? Math.round(totalScore / subjectCount) : 0;
+
+                const meanOfAssessed = assessedCount > 0
+                    ? Math.round(sumOfAverages / assessedCount) : 0;
+
+                return {
+                    ...student, scores, averages,
+                    papersBySubject,
+                    assessedCount,
+                    totalSubjects: subjects.length,
+                    overallAverage: meanOfAssessed,
+                };
             });
 
-            setStudentScores(scoresMap);
+            // Rank by overallAverage (descending) with competition ranking
+            const ranked = [...enriched].sort(
+                (a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)
+            );
+            const rankMap = new Map();
+            let lastAvg = null;
+            let lastRank = 0;
+            ranked.forEach((s, idx) => {
+                const avg = s.overallAverage || 0;
+                if (lastAvg !== null && avg === lastAvg) {
+                    rankMap.set(s.id, lastRank);
+                } else {
+                    lastRank = idx + 1;
+                    rankMap.set(s.id, lastRank);
+                }
+                lastAvg = avg;
+            });
 
-        } catch (error) {
-            console.error('Error loading scores:', error);
+            const withRank = enriched.map((s) => ({
+                ...s,
+                position: rankMap.get(s.id) || null,
+                classSize: enriched.length,
+            }));
+
+            setStudents(withRank);
+            setHasLoadedOnce(true);
+            showNotification(`Loaded ${withRank.length} students`, 'success');
+        } catch (err) {
+            console.error('loadStudents failed:', err);
+            showNotification('Failed to load: ' + err.message, 'error');
+        } finally {
+            setLoading(false);
         }
-    };
+    }, [selectedLevel, selectedClass, selectedTerm, subjects, userData?.schoolId, showNotification]);
 
-    // Clear students
-    const clearStudents = () => {
+    useEffect(() => {
+        if (hasLoadedOnce && selectedLevel && selectedClass) loadStudents();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedLevel, selectedClass, selectedTerm]);
+
+    const resetSelection = () => {
+        setSelectedLevel('');
+        setSelectedClass('');
         setStudents([]);
-        setStudentScores({});
-        showNotification('Students cleared', 'info');
+        setHasLoadedOnce(false);
     };
 
-    // Generate report for a single student
-    const generateReport = (studentId) => {
-        const student = students.find(s => s.id === studentId);
-        if (!student) {
-            showNotification('Student not found', 'error');
+    const handleDownloadTranscripts = useCallback(async (assessmentIndex) => {
+        if (students.length === 0) {
+            showNotification('Load students first', 'warning');
             return;
         }
-
-        setSelectedStudent(student);
-        const html = createReportHTML(student);
-        setReportHTML(html);
-        setShowModal(true);
-    };
-
-    // Create report HTML
-    const createReportHTML = (student, isTemplate = false) => {
-        const schoolName = schoolData?.name || 'TOPLINK EDU School';
-        const schoolMotto = schoolData?.motto || 'Excellence in Education';
-        const logoUrl = schoolData?.logoUrl || 'https://via.placeholder.com/80';
-        const termNames = ['', 'First Term', 'Second Term', 'Third Term'];
-        const termName = termNames[parseInt(selectedTerm)] || 'Term';
-
-        let performanceData;
-        let overallAvg;
-        let totalSubjects;
-        let scoredCount;
-
-        if (isTemplate) {
-            const sampleSubjectScores = student.scores || {};
-            const subjectList = Object.keys(sampleSubjectScores);
-            totalSubjects = subjectList.length;
-            
-            performanceData = subjectList.map(subject => {
-                const scores = sampleSubjectScores[subject] || [];
-                const avg = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
-                const cbcGrade = avg !== null ? getCBCGrade(avg) : { code: 'NA', level: 'NA', label: 'Not Assessed', points: 0, levelClass: 'na' };
-                return { subject, scores, average: avg, cbcGrade };
+        setGenerating(true);
+        try {
+            await downloadTranscripts({
+                students, meta: buildMeta(), subjects,
+                term: `Term ${selectedTerm}`, assessmentIndex,
             });
+            showNotification(
+                `Transcripts (Assessment ${assessmentIndex + 1}) downloaded — 4 per page`,
+                'success'
+            );
+        } catch (err) {
+            console.error('transcripts failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
+        } finally {
+            setGenerating(false);
+        }
+    }, [students, buildMeta, subjects, selectedTerm, showNotification]);
 
-            const scoredSubjects = performanceData.filter(p => p.average !== null);
-            scoredCount = scoredSubjects.length;
-            const totalScore = scoredSubjects.reduce((sum, p) => sum + (p.average || 0), 0);
-            overallAvg = scoredCount > 0 ? Math.round(totalScore / totalSubjects) : 0;
-        } else {
-            const levelSubjects = LEVEL_SUBJECTS[selectedLevel] || [];
-            performanceData = levelSubjects.map(subject => {
-                const scores = student.scores?.[subject] || [];
-                const avg = student.averages?.[subject] || null;
-                const cbcGrade = avg !== null ? getCBCGrade(avg) : { code: 'NA', level: 'NA', label: 'Not Assessed', points: 0, levelClass: 'na' };
-                return { subject, scores, average: avg, cbcGrade };
+    const handleDownloadClassReports = useCallback(async () => {
+        if (students.length === 0) {
+            showNotification('Load students first', 'warning');
+            return;
+        }
+        setGenerating(true);
+        try {
+            await downloadClassReportForms({
+                students, meta: buildMeta(), subjects, term: `Term ${selectedTerm}`,
             });
-
-            const scoredSubjects = performanceData.filter(p => p.average !== null);
-            totalSubjects = levelSubjects.length;
-            scoredCount = scoredSubjects.length;
-            overallAvg = student.overallAverage || 0;
-        }
-
-        const overallCBC = getCBCGrade(overallAvg);
-
-        // Generate performance comments
-        let comment = '';
-        if (overallCBC.level === 'EE') {
-            comment = 'The student is Exceeding Expectation. Outstanding performance demonstrating mastery of all competencies.';
-        } else if (overallCBC.level === 'ME') {
-            comment = 'The student is Meeting Expectation. Good performance showing competency in most areas.';
-        } else if (overallCBC.level === 'AE') {
-            comment = 'The student is Approaching Expectation. Needs additional support to meet required competencies.';
-        } else if (overallCBC.level === 'BE') {
-            comment = 'The student is Below Expectation. Significant intervention and support are required to achieve competencies.';
-        } else {
-            comment = 'The student has not been assessed in sufficient areas to determine competency level.';
-        }
-
-        const nextTermStart = schoolData?.nextTermStart ? new Date(schoolData.nextTermStart) : new Date();
-        const currentTermEnd = schoolData?.currentTermEnd ? new Date(schoolData.currentTermEnd) : new Date();
-
-        const displayStart = nextTermStart;
-        const displayEnd = currentTermEnd;
-        const watermarkHtml = isTemplate ? 
-            `<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(-45deg);font-size:100px;font-weight:900;color:rgba(200,200,200,0.12);pointer-events:none;z-index:0;letter-spacing:15px;">TEMPLATE</div>` : '';
-
-        return `
-            <div className="report-container active" id="reportContent" style="background:white;padding:20px 25px;max-width:210mm;min-height:297mm;margin:0 auto;font-family:'Times New Roman',serif;position:relative;font-size:11px;">
-                ${watermarkHtml}
-                <div style="position:relative;z-index:1;">
-                    <!-- Header -->
-                    <div style="text-align:center;border-bottom:2px double #1a237e;padding-bottom:10px;margin-bottom:10px;">
-                        <div style="display:flex;align-items:center;justify-content:center;gap:12px;">
-                            <img src="${logoUrl}" alt="School Logo" style="width:50px;height:50px;border-radius:50%;object-fit:cover;border:2px solid #1a237e;" onerror="this.src='https://via.placeholder.com/80'"/>
-                            <div>
-                                <div style="font-size:18px;font-weight:700;color:#1a237e;letter-spacing:1px;">${schoolName}</div>
-                                <div style="font-size:10px;color:#95a5a6;font-style:italic;margin-top:1px;">"${schoolMotto}"</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div style="text-align:center;font-size:14px;font-weight:700;color:#1a237e;margin:5px 0;letter-spacing:2px;text-transform:uppercase;">Student Report Form</div>
-
-                    <!-- Student Info -->
-                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:3px 15px;margin:6px 0 10px;padding:6px 12px;background:#f8f9fa;border-radius:4px;font-size:11px;">
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Student Name:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${student.firstName || ''} ${student.lastName || ''}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Admission No:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${student.admissionNumber || student.studentId || 'N/A'}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Level:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${selectedLevel ? selectedLevel.replace('-', ' ').toUpperCase() : 'N/A'}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Class:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${student.class || selectedClass || 'N/A'}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Term:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${termName}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Academic Year:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${new Date().getFullYear()}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Date Issued:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:500;">${new Date().toLocaleDateString()}</span>
-                        </div>
-                        <div style="display:flex;gap:5px;">
-                            <span style="font-weight:600;color:#2c3e50;min-width:70px;font-size:10px;">Overall CBC Level:</span>
-                            <span style="color:#2c3e50;font-size:10px;font-weight:700;">
-                                <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:9px;font-weight:700;min-width:30px;background:${overallCBC.level === 'EE' ? '#d4edda' : overallCBC.level === 'ME' ? '#d1ecf1' : overallCBC.level === 'AE' ? '#fff3cd' : '#f8d7da'};color:${overallCBC.level === 'EE' ? '#155724' : overallCBC.level === 'ME' ? '#0c5460' : overallCBC.level === 'AE' ? '#856404' : '#721c24'};border:1px solid ${overallCBC.level === 'EE' ? '#27ae60' : overallCBC.level === 'ME' ? '#2ecc71' : overallCBC.level === 'AE' ? '#f39c12' : '#e74c3c'};">
-                                    ${overallCBC.code} (${overallCBC.points.toFixed(1)} pts)
-                                    <span style="font-size:7px;color:#95a5a6;display:block;margin-top:0px;">${overallCBC.label}</span>
-                                </span>
-                            </span>
-                        </div>
-                    </div>
-
-                    <!-- CBC Legend -->
-                    <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:4px 0 8px;font-size:8px;">
-                        <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:#27ae60;"></span> EE - Exceeding Expectation</span>
-                        <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:#2ecc71;"></span> ME - Meeting Expectation</span>
-                        <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:#f39c12;"></span> AE - Approaching Expectation</span>
-                        <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:#e74c3c;"></span> BE - Below Expectation</span>
-                    </div>
-
-                    <!-- Performance Table -->
-                    <table style="width:100%;border-collapse:collapse;margin:8px 0;font-size:10px;border:2px solid #1a237e;border-radius:8px;overflow:hidden;">
-                        <thead>
-                            <tr>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:left;width:25%;">Subject</th>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:center;width:10%;">Ass 1</th>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:center;width:10%;">Ass 2</th>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:center;width:10%;">Ass 3</th>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:center;width:10%;">Avg</th>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:center;width:15%;">CBC Level</th>
-                                <th style="background:#1a237e;color:white;padding:6px 8px;text-align:center;font-weight:700;font-size:9px;border:1px solid #0d1445;text-transform:uppercase;letter-spacing:0.5px;text-align:center;width:10%;">Points</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${performanceData.map((item, index) => {
-                                const scores = item.scores || [];
-                                const ass1 = scores[0] || null;
-                                const ass2 = scores[1] || null;
-                                const ass3 = scores[2] || null;
-                                const avg = item.average;
-                                const cbcGrade = item.cbcGrade;
-                                
-                                const avgClass = avg !== null ? (avg >= 75 ? 'color:#27ae60;' : (avg < 40 ? 'color:#e74c3c;' : '')) : '';
-                                
-                                return `
-                                    <tr style="${index % 2 === 0 ? 'background:#ffffff;' : 'background:#f8f9fa;'}">
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:600;text-align:left;padding-left:12px;font-size:10px;color:#2c3e50;">${item.subject}</td>
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:600;text-align:center;font-size:11px;${ass1 !== null && ass1 >= 75 ? 'color:#27ae60;' : (ass1 !== null && ass1 < 40 ? 'color:#e74c3c;' : '')}">${ass1 !== null ? ass1 : '-'}</td>
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:600;text-align:center;font-size:11px;${ass2 !== null && ass2 >= 75 ? 'color:#27ae60;' : (ass2 !== null && ass2 < 40 ? 'color:#e74c3c;' : '')}">${ass2 !== null ? ass2 : '-'}</td>
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:600;text-align:center;font-size:11px;${ass3 !== null && ass3 >= 75 ? 'color:#27ae60;' : (ass3 !== null && ass3 < 40 ? 'color:#e74c3c;' : '')}">${ass3 !== null ? ass3 : '-'}</td>
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:700;text-align:center;font-size:11px;${avgClass}">${avg !== null ? avg : 'N/A'}</td>
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;min-width:70px;">
-                                            <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:9px;font-weight:700;min-width:30px;background:${cbcGrade.level === 'EE' ? '#d4edda' : cbcGrade.level === 'ME' ? '#d1ecf1' : cbcGrade.level === 'AE' ? '#fff3cd' : '#f8d7da'};color:${cbcGrade.level === 'EE' ? '#155724' : cbcGrade.level === 'ME' ? '#0c5460' : cbcGrade.level === 'AE' ? '#856404' : '#721c24'};border:1px solid ${cbcGrade.level === 'EE' ? '#27ae60' : cbcGrade.level === 'ME' ? '#2ecc71' : cbcGrade.level === 'AE' ? '#f39c12' : '#e74c3c'};font-size:10px;padding:2px 10px;">
-                                                ${cbcGrade.code}
-                                                <span style="font-size:7px;color:#95a5a6;display:block;margin-top:0px;">${cbcGrade.label}</span>
-                                            </span>
-                                        </td>
-                                        <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:700;color:#1a237e;">${cbcGrade.points.toFixed(1)}</td>
-                                    </tr>
-                                `;
-                            }).join('')}
-                        </tbody>
-                        <tfoot>
-                            <tr style="background:#f8f9fa;font-weight:700;border-top:2px solid #1a237e;">
-                                <td colspan="4" style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;text-align:right;padding-right:15px;font-size:11px;color:#2c3e50;">
-                                    <i class="fas fa-calculator"></i> Totals:
-                                </td>
-                                <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:700;color:#1a237e;font-size:12px;">
-                                    ${Math.round(performanceData.reduce((sum, item) => sum + (item.average || 0), 0) / performanceData.filter(p => p.average !== null).length) || 0}
-                                </td>
-                                <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:700;color:#1a237e;font-size:12px;">
-                                    ${getCBCGrade(Math.round(performanceData.reduce((sum, item) => sum + (item.average || 0), 0) / performanceData.filter(p => p.average !== null).length)).code}
-                                </td>
-                                <td style="padding:5px 8px;border:1px solid #2c3e50;text-align:center;font-size:10px;vertical-align:middle;font-weight:700;color:#1a237e;font-size:12px;">
-                                    ${getCBCGrade(Math.round(performanceData.reduce((sum, item) => sum + (item.average || 0), 0) / performanceData.filter(p => p.average !== null).length)).points.toFixed(1)}
-                                </td>
-                            </tr>
-                        </tfoot>
-                    </table>
-
-                    <!-- Summary -->
-                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0;padding:6px 10px;background:#f8f9fa;border-radius:4px;">
-                        <div style="text-align:center;">
-                            <div style="font-size:8px;color:#95a5a6;text-transform:uppercase;letter-spacing:0.3px;">Subjects Offered</div>
-                            <div style="font-size:13px;font-weight:700;color:#2c3e50;margin-top:1px;">${totalSubjects}</div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:8px;color:#95a5a6;text-transform:uppercase;letter-spacing:0.3px;">Subjects Assessed</div>
-                            <div style="font-size:13px;font-weight:700;color:#2c3e50;margin-top:1px;">${scoredCount}</div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:8px;color:#95a5a6;text-transform:uppercase;letter-spacing:0.3px;">Overall CBC Level</div>
-                            <div style="font-size:13px;font-weight:700;color:#2c3e50;margin-top:1px;">
-                                <span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:9px;font-weight:700;min-width:30px;background:${overallCBC.level === 'EE' ? '#d4edda' : overallCBC.level === 'ME' ? '#d1ecf1' : overallCBC.level === 'AE' ? '#fff3cd' : '#f8d7da'};color:${overallCBC.level === 'EE' ? '#155724' : overallCBC.level === 'ME' ? '#0c5460' : overallCBC.level === 'AE' ? '#856404' : '#721c24'};border:1px solid ${overallCBC.level === 'EE' ? '#27ae60' : overallCBC.level === 'ME' ? '#2ecc71' : overallCBC.level === 'AE' ? '#f39c12' : '#e74c3c'};font-size:12px;">
-                                    ${overallCBC.code}
-                                </span>
-                            </div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="font-size:8px;color:#95a5a6;text-transform:uppercase;letter-spacing:0.3px;">Total Points</div>
-                            <div style="font-size:13px;font-weight:700;color:#2c3e50;margin-top:1px;">${overallCBC.points.toFixed(1)}</div>
-                        </div>
-                    </div>
-
-                    <!-- Comments -->
-                    <div style="margin:8px 0;padding:6px 12px;border:1px solid #e0e6ed;border-radius:4px;font-size:10px;">
-                        <div style="font-weight:600;color:#2c3e50;margin-bottom:2px;font-size:10px;">Teacher's Comments</div>
-                        <div style="color:#2c3e50;line-height:1.4;font-size:10px;">${comment}</div>
-                    </div>
-
-                    <div style="text-align:center;font-size:10px;color:#2c3e50;margin:6px 0;padding:4px 8px;background:#e8f0fe;border-radius:4px;">
-                        <strong>Current Term End:</strong> ${displayEnd.toLocaleDateString()} &nbsp;|&nbsp; 
-                        <strong>Next Term Start:</strong> ${displayStart.toLocaleDateString()}
-                    </div>
-
-                    <!-- Footer -->
-                    <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e0e6ed;display:grid;grid-template-columns:1fr 1fr;gap:15px;">
-                        <div style="text-align:center;">
-                            <div style="width:120px;border-bottom:1px solid #2c3e50;margin:15px auto 3px;"></div>
-                            <div style="font-size:8px;color:#95a5a6;">Head-Teacher/Principal Signature</div>
-                        </div>
-                        <div style="text-align:center;">
-                            <div style="width:120px;border-bottom:1px solid #2c3e50;margin:15px auto 3px;"></div>
-                            <div style="font-size:8px;color:#95a5a6;">Class Teacher Signature</div>
-                        </div>
-                    </div>
-
-                    <div style="text-align:center;font-size:8px;color:#95a5a6;margin-top:8px;padding-top:5px;border-top:1px solid #e0e6ed;">
-                        &copy; ${new Date().getFullYear()} ${schoolName} - All Rights Reserved
-                    </div>
-                </div>
-            </div>
-        `;
-    };
-
-    // Download single report PDF
-    const downloadReportPDF = async () => {
-        const content = document.getElementById('reportContent');
-        if (!content) {
-            showNotification('Report content not found', 'error');
-            return;
-        }
-
-        setGenerating(true);
-
-        try {
-            const studentName = document.querySelector('.report-student-info .value')?.textContent || 'Student';
-            const filename = `cbc_report_${studentName.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.pdf`;
-
-            // Use html2pdf if available, otherwise use window.print
-            if (window.html2pdf) {
-                const opt = {
-                    margin: [8, 8, 8, 8],
-                    filename: filename,
-                    image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { 
-                        scale: 2, 
-                        useCORS: true,
-                        logging: false
-                    },
-                    jsPDF: { 
-                        unit: 'mm', 
-                        format: 'a4', 
-                        orientation: 'portrait' 
-                    },
-                    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-                };
-
-                await window.html2pdf().set(opt).from(content).save();
-            } else {
-                // Fallback to print
-                window.print();
-            }
-            
-            showNotification('PDF generated successfully!', 'success');
-
-        } catch (error) {
-            console.error('PDF generation error:', error);
-            showNotification('Failed to generate PDF', 'error');
+            showNotification(`Report forms generated (${students.length} pages)`, 'success');
+        } catch (err) {
+            console.error('class reports failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
         } finally {
             setGenerating(false);
         }
-    };
+    }, [students, buildMeta, subjects, selectedTerm, showNotification]);
 
-    // Generate all PDFs
-    const generateAllPDFs = async () => {
-        if (students.length === 0) {
-            showNotification('Please load students first', 'warning');
-            return;
-        }
-
+    const handleDownloadSingleForm = useCallback(async (student) => {
         setGenerating(true);
-        let successCount = 0;
-        let failCount = 0;
-
         try {
-            for (const student of students) {
-                try {
-                    const reportHTML = createReportHTML(student);
-                    
-                    const tempContainer = document.createElement('div');
-                    tempContainer.innerHTML = reportHTML;
-                    tempContainer.style.cssText = `
-                        position: absolute;
-                        left: -9999px;
-                        top: 0;
-                        width: 900px;
-                        padding: 40px;
-                        background: white;
-                    `;
-                    document.body.appendChild(tempContainer);
-
-                    const content = tempContainer.querySelector('.report-container');
-                    const filename = `cbc_report_${student.firstName || ''}_${student.lastName || ''}_${new Date().toISOString().slice(0,10)}.pdf`;
-
-                    if (window.html2pdf) {
-                        const opt = {
-                            margin: [8, 8, 8, 8],
-                            filename: filename,
-                            image: { type: 'jpeg', quality: 0.98 },
-                            html2canvas: { 
-                                scale: 2, 
-                                useCORS: true,
-                                logging: false
-                            },
-                            jsPDF: { 
-                                unit: 'mm', 
-                                format: 'a4', 
-                                orientation: 'portrait' 
-                            }
-                        };
-
-                        await window.html2pdf().set(opt).from(content).save();
-                    }
-                    
-                    document.body.removeChild(tempContainer);
-                    successCount++;
-
-                } catch (error) {
-                    console.error(`Error generating PDF for student ${student.id}:`, error);
-                    failCount++;
-                }
-            }
-
-            if (successCount > 0) {
-                showNotification(`${successCount} PDFs generated successfully${failCount > 0 ? `, ${failCount} failed` : ''}`, 
-                    failCount === 0 ? 'success' : 'warning');
-            } else {
-                showNotification('Failed to generate PDFs', 'error');
-            }
-
-        } catch (error) {
-            console.error('Batch PDF generation error:', error);
-            showNotification('Failed to generate PDFs', 'error');
+            await downloadStudentReportForm({
+                student, meta: buildMeta(), subjects, term: `Term ${selectedTerm}`,
+            });
+            showNotification('Report form downloaded', 'success');
+        } catch (err) {
+            console.error('single form failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
         } finally {
             setGenerating(false);
         }
-    };
+    }, [buildMeta, subjects, selectedTerm, showNotification]);
 
-    // Generate class PDF
-    const generateClassPDF = async () => {
-        if (students.length === 0) {
-            showNotification('Please load students first', 'warning');
-            return;
-        }
-
+    const handleDownloadSingleTranscript = useCallback(async (student, assessmentIndex) => {
         setGenerating(true);
-
         try {
-            const classContainer = document.createElement('div');
-            classContainer.style.cssText = `
-                padding: 20px;
-                background: white;
-                max-width: 900px;
-                margin: 0 auto;
-            `;
-
-            // Add title page
-            classContainer.innerHTML = `
-                <div style="text-align:center;padding:60px 20px;page-break-after:always;">
-                    <div style="margin-bottom:40px;">
-                        <img src="${schoolData?.logoUrl || 'https://via.placeholder.com/80'}" alt="School Logo" style="width:100px;height:100px;border-radius:50%;object-fit:cover;border:3px solid #1a237e;" onerror="this.style.display='none'"/>
-                        <h1 style="font-size:32px;color:#1a237e;margin-top:20px;">${schoolData?.name || 'TOPLINK EDU School'}</h1>
-                        <p style="font-size:16px;color:#95a5a6;font-style:italic;">"${schoolData?.motto || 'Excellence in Education'}"</p>
-                    </div>
-                    <h2 style="font-size:28px;color:#2c3e50;">CBC Class Report Cards</h2>
-                    <p style="font-size:18px;color:#2c3e50;margin-top:10px;">
-                        ${selectedLevel.replace('-', ' ').toUpperCase()} • ${selectedClass} • ${['', 'First Term', 'Second Term', 'Third Term'][parseInt(selectedTerm)]}
-                    </p>
-                    <p style="font-size:16px;color:#95a5a6;margin-top:20px;">
-                        Generated: ${new Date().toLocaleString()}
-                    </p>
-                    <p style="font-size:14px;color:#95a5a6;margin-top:10px;">
-                        Total Students: ${students.length}
-                    </p>
-                    <div style="margin-top:60px;border-top:1px solid #e0e6ed;padding-top:20px;color:#95a5a6;font-size:14px;">
-                        &copy; ${new Date().getFullYear()} ${schoolData?.name || 'TOPLINK EDU School'} - All Rights Reserved
-                    </div>
-                </div>
-            `;
-
-            for (let i = 0; i < students.length; i++) {
-                const student = students[i];
-                const reportHTML = createReportHTML(student);
-                
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = reportHTML;
-                const reportContent = tempDiv.querySelector('.report-container');
-                
-                if (reportContent) {
-                    if (i > 0) {
-                        const pageBreak = document.createElement('div');
-                        pageBreak.style.cssText = 'page-break-after: always;';
-                        classContainer.appendChild(pageBreak);
-                    }
-                    
-                    const clonedReport = reportContent.cloneNode(true);
-                    clonedReport.style.display = 'block';
-                    clonedReport.style.margin = '0 auto';
-                    classContainer.appendChild(clonedReport);
-                }
-            }
-
-            document.body.appendChild(classContainer);
-
-            const filename = `cbc_class_reports_${selectedClass}_${selectedLevel}_${new Date().toISOString().slice(0,10)}.pdf`;
-
-            if (window.html2pdf) {
-                const opt = {
-                    margin: [8, 8, 8, 8],
-                    filename: filename,
-                    image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { 
-                        scale: 2, 
-                        useCORS: true,
-                        logging: false
-                    },
-                    jsPDF: { 
-                        unit: 'mm', 
-                        format: 'a4', 
-                        orientation: 'portrait' 
-                    },
-                    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-                };
-
-                await window.html2pdf().set(opt).from(classContainer).save();
-            }
-            
-            document.body.removeChild(classContainer);
-            showNotification(`Class PDF generated successfully with ${students.length} students!`, 'success');
-
-        } catch (error) {
-            console.error('Class PDF generation error:', error);
-            showNotification('Failed to generate class PDF', 'error');
+            await downloadTranscripts({
+                students: [student], meta: buildMeta(), subjects,
+                term: `Term ${selectedTerm}`, assessmentIndex,
+            });
+            showNotification('Transcript downloaded', 'success');
+        } catch (err) {
+            console.error('single transcript failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
         } finally {
             setGenerating(false);
         }
-    };
+    }, [buildMeta, subjects, selectedTerm, showNotification]);
 
-    // Download template
-    const downloadTemplate = async () => {
+    const handleDownloadTemplate = useCallback(async () => {
         setGenerating(true);
-
         try {
-            const templateContainer = document.createElement('div');
-            templateContainer.style.cssText = `
-                padding: 20px;
-                background: white;
-                max-width: 900px;
-                margin: 0 auto;
-            `;
-
-            const reportHTML = createReportHTML(sampleStudent, true);
-            
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = reportHTML;
-            const reportContent = tempDiv.querySelector('.report-container');
-            
-            if (reportContent) {
-                const clonedReport = reportContent.cloneNode(true);
-                clonedReport.style.display = 'block';
-                clonedReport.style.margin = '0 auto';
-                templateContainer.appendChild(clonedReport);
-            }
-
-            document.body.appendChild(templateContainer);
-
-            const filename = `cbc_report_template_${new Date().toISOString().slice(0,10)}.pdf`;
-
-            if (window.html2pdf) {
-                const opt = {
-                    margin: [8, 8, 8, 8],
-                    filename: filename,
-                    image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { 
-                        scale: 2, 
-                        useCORS: true,
-                        logging: false
-                    },
-                    jsPDF: { 
-                        unit: 'mm', 
-                        format: 'a4', 
-                        orientation: 'portrait' 
-                    },
-                    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-                };
-
-                await window.html2pdf().set(opt).from(templateContainer).save();
-            }
-            
-            document.body.removeChild(templateContainer);
-            showNotification('Template PDF generated successfully!', 'success');
-
-        } catch (error) {
-            console.error('Template generation error:', error);
-            showNotification('Failed to generate template', 'error');
+            await downloadClassReportForms({
+                students: [SAMPLE_STUDENT],
+                meta: {
+                    ...schoolBranding,
+                    level: 'junior-school',
+                    levelDisplay: 'Junior School',
+                    cls: 'Grade 7', term: 'Term 2',
+                    year: new Date().getFullYear(),
+                    classTeacherName: '',
+                    principalName: '',
+                },
+                subjects: SAMPLE_SUBJECTS,
+                term: 'Term 2',
+            });
+            showNotification('Template downloaded', 'success');
+        } catch (err) {
+            console.error('template failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
         } finally {
             setGenerating(false);
         }
-    };
+    }, [schoolBranding, showNotification]);
 
-    // Show notification
-    const showNotification = (message, type = 'info') => {
-        const colors = {
-            success: '#27ae60',
-            error: '#e74c3c',
-            warning: '#f39c12',
-            info: '#3498db'
-        };
-
-        const notification = document.createElement('div');
-        notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: ${colors[type] || colors.info};
-            color: white;
-            padding: 15px 20px;
-            border-radius: 8px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-            z-index: 10000;
-            animation: slideIn 0.3s ease;
-            max-width: 400px;
-        `;
-        notification.textContent = message;
-        document.body.appendChild(notification);
-
-        setTimeout(() => {
-            notification.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => notification.remove(), 300);
-        }, 4000);
-    };
-
-    // Render students grid
-    const renderStudents = () => {
-        if (students.length === 0) {
-            return (
-                <div className="empty-state" style={{gridColumn: '1 / -1', textAlign: 'center', padding: '60px 20px', color: '#95a5a6'}}>
-                    <i className="fas fa-users" style={{fontSize: '64px', color: '#e0e6ed', marginBottom: '20px', display: 'block'}}></i>
-                    <h3 style={{fontSize: '20px', color: '#2c3e50', marginBottom: '10px'}}>No Students Loaded</h3>
-                    <p style={{maxWidth: '400px', margin: '0 auto'}}>Select a level, class, and term, then click "Load Students" to view student report cards.</p>
-                </div>
-            );
-        }
-
-        const sortedStudents = [...students].sort((a, b) => (b.overallAverage || 0) - (a.overallAverage || 0));
-
-        return sortedStudents.map((student) => {
-            const avg = student.overallAverage || 0;
-            const cbcGrade = getCBCGrade(avg);
-
-            return (
-                <div 
-                    key={student.id} 
-                    className="student-card"
-                    style={{
-                        background: 'white',
-                        borderRadius: '12px',
-                        padding: '20px',
-                        boxShadow: '0 4px 6px rgba(0,0,0,0.07)',
-                        transition: 'all 0.3s',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '15px'
-                    }}
-                    onClick={() => generateReport(student.id)}
-                >
-                    <div className="avatar" style={{
-                        width: '50px',
-                        height: '50px',
-                        borderRadius: '50%',
-                        background: '#1a237e',
-                        color: 'white',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: '600',
-                        fontSize: '20px',
-                        flexShrink: '0'
-                    }}>
-                        {student.firstName?.[0] || 'S'}
-                    </div>
-                    <div className="info" style={{flex: '1'}}>
-                        <div className="name" style={{fontWeight: '600', color: '#2c3e50', fontSize: '15px'}}>
-                            {student.firstName || ''} {student.lastName || ''}
-                        </div>
-                        <div className="details" style={{fontSize: '13px', color: '#95a5a6'}}>
-                            {student.admissionNumber || student.studentId || 'N/A'} • {student.class || ''}
-                        </div>
-                        <div className="average" style={{fontSize: '14px', fontWeight: '600', color: '#1a237e'}}>
-                            Avg: {avg}% • CBC: {cbcGrade.code} ({cbcGrade.points.toFixed(1)} pts)
-                        </div>
-                    </div>
-                    <div className="actions" style={{display: 'flex', gap: '8px'}}>
-                        <button 
-                            className="btn btn-primary btn-sm" 
-                            style={{
-                                padding: '6px 12px',
-                                fontSize: '12px',
-                                border: 'none',
-                                borderRadius: '8px',
-                                fontWeight: '600',
-                                cursor: 'pointer',
-                                transition: 'all 0.3s',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '8px',
-                                background: '#1a237e',
-                                color: 'white'
-                            }}
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                generateReport(student.id);
-                            }}
-                        >
-                            <i className="fas fa-file-alt"></i> Report
-                        </button>
-                    </div>
-                </div>
-            );
-        });
-    };
-
-    if (loading) {
+    if (loading && !hasLoadedOnce) {
         return <LoadingSpinner fullScreen text="Loading students..." />;
     }
 
     return (
         <Layout title="Student Report Forms (CBC)">
-            {/* Selection Area */}
-            <div className="selection-area" style={{
-                background: 'white',
-                borderRadius: '12px',
-                padding: '25px',
-                boxShadow: '0 4px 6px rgba(0,0,0,0.07)',
-                marginBottom: '25px',
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr 1fr auto auto',
-                gap: '15px',
-                alignItems: 'end'
-            }}>
-                <div className="form-group" style={{marginBottom: '0'}}>
-                    <label style={{display: 'block', fontSize: '13px', fontWeight: '600', color: '#2c3e50', marginBottom: '5px'}}>
-                        Select Level <span style={{color: '#e74c3c'}}>*</span>
-                    </label>
-                    <select 
-                        value={selectedLevel} 
-                        onChange={handleLevelChange}
-                        style={{
-                            width: '100%',
-                            padding: '10px 15px',
-                            border: '2px solid #e0e6ed',
-                            borderRadius: '8px',
-                            fontSize: '14px',
-                            transition: 'all 0.3s',
-                            background: 'white'
-                        }}
-                    >
+            <div style={filterBarStyle}>
+                <Field label="Level" required>
+                    <select value={selectedLevel} onChange={(e) => {
+                        setSelectedLevel(e.target.value);
+                        setSelectedClass(''); setStudents([]); setHasLoadedOnce(false);
+                    }} style={selectStyle}>
                         <option value="">Select Level</option>
-                        <option value="pre-primary">Pre-Primary</option>
-                        <option value="lower-primary">Lower Primary</option>
-                        <option value="upper-primary">Upper Primary</option>
-                        <option value="junior-school">Junior School</option>
-                        <option value="senior-school">Senior School</option>
-                    </select>
-                </div>
-                <div className="form-group" style={{marginBottom: '0'}}>
-                    <label style={{display: 'block', fontSize: '13px', fontWeight: '600', color: '#2c3e50', marginBottom: '5px'}}>
-                        Select Class <span style={{color: '#e74c3c'}}>*</span>
-                    </label>
-                    <select 
-                        value={selectedClass} 
-                        onChange={handleClassChange}
-                        style={{
-                            width: '100%',
-                            padding: '10px 15px',
-                            border: '2px solid #e0e6ed',
-                            borderRadius: '8px',
-                            fontSize: '14px',
-                            transition: 'all 0.3s',
-                            background: 'white'
-                        }}
-                    >
-                        <option value="">Select Class</option>
-                        {(LEVEL_CLASSES[selectedLevel] || []).map(cls => (
-                            <option key={cls} value={cls}>{cls}</option>
+                        {Object.entries(LEVEL_DISPLAY_NAMES).map(([k, v]) => (
+                            <option key={k} value={k}>{v}</option>
                         ))}
                     </select>
-                </div>
-                <div className="form-group" style={{marginBottom: '0'}}>
-                    <label style={{display: 'block', fontSize: '13px', fontWeight: '600', color: '#2c3e50', marginBottom: '5px'}}>
-                        Select Term <span style={{color: '#e74c3c'}}>*</span>
-                    </label>
-                    <select 
-                        value={selectedTerm} 
-                        onChange={handleTermChange}
-                        style={{
-                            width: '100%',
-                            padding: '10px 15px',
-                            border: '2px solid #e0e6ed',
-                            borderRadius: '8px',
-                            fontSize: '14px',
-                            transition: 'all 0.3s',
-                            background: 'white'
-                        }}
-                    >
+                </Field>
+
+                <Field label="Class" required>
+                    <select value={selectedClass} disabled={!selectedLevel}
+                        onChange={(e) => {
+                            setSelectedClass(e.target.value); setStudents([]); setHasLoadedOnce(false);
+                        }} style={selectStyle}>
+                        <option value="">Select Class</option>
+                        {classOptions.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                        ))}
+                    </select>
+                </Field>
+
+                <Field label="Term" required>
+                    <select value={selectedTerm}
+                        onChange={(e) => setSelectedTerm(e.target.value)} style={selectStyle}>
                         <option value="1">Term 1</option>
                         <option value="2">Term 2</option>
                         <option value="3">Term 3</option>
                     </select>
+                </Field>
+
+                <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+                    <button onClick={loadStudents} disabled={loading || !selectedLevel || !selectedClass}
+                        style={{ ...primaryBtn, opacity: (!selectedLevel || !selectedClass) ? 0.5 : 1 }}>
+                        <i className="fas fa-users"></i> {loading ? 'Loading...' : 'Load Students'}
+                    </button>
+                    <button onClick={resetSelection} style={ghostBtn}>
+                        <i className="fas fa-redo"></i> Reset
+                    </button>
                 </div>
-                <button 
-                    className="btn btn-primary"
-                    style={{
-                        padding: '10px 20px',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        background: '#1a237e',
-                        color: 'white'
-                    }}
-                    onClick={loadStudents}
-                    disabled={loading}
-                >
-                    <i className="fas fa-users"></i> Load Students
-                </button>
-                <button 
-                    className="btn btn-outline"
-                    style={{
-                        padding: '10px 20px',
-                        border: '2px solid #e0e6ed',
-                        borderRadius: '8px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        background: 'transparent',
-                        color: '#2c3e50'
-                    }}
-                    onClick={clearStudents}
-                >
-                    <i className="fas fa-times"></i> Clear
-                </button>
             </div>
 
-            {/* Action Buttons */}
-            <div style={{display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap'}}>
-                <button 
-                    className="btn btn-info"
-                    style={{
-                        padding: '10px 20px',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        background: '#3498db',
-                        color: 'white'
-                    }}
-                    onClick={downloadTemplate}
-                    disabled={generating}
-                >
-                    <i className="fas fa-file-pdf"></i> Download Template
-                </button>
-                <button 
-                    className="btn btn-success"
-                    style={{
-                        padding: '10px 20px',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        background: '#27ae60',
-                        color: 'white'
-                    }}
-                    onClick={generateClassPDF}
-                    disabled={generating || students.length === 0}
-                >
-                    <i className="fas fa-file-pdf"></i> Generate Class PDF
-                </button>
-                <button 
-                    className="btn btn-primary"
-                    style={{
-                        padding: '10px 20px',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                        transition: 'all 0.3s',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '14px',
-                        background: '#1a237e',
-                        color: 'white'
-                    }}
-                    onClick={generateAllPDFs}
-                    disabled={generating || students.length === 0}
-                >
-                    <i className="fas fa-file-pdf"></i> Generate All PDFs
-                </button>
-            </div>
-
-            {/* Students Grid */}
-            <div className="students-grid" style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: '20px',
-                marginTop: '20px'
-            }}>
-                {renderStudents()}
-            </div>
-
-            {/* Report Modal */}
-            {showModal && (
-                <div className="modal-overlay active" style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: 'rgba(0,0,0,0.5)',
-                    zIndex: 1000,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '20px'
-                }}>
-                    <div className="modal" style={{
-                        background: 'white',
-                        borderRadius: '16px',
-                        maxWidth: '950px',
-                        width: '100%',
-                        maxHeight: '90vh',
-                        overflowY: 'auto',
-                        padding: '30px'
-                    }}>
-                        <div className="modal-header" style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
-                            marginBottom: '25px'
-                        }}>
-                            <h2 style={{fontSize: '22px', color: '#2c3e50'}}>
-                                CBC Report Card - {selectedStudent?.firstName || ''} {selectedStudent?.lastName || ''}
-                            </h2>
-                            <button 
-                                className="modal-close"
-                                style={{
-                                    width: '40px',
-                                    height: '40px',
-                                    border: 'none',
-                                    borderRadius: '50%',
-                                    background: '#f8f9fa',
-                                    cursor: 'pointer',
-                                    fontSize: '18px',
-                                    transition: 'all 0.3s'
-                                }}
-                                onClick={() => setShowModal(false)}
-                            >
-                                <i className="fas fa-times"></i>
-                            </button>
-                        </div>
-                        <div id="reportModalContent" dangerouslySetInnerHTML={{ __html: reportHTML }} />
-                        <div className="modal-footer" style={{
-                            display: 'flex',
-                            gap: '10px',
-                            justifyContent: 'flex-end',
-                            marginTop: '25px',
-                            paddingTop: '20px',
-                            borderTop: '1px solid #e0e6ed'
-                        }}>
-                            <button 
-                                className="btn btn-outline"
-                                style={{
-                                    padding: '10px 20px',
-                                    border: '2px solid #e0e6ed',
-                                    borderRadius: '8px',
-                                    fontWeight: '600',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.3s',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    fontSize: '14px',
-                                    background: 'transparent',
-                                    color: '#2c3e50'
-                                }}
-                                onClick={() => setShowModal(false)}
-                            >
-                                Close
-                            </button>
-                            <button 
-                                className="btn btn-success"
-                                style={{
-                                    padding: '10px 20px',
-                                    border: 'none',
-                                    borderRadius: '8px',
-                                    fontWeight: '600',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.3s',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    fontSize: '14px',
-                                    background: '#27ae60',
-                                    color: 'white'
-                                }}
-                                onClick={downloadReportPDF}
-                                disabled={generating}
-                            >
-                                <i className="fas fa-file-pdf"></i> Download PDF
-                            </button>
-                        </div>
-                    </div>
+            <div style={actionsCardStyle}>
+                <div>
+                    <h3 style={sectionTitleStyle}>
+                        <i className="fas fa-file-pdf" style={{ color: PRIMARY }}></i> Generate Documents
+                    </h3>
+                    <p style={sectionHintStyle}>
+                        {ready
+                            ? `${students.length} students ready. Choose a document type below.`
+                            : 'Load students to enable generation.'}
+                    </p>
                 </div>
+
+                <div style={actionGridStyle}>
+                    <DocButton
+                        icon="fa-file-alt"
+                        title="Transcript — Assessment 1"
+                        subtitle="4 per page"
+                        disabled={!ready || generating}
+                        onClick={() => handleDownloadTranscripts(0)}
+                        color="#f39c12"
+                    />
+                    <DocButton
+                        icon="fa-file-alt"
+                        title="Transcript — Assessment 2"
+                        subtitle="4 per page"
+                        disabled={!ready || generating}
+                        onClick={() => handleDownloadTranscripts(1)}
+                        color="#e67e22"
+                    />
+                    <DocButton
+                        icon="fa-file-alt"
+                        title="Transcript — Assessment 3"
+                        subtitle="4 per page"
+                        disabled={!ready || generating}
+                        onClick={() => handleDownloadTranscripts(2)}
+                        color="#d35400"
+                    />
+
+                    <DocButton
+                        icon="fa-file-alt"
+                        title="Report Form — All 3 Assessments"
+                        subtitle="1 student per page"
+                        disabled={!ready || generating}
+                        onClick={handleDownloadClassReports}
+                        color={PRIMARY}
+                    />
+
+                    <DocButton
+                        icon="fa-file"
+                        title="Download Template"
+                        subtitle="Blank sample"
+                        disabled={generating}
+                        onClick={handleDownloadTemplate}
+                        color="#7f8c8d"
+                    />
+                </div>
+            </div>
+
+            <div style={{ marginTop: 24 }}>
+                {students.length === 0 ? (
+                    <EmptyState />
+                ) : (
+                    <>
+                        <h3 style={{ ...sectionTitleStyle, marginBottom: 14 }}>
+                            Students ({students.length})
+                        </h3>
+                        <div style={gridStyle}>
+                            {sortedStudents.map((student) => (
+                                <StudentCard
+                                    key={student.id}
+                                    student={student}
+                                    onPreview={() => { setPreviewStudent(student); setPreviewAssessment(0); }}
+                                />
+                            ))}
+                        </div>
+                    </>
+                )}
+            </div>
+
+            {previewStudent && (
+                <PreviewModal
+                    student={previewStudent}
+                    subjects={subjects}
+                    term={`Term ${selectedTerm}`}
+                    meta={buildMeta()}
+                    assessmentIndex={previewAssessment}
+                    onAssessmentChange={setPreviewAssessment}
+                    onClose={() => setPreviewStudent(null)}
+                    onDownloadForm={() => handleDownloadSingleForm(previewStudent)}
+                    onDownloadTranscript={() => handleDownloadSingleTranscript(previewStudent, previewAssessment)}
+                    generating={generating}
+                />
             )}
 
-            {/* Loading overlay for PDF generation */}
-            {generating && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    background: 'rgba(255,255,255,0.8)',
-                    zIndex: 9999,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexDirection: 'column',
-                    gap: '20px'
-                }}>
-                    <div style={{
-                        width: '50px',
-                        height: '50px',
-                        border: '3px solid #e0e6ed',
-                        borderTopColor: '#1a237e',
-                        borderRadius: '50%',
-                        animation: 'spin 1s linear infinite'
-                    }}></div>
-                    <div style={{color: '#2c3e50', fontWeight: '500', fontSize: '16px'}}>
-                        Generating PDFs...
-                    </div>
-                </div>
-            )}
+            {generating && <GeneratingOverlay />}
 
-            {/* Add animation styles */}
             <style>{`
-                @keyframes spin {
-                    to { transform: rotate(360deg); }
-                }
-                @keyframes slideIn {
-                    from { transform: translateX(100%); opacity: 0; }
-                    to { transform: translateX(0); opacity: 1; }
-                }
-                @keyframes slideOut {
-                    from { transform: translateX(0); opacity: 1; }
-                    to { transform: translateX(100%); opacity: 0; }
-                }
+                @keyframes spin { to { transform: rotate(360deg); } }
                 .student-card:hover {
                     transform: translateY(-3px);
-                    box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
-                    border-color: #1a237e;
+                    box-shadow: 0 14px 30px rgba(26,35,126,0.12) !important;
+                    border-color: ${PRIMARY} !important;
                 }
-                .btn:hover {
+                .doc-btn:hover:not(:disabled) {
                     transform: translateY(-2px);
-                    box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+                    box-shadow: 0 10px 22px rgba(26,35,126,0.15);
                 }
-                .btn-primary:hover {
-                    background: #283593 !important;
-                }
-                .btn-success:hover {
-                    opacity: 0.9;
-                }
-                .btn-info:hover {
-                    opacity: 0.9;
-                }
-                .btn-outline:hover {
-                    border-color: #1a237e;
-                    color: #1a237e;
-                }
-                .modal-close:hover {
-                    background: #e0e6ed;
-                }
-                select:focus, input:focus {
-                    outline: none;
-                    border-color: #1a237e !important;
-                }
-                @media print {
-                    .no-print {
-                        display: none !important;
-                    }
-                    body {
-                        background: white !important;
-                        padding: 0 !important;
-                        margin: 0 !important;
-                    }
-                    .content {
-                        padding: 0 !important;
-                        max-width: 100% !important;
-                    }
-                    .students-grid {
-                        display: none !important;
-                    }
-                    .selection-area {
-                        display: none !important;
-                    }
-                    .report-container {
-                        display: block !important;
-                        page-break-after: always;
-                    }
-                }
-                @media (max-width: 768px) {
-                    .selection-area {
-                        grid-template-columns: 1fr !important;
-                    }
-                    .students-grid {
-                        grid-template-columns: 1fr !important;
-                    }
-                    .modal {
-                        max-width: 100% !important;
-                        margin: 10px !important;
-                        padding: 15px !important;
-                    }
-                }
+                .doc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+                select:focus { outline: none; border-color: ${PRIMARY} !important; }
             `}</style>
         </Layout>
     );
 }
+
+// ============================================================
+// Sub-components
+// ============================================================
+function Field({ label, required, children }) {
+    return (
+        <div style={{ flex: 1, minWidth: 160 }}>
+            <label style={labelStyle}>
+                {label} {required && <span style={{ color: '#e74c3c' }}>*</span>}
+            </label>
+            {children}
+        </div>
+    );
+}
+
+function DocButton({ icon, title, subtitle, onClick, disabled, color }) {
+    return (
+        <button
+            className="doc-btn"
+            onClick={onClick}
+            disabled={disabled}
+            style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '12px 16px',
+                background: 'white',
+                border: `1.5px solid ${color}22`,
+                borderRadius: 12,
+                cursor: disabled ? 'not-allowed' : 'pointer',
+                textAlign: 'left',
+                transition: 'all 0.2s',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.04)',
+                width: '100%',
+            }}
+        >
+            <div style={{
+                width: 38, height: 38, borderRadius: 10,
+                background: `${color}15`, color,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 16, flexShrink: 0,
+            }}>
+                <i className={`fas ${icon}`}></i>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: '#2c3e50' }}>
+                    {title}
+                </div>
+                <div style={{ fontSize: 11, color: '#95a5a6' }}>{subtitle}</div>
+            </div>
+        </button>
+    );
+}
+
+function StudentCard({ student, onPreview }) {
+    const avg = student.overallAverage || 0;
+    const grade = getCBCGrade(avg);
+    const coverage = `${student.assessedCount} / ${student.totalSubjects}`;
+    const initials = `${student.firstName?.[0] || ''}${student.lastName?.[0] || ''}`.toUpperCase() || 'S';
+
+    return (
+        <div className="student-card" onClick={onPreview} style={cardStyle}>
+            <div style={avatarStyle}>{initials}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: '#2c3e50',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {student.firstName} {student.lastName}
+                </div>
+                <div style={{ fontSize: 12, color: '#95a5a6', marginTop: 2 }}>
+                    {student.admissionNumber || student.studentId || 'N/A'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                    <Pill color={PRIMARY}>Avg {avg}%</Pill>
+                    <Pill color={gradeColor(grade.level)}>CBC {grade.code}</Pill>
+                    {student.position && (
+                        <Pill color="#8e44ad">Pos {student.position}/{student.classSize}</Pill>
+                    )}
+                    <Pill color="#95a5a6">Assessed {coverage}</Pill>
+                </div>
+            </div>
+            <i className="fas fa-chevron-right" style={{ color: '#bdc3c7' }}></i>
+        </div>
+    );
+}
+
+function Pill({ color, children }) {
+    return (
+        <span style={{
+            fontSize: 10, fontWeight: 700, padding: '3px 8px',
+            borderRadius: 10, background: `${color}15`, color,
+            letterSpacing: 0.2,
+        }}>{children}</span>
+    );
+}
+
+function gradeColor(level) {
+    return level === 'EE' ? '#1b5e20'
+        : level === 'ME' ? '#0c5460'
+        : level === 'AE' ? '#856404'
+        : level === 'NA' ? '#95a5a6'
+        : '#721c24';
+}
+
+function EmptyState() {
+    return (
+        <div style={{
+            background: 'white', borderRadius: 16,
+            padding: '60px 20px', textAlign: 'center',
+            border: '2px dashed #e0e6ed',
+        }}>
+            <i className="fas fa-file-alt" style={{
+                fontSize: 56, color: '#e0e6ed', marginBottom: 16, display: 'block',
+            }}></i>
+            <h3 style={{ fontSize: 18, color: '#2c3e50', marginBottom: 8 }}>
+                No Students Loaded
+            </h3>
+            <p style={{ color: '#95a5a6', maxWidth: 420, margin: '0 auto' }}>
+                Select a level, class, and term above, then click <strong>Load Students</strong>.
+            </p>
+        </div>
+    );
+}
+
+function GeneratingOverlay() {
+    return (
+        <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.9)',
+            zIndex: 9999, display: 'flex', alignItems: 'center',
+            justifyContent: 'center', flexDirection: 'column', gap: 20,
+        }}>
+            <div style={{
+                width: 54, height: 54, border: '4px solid #e0e6ed',
+                borderTopColor: PRIMARY, borderRadius: '50%',
+                animation: 'spin 0.9s linear infinite',
+            }}></div>
+            <div style={{ color: '#2c3e50', fontWeight: 600, fontSize: 15 }}>
+                Generating PDF...
+            </div>
+        </div>
+    );
+}
+
+function PreviewModal({
+    student, subjects, term, meta,
+    assessmentIndex, onAssessmentChange,
+    onClose, onDownloadForm, onDownloadTranscript, generating,
+}) {
+    const overall = getCBCGrade(student.overallAverage || 0);
+
+    return (
+        <div onClick={(e) => e.target === e.currentTarget && onClose()} style={overlayStyle}>
+            <div style={modalStyle}>
+                <div style={modalHeaderStyle}>
+                    <div>
+                        <div style={{ fontSize: 12, color: '#bdc3c7', fontWeight: 600, letterSpacing: 0.5 }}>
+                            CBC REPORT PREVIEW
+                        </div>
+                        <h2 style={{ fontSize: 20, color: '#2c3e50', margin: '4px 0 0' }}>
+                            {student.firstName} {student.lastName}
+                        </h2>
+                    </div>
+                    <button onClick={onClose} style={closeBtnStyle}>
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <div style={tabBarStyle}>
+                    {ASSESSMENTS.map((a) => (
+                        <button key={a.index}
+                            onClick={() => onAssessmentChange(a.index)}
+                            style={{
+                                ...tabStyle,
+                                background: assessmentIndex === a.index ? PRIMARY : 'transparent',
+                                color: assessmentIndex === a.index ? 'white' : '#666',
+                            }}>
+                            {a.label}
+                        </button>
+                    ))}
+                </div>
+
+                <div style={infoGridStyle}>
+                    <InfoCell label="Admission">{student.admissionNumber || student.studentId || '—'}</InfoCell>
+                    <InfoCell label="Class">{student.class || meta.cls}</InfoCell>
+                    <InfoCell label="Term">{term}</InfoCell>
+                    <InfoCell label="Assessed">
+                        {student.assessedCount} / {student.totalSubjects}
+                    </InfoCell>
+                    <InfoCell label="Overall Position">
+                        {student.position ? `${student.position} / ${student.classSize}` : '—'}
+                    </InfoCell>
+                    <InfoCell label="Overall">
+                        <Pill color={gradeColor(overall.level)}>
+                            {overall.code} • {overall.points != null ? overall.points.toFixed(1) : '—'} pts
+                        </Pill>
+                    </InfoCell>
+                </div>
+
+                <div style={{ overflowX: 'auto' }}>
+                    <table style={tableStyle}>
+                        <thead>
+                            <tr style={{ background: PRIMARY, color: 'white' }}>
+                                <th style={th}>Subject</th>
+                                <th style={th}>A1</th>
+                                <th style={th}>A2</th>
+                                <th style={th}>A3</th>
+                                <th style={th}>Avg</th>
+                                <th style={th}>CBC</th>
+                                <th style={th}>Pts</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {subjects.map((subject, idx) => {
+                                const list = student.scores[subject] || [];
+                                const avg = student.averages[subject];
+                                const g = getCBCGrade(avg ?? 0);
+                                return (
+                                    <tr key={subject} style={{
+                                        background: idx % 2 ? '#fafbfc' : 'white',
+                                        borderBottom: '1px solid #eef1f5',
+                                    }}>
+                                        <td style={td}>{subject}</td>
+                                        <td style={tdC}>{list[0] ?? '—'}</td>
+                                        <td style={tdC}>{list[1] ?? '—'}</td>
+                                        <td style={tdC}>{list[2] ?? '—'}</td>
+                                        <td style={{ ...tdC, fontWeight: 700 }}>
+                                            {avg != null ? avg : 'N/A'}
+                                        </td>
+                                        <td style={tdC}>
+                                            {avg != null ? (
+                                                <Pill color={gradeColor(g.level)}>{g.code}</Pill>
+                                            ) : '—'}
+                                        </td>
+                                        <td style={{ ...tdC, fontWeight: 700, color: PRIMARY }}>
+                                            {avg != null ? g.points.toFixed(1) : '—'}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div style={modalFooterStyle}>
+                    <button onClick={onClose} style={ghostBtn}>Close</button>
+                    <button onClick={onDownloadTranscript} disabled={generating}
+                        style={{ ...primaryBtn, background: '#e67e22' }}>
+                        <i className="fas fa-scissors"></i> Transcript (A{assessmentIndex + 1})
+                    </button>
+                    <button onClick={onDownloadForm} disabled={generating}
+                        style={{ ...primaryBtn, background: '#27ae60' }}>
+                        <i className="fas fa-file-pdf"></i> Full Report Form
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function InfoCell({ label, children }) {
+    return (
+        <div>
+            <div style={{
+                fontSize: 10, color: '#95a5a6', fontWeight: 600,
+                letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4,
+            }}>{label}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#2c3e50' }}>{children}</div>
+        </div>
+    );
+}
+
+// ============================================================
+// Styles
+// ============================================================
+const PRIMARY = '#1a237e';
+
+const filterBarStyle = {
+    background: 'white', borderRadius: 16, padding: 22,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.05)', marginBottom: 20,
+    display: 'flex', gap: 16, alignItems: 'flex-end', flexWrap: 'wrap',
+};
+
+const actionsCardStyle = {
+    background: 'white', borderRadius: 16, padding: 22,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.05)',
+};
+
+const actionGridStyle = {
+    marginTop: 16,
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    gap: 12,
+};
+
+const sectionTitleStyle = {
+    fontSize: 16, fontWeight: 700, color: '#2c3e50',
+    margin: 0, display: 'flex', alignItems: 'center', gap: 8,
+};
+
+const sectionHintStyle = {
+    fontSize: 13, color: '#95a5a6', margin: '4px 0 0',
+};
+
+const gridStyle = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+    gap: 14,
+};
+
+const cardStyle = {
+    background: 'white',
+    borderRadius: 14,
+    padding: 16,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+    border: '1.5px solid transparent',
+    display: 'flex', alignItems: 'center', gap: 14,
+    cursor: 'pointer', transition: 'all 0.2s',
+};
+
+const avatarStyle = {
+    width: 46, height: 46, borderRadius: 12,
+    background: `linear-gradient(135deg, ${PRIMARY}, #3949ab)`,
+    color: 'white', fontWeight: 700, fontSize: 15,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0, letterSpacing: 0.5,
+};
+
+const labelStyle = {
+    display: 'block', fontSize: 12, fontWeight: 700,
+    color: '#2c3e50', marginBottom: 6,
+    textTransform: 'uppercase', letterSpacing: 0.4,
+};
+
+const selectStyle = {
+    width: '100%', padding: '10px 14px',
+    border: '2px solid #e0e6ed', borderRadius: 10,
+    fontSize: 14, background: 'white', color: '#2c3e50',
+    cursor: 'pointer', transition: 'border 0.2s',
+};
+
+const primaryBtn = {
+    padding: '10px 18px', border: 'none', borderRadius: 10,
+    fontWeight: 700, cursor: 'pointer', fontSize: 13,
+    display: 'inline-flex', alignItems: 'center', gap: 8,
+    background: PRIMARY, color: 'white',
+    transition: 'all 0.2s',
+};
+
+const ghostBtn = {
+    padding: '10px 18px', border: '2px solid #e0e6ed',
+    borderRadius: 10, fontWeight: 700, cursor: 'pointer',
+    fontSize: 13, background: 'transparent', color: '#2c3e50',
+    display: 'inline-flex', alignItems: 'center', gap: 8,
+};
+
+const overlayStyle = {
+    position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
+    zIndex: 1000, display: 'flex', alignItems: 'center',
+    justifyContent: 'center', padding: 20,
+};
+
+const modalStyle = {
+    background: 'white', borderRadius: 18, maxWidth: 900,
+    width: '100%', maxHeight: '92vh', overflowY: 'auto', padding: 26,
+};
+
+const modalHeaderStyle = {
+    display: 'flex', justifyContent: 'space-between',
+    alignItems: 'center', marginBottom: 18,
+};
+
+const closeBtnStyle = {
+    width: 38, height: 38, border: 'none', borderRadius: '50%',
+    background: '#f5f7fb', cursor: 'pointer', fontSize: 16,
+    color: '#666',
+};
+
+const tabBarStyle = {
+    display: 'flex', gap: 6, padding: 4, background: '#f5f7fb',
+    borderRadius: 12, marginBottom: 18,
+};
+
+const tabStyle = {
+    flex: 1, padding: '8px 12px', border: 'none',
+    borderRadius: 9, fontWeight: 700, fontSize: 12,
+    cursor: 'pointer', transition: 'all 0.2s',
+};
+
+const infoGridStyle = {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    gap: 14, padding: 16, background: '#f8f9fb',
+    borderRadius: 12, marginBottom: 18,
+};
+
+const tableStyle = {
+    width: '100%', borderCollapse: 'collapse', fontSize: 12.5,
+    borderRadius: 10, overflow: 'hidden',
+};
+
+const th = {
+    padding: '10px 12px', textAlign: 'center',
+    fontSize: 11, fontWeight: 700, letterSpacing: 0.4,
+};
+
+const td = { padding: '9px 12px', fontSize: 12.5 };
+const tdC = { padding: '9px 12px', textAlign: 'center', fontSize: 12.5 };
+
+const modalFooterStyle = {
+    display: 'flex', gap: 10, justifyContent: 'flex-end',
+    marginTop: 22, paddingTop: 18, borderTop: '1px solid #eef1f5',
+    flexWrap: 'wrap',
+};
