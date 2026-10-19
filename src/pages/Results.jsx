@@ -288,7 +288,7 @@ export default function Results() {
     const isLevelOpen = selectedLevel ? (levelPermissions[selectedLevel]?.[assessmentType] !== false) : true;
     const isReadOnly = !isLevelOpen && !isAdmin;
 
-      useEffect(() => {
+    useEffect(() => {
         const schoolId = userData?.schoolId || userData?.school?.id;
         if (!schoolId || !selectedLevel) {
             setAllPaperConfigs({});
@@ -319,7 +319,7 @@ export default function Results() {
         })();
     }, [userData, selectedLevel]);
 
-        useEffect(() => {
+    useEffect(() => {
         if (!selectedSubject) {
             setPaperConfig([]);
             setShowBranchesOnReport(false);
@@ -490,11 +490,6 @@ export default function Results() {
         } finally { setSaving(false); }
     };
 
-    // ============================================================
-    // PUBLISH ALL — publishes every loaded student's scores for the
-    // current subject/term/assessment. Replaces the duplicate
-    // non-functional "Save All" button.
-    // ============================================================
     const publishAllResults = async () => {
         if (isReadOnly) { showNotification('Deadline passed — read-only', 'warning'); return; }
         if (students.length === 0) { showNotification('No students loaded', 'warning'); return; }
@@ -664,6 +659,7 @@ export default function Results() {
             showNotification('Failed to save paper config', 'error');
         }
     };
+
     const getSubjectScoreForStudent = useCallback((studentId, subject) => {
         const scores = studentScores[studentId] || [];
         const hit = scores.find(s => s.subject === subject);
@@ -1154,7 +1150,7 @@ export default function Results() {
                             </button>
                         )}
                     </div>
-                                       {paperConfig.length > 0 && (
+                    {paperConfig.length > 0 && (
                         <div style={{ fontSize: 11, color: 'var(--success)', marginTop: 3, fontWeight: 600 }}>
                             <i className="fas fa-layer-group"></i> Multi-paper:{' '}
                             {paperConfig.map(p => `${p.name} (${p.weight}%)`).join(' • ')}
@@ -1164,6 +1160,7 @@ export default function Results() {
                             </span>
                         </div>
                     )}
+                </div>
 
                 <div className="form-group" style={{ marginBottom: '0' }}>
                     <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', color: 'var(--secondary)', marginBottom: '5px' }}>
@@ -1495,7 +1492,7 @@ export default function Results() {
                 />
             )}
 
-                      {showPaperConfigModal && selectedSubject && (
+            {showPaperConfigModal && selectedSubject && (
                 <PaperConfigModal
                     subject={selectedSubject}
                     level={LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel}
