@@ -70,6 +70,9 @@ export default function Results() {
     const schoolName = schoolData.name;
     const schoolMotto = schoolData.motto;
 
+    // Year stamped on every score write so Reports page can filter cleanly.
+    const ACADEMIC_YEAR = new Date().getFullYear();
+
     const [students, setStudents] = useState([]);
     const [studentScores, setStudentScores] = useState({});
     const [loading, setLoading] = useState(false);
@@ -433,15 +436,16 @@ export default function Results() {
     const saveAllScores = async () => {
         if (isReadOnly) { showNotification('Deadline passed — read-only', 'warning'); return; }
 
+        const year = ACADEMIC_YEAR;
         const rawEntries = Object.entries(pendingInputs).map(([studentId, val]) => {
             if (val && typeof val === 'object' && val.papers) {
-                return { studentId, papers: val.papers };
+                return { studentId, papers: val.papers, year };
             }
             const score = parseInt(val?.score ?? val, 10);
             const maxScore = parseInt(val?.maxScore ?? 100, 10);
             if (isNaN(score) || score < 0) return null;
             if (maxScore <= 0) return null;
-            return { studentId, score, maxScore };
+            return { studentId, score, maxScore, year };
         }).filter(Boolean);
 
         if (rawEntries.length === 0) { showNotification('No valid pending scores', 'info'); return; }
@@ -460,14 +464,15 @@ export default function Results() {
                     await addToSyncQueue('student_scores', 'set', {
                         schoolId, level: selectedLevel, class: selectedClass,
                         subject: selectedSubject, term: selectedTerm,
-                        assessmentType, ...e, ...teacherMeta
+                        assessmentType, year, ...e, ...teacherMeta
                     });
                 }
                 showNotification(`${rawEntries.length} scores queued offline`, 'info');
             } else {
                 await saveScoresBatch(
                     schoolId, selectedLevel, selectedClass, selectedSubject,
-                    selectedTerm, assessmentType, rawEntries, teacherMeta
+                    selectedTerm, assessmentType, rawEntries,
+                    { ...teacherMeta, year }
                 );
                 await AuditLogService.logAction(
                     schoolId,
@@ -475,7 +480,7 @@ export default function Results() {
                     AUDIT_ACTIONS.SCORES_SAVED,
                     {
                         entityId: `${selectedClass}-${selectedSubject}-${assessmentType}`,
-                        message: `Saved ${rawEntries.length} ${selectedSubject} score(s) for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
+                        message: `Saved ${rawEntries.length} ${selectedSubject} score(s) for ${selectedClass}, ${selectedTerm} ${assessmentType} (${year}).`
                     }
                 );
                 invalidatePerformanceCache({ currentUser, schoolId });
@@ -498,6 +503,7 @@ export default function Results() {
         setPublishingAll(true);
         try {
             const schoolId = requireSchoolId(userData);
+            const year = ACADEMIC_YEAR;
             const ids = students.map((s) => s.id);
 
             if (!isOnline) {
@@ -505,7 +511,7 @@ export default function Results() {
                     await addToSyncQueue('student_scores', 'publish', {
                         schoolId, level: selectedLevel, class: selectedClass,
                         subject: selectedSubject, term: selectedTerm,
-                        assessmentType, studentId: id
+                        assessmentType, studentId: id, year
                     });
                 }
                 showNotification(`${ids.length} results queued to publish offline`, 'info');
@@ -520,7 +526,7 @@ export default function Results() {
                     AUDIT_ACTIONS.SCORES_PUBLISHED,
                     {
                         entityId: `${selectedClass}-${selectedSubject}-${assessmentType}`,
-                        message: `Published ${ids.length} ${selectedSubject} result(s) for ${selectedClass}, ${selectedTerm} ${assessmentType}.`
+                        message: `Published ${ids.length} ${selectedSubject} result(s) for ${selectedClass}, ${selectedTerm} ${assessmentType} (${year}).`
                     }
                 );
                 invalidatePerformanceCache({ currentUser, schoolId });
@@ -541,15 +547,17 @@ export default function Results() {
         const val = pendingInputs[studentId];
         if (!val) return;
 
+        const year = ACADEMIC_YEAR;
+
         let entry;
         if (val && typeof val === 'object' && val.papers) {
-            entry = { studentId, papers: val.papers };
+            entry = { studentId, papers: val.papers, year };
         } else {
             const score = parseInt(val?.score ?? val, 10);
             const maxScore = parseInt(val?.maxScore ?? 100, 10);
             if (isNaN(score) || score < 0) { showNotification('Invalid score', 'warning'); return; }
             if (maxScore <= 0) { showNotification('Invalid max score', 'warning'); return; }
-            entry = { studentId, score, maxScore };
+            entry = { studentId, score, maxScore, year };
         }
 
         setSaving(true);
@@ -563,19 +571,20 @@ export default function Results() {
                 await addToSyncQueue('student_scores', 'set', {
                     schoolId, level: selectedLevel, class: selectedClass,
                     subject: selectedSubject, term: selectedTerm,
-                    assessmentType, ...entry, ...teacherMeta
+                    assessmentType, year, ...entry, ...teacherMeta
                 });
                 showNotification('Score queued offline', 'info');
             } else {
                 await saveScoresBatch(
                     schoolId, selectedLevel, selectedClass, selectedSubject,
-                    selectedTerm, assessmentType, [entry], teacherMeta
+                    selectedTerm, assessmentType, [entry],
+                    { ...teacherMeta, year }
                 );
                 await AuditLogService.logAction(
                     schoolId,
                     { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
                     AUDIT_ACTIONS.SCORES_SAVED,
-                    { entityId: `${studentId}-${selectedSubject}-${assessmentType}`, message: `Saved ${selectedSubject} score for ${selectedClass}.` }
+                    { entityId: `${studentId}-${selectedSubject}-${assessmentType}`, message: `Saved ${selectedSubject} score for ${selectedClass} (${year}).` }
                 );
                 invalidatePerformanceCache({ currentUser, schoolId });
                 showNotification('Score saved', 'success');
@@ -591,6 +600,7 @@ export default function Results() {
     const publishResult = async (studentId) => {
         try {
             const schoolId = requireSchoolId(userData);
+            const year = ACADEMIC_YEAR;
             await publishScoresBatch(
                 schoolId, selectedLevel, selectedClass, selectedSubject,
                 selectedTerm, assessmentType, [studentId]
@@ -599,7 +609,7 @@ export default function Results() {
                 schoolId,
                 { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userRole },
                 AUDIT_ACTIONS.SCORES_PUBLISHED,
-                { entityId: `${studentId}-${selectedSubject}-${assessmentType}`, message: `Published ${selectedSubject} results.` }
+                { entityId: `${studentId}-${selectedSubject}-${assessmentType}`, message: `Published ${selectedSubject} results (${year}).` }
             );
             showNotification('Published', 'success');
             setStudents(prev => prev.map(s => s.id === studentId ? { ...s, status: 'published' } : s));
@@ -840,7 +850,7 @@ export default function Results() {
                 schoolPhone: userData?.schoolPhone || '',
                 schoolEmail: userData?.schoolEmail || '',
                 level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
-                cls: selectedClass, term: selectedTerm, year: new Date().getFullYear(),
+                cls: selectedClass, term: selectedTerm, year: ACADEMIC_YEAR,
                 assessmentType, subjects: LEVEL_SUBJECTS[selectedLevel] || []
             });
             showNotification(`Report saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
@@ -853,7 +863,7 @@ export default function Results() {
             const result = await downloadRankingPDF(data, {
                 schoolName, schoolMotto,
                 level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
-                cls: selectedClass, term: selectedTerm, year: new Date().getFullYear(),
+                cls: selectedClass, term: selectedTerm, year: ACADEMIC_YEAR,
                 assessmentType,
                 subjects: [selectedSubject],
                 classSubjectMean,
@@ -874,7 +884,7 @@ export default function Results() {
             const result = await downloadRankingPDF(combinedRankingData, {
                 schoolName, schoolMotto,
                 level: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
-                cls: selectedClass, term: selectedTerm, year: new Date().getFullYear(),
+                cls: selectedClass, term: selectedTerm, year: ACADEMIC_YEAR,
                 assessmentType,
                 subjects: allSubjects,
                 scope: 'all-subjects',
@@ -900,7 +910,7 @@ export default function Results() {
             return {
                 Name: `${s.firstName || ''} ${s.lastName || ''}`.trim(),
                 AdmissionNo: s.admissionNumber || s.studentId || '',
-                Subject: selectedSubject, Term: selectedTerm, Assessment: assessmentType,
+                Subject: selectedSubject, Term: selectedTerm, Assessment: assessmentType, Year: ACADEMIC_YEAR,
                 Score: score ?? '', Mean: classSubjectMean,
                 Grade: score != null ? grade.code : '',
                 Points: score != null ? grade.points : ''
@@ -917,7 +927,7 @@ export default function Results() {
         const finalRows = ranked.map(({ _orig, ...r }) => r);
         const headers = Object.keys(finalRows[0] || {});
         const csv = [headers.join(','), ...finalRows.map(row => headers.map(h => `"${row[h] ?? ''}"`).join(','))].join('\n');
-        downloadCSV(csv, `results_${selectedSubject}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
+        downloadCSV(csv, `results_${selectedSubject}_${selectedClass}_${selectedTerm}_${ACADEMIC_YEAR}_${new Date().toISOString().slice(0,10)}.csv`);
         showNotification(`Exported ${finalRows.length} ${selectedSubject} score(s)`, 'success');
     };
 
@@ -939,7 +949,7 @@ export default function Results() {
         });
         const headers = Object.keys(rows[0] || {});
         const csv = [headers.join(','), ...rows.map(row => headers.map(h => `"${row[h] ?? ''}"`).join(','))].join('\n');
-        downloadCSV(csv, `subject_ranking_${selectedSubject}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
+        downloadCSV(csv, `subject_ranking_${selectedSubject}_${selectedClass}_${selectedTerm}_${ACADEMIC_YEAR}_${new Date().toISOString().slice(0,10)}.csv`);
         showNotification('Subject ranking exported', 'success');
     };
 
@@ -968,7 +978,7 @@ export default function Results() {
         });
         const headers = Object.keys(data[0] || {});
         const csv = [headers.join(','), ...data.map(row => headers.map(h => `"${row[h]}"`).join(','))].join('\n');
-        downloadCSV(csv, `combined_ranking_${selectedLevel}_${selectedClass}_${selectedTerm}_${new Date().toISOString().slice(0,10)}.csv`);
+        downloadCSV(csv, `combined_ranking_${selectedLevel}_${selectedClass}_${selectedTerm}_${ACADEMIC_YEAR}_${new Date().toISOString().slice(0,10)}.csv`);
         showNotification('Combined ranking exported', 'success');
     };
 
@@ -981,6 +991,7 @@ export default function Results() {
         }
 
         const schoolId = requireSchoolId(userData);
+        const year = ACADEMIC_YEAR;
         const text = await file.text();
         const lines = text.split('\n').filter(l => l.trim());
         if (lines.length < 2) { showNotification('Invalid CSV', 'warning'); e.target.value = ''; return; }
@@ -1017,7 +1028,7 @@ export default function Results() {
             if (!Number.isFinite(maxScore) || maxScore <= 0) { errors++; continue; }
             const student = admNo ? byAdmission.get(admNo) : null;
             if (!student) { errors++; continue; }
-            entries.push({ studentId: student.id, score, maxScore });
+            entries.push({ studentId: student.id, score, maxScore, year });
         }
 
         if (entries.length === 0) {
@@ -1027,7 +1038,7 @@ export default function Results() {
         await saveScoresBatch(
             schoolId, selectedLevel, selectedClass, selectedSubject,
             selectedTerm, assessmentType, entries,
-            { teacherId: currentUser?.uid, teacherName: userData?.fullName || '' }
+            { teacherId: currentUser?.uid, teacherName: userData?.fullName || '', year }
         );
         invalidatePerformanceCache({ currentUser, schoolId });
         showNotification(`Imported ${entries.length} scores, ${errors} errors`, 'success');
