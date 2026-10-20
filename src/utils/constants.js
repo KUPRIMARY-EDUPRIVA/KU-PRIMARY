@@ -38,13 +38,7 @@ export const LEVEL_SUBJECTS = {
     'English',
     'Kiswahili',
     'Mathematics',
-    'Science and Technology',
-    'Social Studies',
-    'CRE/IRE/HRE',
-    'Music',
-    'Environmental',
-    'Creative Activities',
-    'Physical Education'
+    'Intergrated Learning Areas'
   ],
   'upper-primary': [
     'English',
@@ -52,11 +46,9 @@ export const LEVEL_SUBJECTS = {
     'Mathematics',
     'Science and Technology',
     'Social Studies',
-    'CRE/IRE/HRE',
-    'Creative Arts',
-    'Agriculture',
-    'Music',
-    'Physical Education'
+    'Religious Education',
+    'Creative Arts & Sports',
+    'Agriculture & Nutrition',
     
   ],
   'junior-school': [
