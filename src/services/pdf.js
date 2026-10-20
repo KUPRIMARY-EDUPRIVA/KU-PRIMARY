@@ -846,10 +846,7 @@ function drawStudentInfo(doc, student, meta, term, startY) {
     doc.setFont('times', 'normal');
     doc.text(String(year), MARGIN + 15, startY + 18);
 
-    doc.setFont('times', 'bold');
-    doc.text('Current Year:', col2X, startY + 18);
-    doc.setFont('times', 'normal');
-    doc.text(String(currentYear), col2X + 27, startY + 18);
+    
 
     return startY + boxH + 3;
 }
@@ -1022,7 +1019,7 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
             ['Class', student.class || meta?.cls || '—'],
             ['Term', term || meta?.term || '—'],
             ['Year', String(student.academicYear || student.year || meta?.year || new Date().getFullYear())],
-            ['Current Year', String(new Date().getFullYear())],
+            
         ];
         bioRows.forEach(([label, value]) => {
             doc.setFont('times', 'bold');
