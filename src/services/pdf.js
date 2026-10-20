@@ -1152,14 +1152,6 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
             { maxWidth: CARD_W - 40 }
         );
 
-        doc.setFont('times', 'italic');
-        doc.setFontSize(5.6);
-        doc.text(
-            'EE≥80  ME≥65  AE≥50  BE<50',
-            PRINT_LEFT + CARD_W - 3,
-            stripLowY,
-            { align: 'right' }
-        );
     };
 
     // ---- Draw the subject table (drawn FIRST so it can't erase anything) ----
