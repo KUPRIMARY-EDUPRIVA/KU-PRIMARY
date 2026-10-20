@@ -855,86 +855,52 @@ function drawStudentInfo(doc, student, meta, term, startY) {
 }
 
 // ------------------------------------------------------------
-// 1. TRANSCRIPTS — 4 students per A4 portrait page with cut marks.
+// 1. TRANSCRIPTS — 4 landscape slips per portrait A4 page.
+//    Each slip is 186 × 68 mm → reads left-to-right (landscape).
+//    Includes cutting marks in the gutter.
 // ------------------------------------------------------------
 export async function downloadTranscripts({ students, meta, subjects, term, assessmentIndex = 0 }) {
     if (!Array.isArray(students) || students.length === 0) {
         throw new Error('No students supplied for transcripts.');
     }
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
+    const pageWidth = doc.internal.pageSize.getWidth();     // 210
+    const pageHeight = doc.internal.pageSize.getHeight();   // 297
 
-    // ---- Layout constants ----
+    // ---- Sheet layout ----
     const PER_PAGE = 4;
-    // Printable area — leaves 12 mm side margins so cut marks live in the gutter.
-    const PRINT_LEFT = 12;
-    const PRINT_RIGHT = pageWidth - 12;
+    const SIDE_MARGIN = 12;                                 // gutters for cut marks
+    const PRINT_LEFT = SIDE_MARGIN;
+    const PRINT_RIGHT = pageWidth - SIDE_MARGIN;
     const PRINT_TOP = 12;
     const PRINT_BOTTOM = pageHeight - 12;
-    const PRINT_W = PRINT_RIGHT - PRINT_LEFT;
-    const PRINT_H = PRINT_BOTTOM - PRINT_TOP;
+    const PRINT_W = PRINT_RIGHT - PRINT_LEFT;               // 186 mm
+    const PRINT_H = PRINT_BOTTOM - PRINT_TOP;               // 273 mm
+    const CARD_H = PRINT_H / PER_PAGE;                      // ≈ 68.25 mm
+    const CARD_W = PRINT_W;                                 // 186 mm
 
-    // Card sizing: 4 equal cards stacked vertically.
-    const CARD_H = PRINT_H / PER_PAGE;
-    const CARD_W = PRINT_W;
+    // ---- Inside each slip (landscape anatomy) ----
+    const HEADER_H = 7;                                     // top blue band
+    const SUMMARY_H = 14;                                   // bottom summary band
+    const BIO_W = 52;                                       // left bio column
+    const TABLE_LEFT = PRINT_LEFT + BIO_W;                  // right table column start
+    const TABLE_W = CARD_W - BIO_W;                         // ≈ 134 mm
+    const TABLE_TOP_OFF = HEADER_H + 1;                     // table top relative to card top
+    const TABLE_BOTTOM_RESERVE = SUMMARY_H + 1;             // leaves room for summary band
 
-    // Sub-layout inside each card.
-    const HEADER_H = 7;          // top blue band
-    const INFO_H = 8;            // name / adm / class line
-    const FOOTER_H = 13;         // summary band
-    const TABLE_TOP_OFFSET = HEADER_H + INFO_H + 1;
-    const TABLE_BOTTOM_RESERVE = FOOTER_H + 1;
-
-    // Crop / cut mark geometry (mm)
-    const TICK = 2.5;
-    const GUTTER_DASH_LEN = 1.6;
-    const GUTTER_GAP_LEN = 1.2;
+    // ---- Cut-mark geometry ----
+    const TICK = 3;                                         // 3 mm ticks in the gutter
+    const DASH = 1.5;
+    const GAP = 1.2;
 
     const subjectList = Array.isArray(subjects) ? subjects : [];
     const subjectCount = subjectList.length;
 
-    // Adaptive table font so long subject lists still fit.
-    const tableFontSize = subjectCount > 10 ? 6.0 : subjectCount > 8 ? 6.5 : 7.0;
+    // Adaptive table font so subject count fits inside the card.
+    const tableFontSize = subjectCount > 10 ? 6.0 : subjectCount > 8 ? 6.6 : 7.2;
     const cellPadding = subjectCount > 10 ? 0.4 : 0.6;
 
-    // ---- Helpers: cutting guides ----
-    const drawCropMarks = (top, bottom) => {
-        doc.setDrawColor(120, 120, 120);
-        doc.setLineWidth(0.15);
-        // Left gutter ticks
-        doc.line(PRINT_LEFT - TICK, top, PRINT_LEFT, top);
-        doc.line(PRINT_LEFT - TICK, bottom, PRINT_LEFT, bottom);
-        // Right gutter ticks
-        doc.line(PRINT_RIGHT, top, PRINT_RIGHT + TICK, top);
-        doc.line(PRINT_RIGHT, bottom, PRINT_RIGHT + TICK, bottom);
-    };
-
-    const drawHorizontalCut = (y) => {
-        doc.setDrawColor(170, 170, 170);
-        doc.setLineWidth(0.2);
-        let x = PRINT_LEFT - TICK;
-        const xEnd = PRINT_RIGHT + TICK;
-        while (x < xEnd) {
-            const nextX = Math.min(x + GUTTER_DASH_LEN, xEnd);
-            doc.line(x, y, nextX, y);
-            x = nextX + GUTTER_GAP_LEN;
-        }
-    };
-
-    const drawVerticalCut = () => {
-        const cx = PRINT_LEFT + PRINT_W / 2;
-        doc.setDrawColor(200, 200, 200);
-        doc.setLineWidth(0.15);
-        let y = PRINT_TOP;
-        while (y < PRINT_BOTTOM) {
-            const nextY = Math.min(y + GUTTER_DASH_LEN, PRINT_BOTTOM);
-            doc.line(cx, y, cx, nextY);
-            y = nextY + GUTTER_GAP_LEN;
-        }
-    };
-
-    // ---- Summary computation (per student) ----
+    // ---- Summary computation ----
     const buildSummary = (student) => {
         const scores = student.scores || {};
         const averages = student.averages || {};
@@ -961,9 +927,6 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
 
         const grade = cbcGrade(overallAverage);
 
-        const position = student.position || null;
-        const classSize = student.classSize || null;
-
         const year = student.academicYear
             || student.year
             || meta?.academicYear?.start
@@ -973,18 +936,42 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
 
         return {
             totalMarks,
-            totalMax,
+            totalMax: totalMax || subjectList.length * 100,
             assessedAtThisIndex,
             overallAverage,
             grade,
-            position,
-            classSize,
+            position: student.position || null,
+            classSize: student.classSize || null,
             year,
             currentYear,
         };
     };
 
-    // ---- Draw one card ----
+    // ---- Cutting guides ----
+    const drawCropMarks = (top, bottom) => {
+        doc.setDrawColor(90, 90, 90);
+        doc.setLineWidth(0.15);
+        // Left gutter ticks
+        doc.line(PRINT_LEFT - TICK, top, PRINT_LEFT, top);
+        doc.line(PRINT_LEFT - TICK, bottom, PRINT_LEFT, bottom);
+        // Right gutter ticks
+        doc.line(PRINT_RIGHT, top, PRINT_RIGHT + TICK, top);
+        doc.line(PRINT_RIGHT, bottom, PRINT_RIGHT + TICK, bottom);
+    };
+
+    const drawHorizontalCut = (y) => {
+        doc.setDrawColor(165, 165, 165);
+        doc.setLineWidth(0.2);
+        let x = PRINT_LEFT - TICK;
+        const xEnd = PRINT_RIGHT + TICK;
+        while (x < xEnd) {
+            const nx = Math.min(x + DASH, xEnd);
+            doc.line(x, y, nx, y);
+            x = nx + GAP;
+        }
+    };
+
+    // ---- Draw one landscape slip ----
     const drawCard = (student, cardTop) => {
         const cardLeft = PRINT_LEFT;
         const cardBottom = cardTop + CARD_H;
@@ -994,46 +981,75 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
         doc.setLineWidth(0.4);
         doc.rect(cardLeft, cardTop, CARD_W, CARD_H);
 
-        // Header band
+        // Header band (left→right reading)
         doc.setFillColor(...PDF_COLORS.primary);
         doc.rect(cardLeft, cardTop, CARD_W, HEADER_H, 'F');
         doc.setTextColor(255, 255, 255);
         doc.setFont('times', 'bold');
         doc.setFontSize(8);
-        doc.text(
-            `${(meta?.schoolName || 'SCHOOL').toUpperCase()} • TRANSCRIPT • ${term || meta?.term || ''}`,
-            cardLeft + 3,
-            cardTop + HEADER_H - 2.2
-        );
-        doc.setFontSize(7.5);
-        doc.text(
-            `Assessment ${assessmentIndex + 1}`,
-            cardLeft + CARD_W - 3,
-            cardTop + HEADER_H - 2.2,
-            { align: 'right' }
-        );
-
-        // Student identity
-        doc.setTextColor(...PDF_COLORS.text);
-        doc.setFont('times', 'bold');
-        doc.setFontSize(8.2);
-        const nameY = cardTop + HEADER_H + 4;
-        doc.text(
-            `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—',
-            cardLeft + 3,
-            nameY
-        );
-        doc.setFont('times', 'normal');
-        doc.setFontSize(7);
-        doc.text(
-            `Adm: ${student.admissionNumber || student.studentId || '—'}   ` +
+        const headerParts = [
+            (meta?.schoolName || 'SCHOOL').toUpperCase(),
             `Class: ${student.class || meta?.cls || '—'}`,
-            cardLeft + 3,
-            nameY + 4
+            `Term: ${term || meta?.term || '—'}`,
+            `Assessment ${assessmentIndex + 1}`,
+            `Year: ${student.academicYear || student.year || meta?.year || new Date().getFullYear()}`,
+        ];
+        doc.text(headerParts.join('   •   '), cardLeft + 3, cardTop + HEADER_H - 2.2);
+        doc.setFontSize(6.5);
+        doc.setFont('times', 'italic');
+        doc.text('TRANSCRIPT', cardLeft + CARD_W - 3, cardTop + HEADER_H - 2.2, { align: 'right' });
+
+        // Bio column (left)
+        const bioLeft = cardLeft + 3;
+        let bioY = cardTop + HEADER_H + 5.5;
+
+        doc.setTextColor(...PDF_COLORS.primary);
+        doc.setFont('times', 'bold');
+        doc.setFontSize(9);
+        const fullName = `${student.firstName || ''} ${student.lastName || ''}`.trim() || '—';
+        const nameLines = doc.splitTextToSize(fullName, BIO_W - 6);
+        nameLines.slice(0, 2).forEach((line) => {
+            doc.text(line, bioLeft, bioY);
+            bioY += 4.2;
+        });
+
+        doc.setTextColor(...PDF_COLORS.text);
+        doc.setFont('times', 'normal');
+        doc.setFontSize(6.6);
+
+        const bioRows = [
+            ['Adm', student.admissionNumber || student.studentId || '—'],
+            ['Class', student.class || meta?.cls || '—'],
+            ['Term', term || meta?.term || '—'],
+            ['Year', String(student.academicYear || student.year || meta?.year || new Date().getFullYear())],
+            ['Current Year', String(new Date().getFullYear())],
+        ];
+        bioRows.forEach(([label, value]) => {
+            doc.setFont('times', 'bold');
+            doc.text(`${label}:`, bioLeft, bioY);
+            doc.setFont('times', 'normal');
+            doc.text(String(value), bioLeft + 16, bioY, { maxWidth: BIO_W - 20 });
+            bioY += 3.6;
+        });
+
+        // Summary of bio column bottom line
+        const summary = buildSummary(student);
+        doc.setFont('times', 'italic');
+        doc.setFontSize(6.2);
+        doc.setTextColor(...PDF_COLORS.gray);
+        doc.text(
+            `Assessed: ${summary.assessedAtThisIndex}/${subjectCount}`,
+            bioLeft,
+            cardTop + CARD_H - SUMMARY_H - 2
         );
 
-        // Subject table
-        const tableStartY = cardTop + TABLE_TOP_OFFSET;
+        // Vertical separator between bio and table
+        doc.setDrawColor(...PDF_COLORS.border);
+        doc.setLineWidth(0.2);
+        doc.line(TABLE_LEFT - 1, cardTop + HEADER_H + 1, TABLE_LEFT - 1, cardBottom - SUMMARY_H - 1);
+
+        // Subject table (right)
+        const tableStartY = cardTop + TABLE_TOP_OFF;
         const tableMaxBottom = cardBottom - TABLE_BOTTOM_RESERVE;
         const bottomMargin = pageHeight - tableMaxBottom;
 
@@ -1047,26 +1063,27 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
                 score != null ? String(score) : '—',
                 avg != null ? `${avg}%` : '—',
                 avg != null ? grade.code : '—',
-                avg != null && grade.points != null ? grade.points.toFixed(1) : '—'
+                avg != null && grade.points != null ? grade.points.toFixed(1) : '—',
             ];
         });
 
         autoTable(doc, {
             startY: tableStartY,
             margin: {
-                left: cardLeft + 2,
+                left: TABLE_LEFT,
                 right: cardLeft + CARD_W - 2,
                 top: tableStartY,
-                bottom: bottomMargin
+                bottom: bottomMargin,
             },
             head: [[`Subject`, `A${assessmentIndex + 1}`, 'Avg %', 'CBC', 'Pts']],
             body: body.length ? body : [['No subjects', '—', '—', '—', '—']],
             theme: 'grid',
             headStyles: {
                 fillColor: PDF_COLORS.primary,
+                textColor: [255, 255, 255],
                 fontSize: tableFontSize,
                 halign: 'center',
-                cellPadding
+                cellPadding,
             },
             bodyStyles: { fontSize: tableFontSize, cellPadding },
             columnStyles: {
@@ -1074,77 +1091,52 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
                 1: { halign: 'center' },
                 2: { halign: 'center' },
                 3: { halign: 'center' },
-                4: { halign: 'center' }
+                4: { halign: 'center' },
             },
-            styles: { overflow: 'linebreak' }
+            styles: { overflow: 'linebreak' },
         });
 
-        // Footer / summary band
-        const summary = buildSummary(student);
-        const footerTop = cardBottom - FOOTER_H + 0.5;
-
-        // Soft divider above summary.
+        // Summary strip (bottom, full card width)
+        const stripTop = cardBottom - SUMMARY_H;
         doc.setDrawColor(...PDF_COLORS.border);
         doc.setLineWidth(0.2);
-        doc.line(cardLeft + 2, footerTop, cardLeft + CARD_W - 2, footerTop);
+        doc.line(cardLeft + 2, stripTop, cardLeft + CARD_W - 2, stripTop);
+
+        const stripMidY = stripTop + 5;
+        const stripLowY = stripTop + 10;
 
         doc.setFont('times', 'bold');
-        doc.setFontSize(6.8);
+        doc.setFontSize(7);
         doc.setTextColor(...PDF_COLORS.primary);
+        const summaryLine =
+            `Total: ${summary.totalMarks}/${summary.totalMax}` +
+            `   •   Avg: ${summary.overallAverage}%` +
+            `   •   CBC: ${summary.grade.code}` +
+            `   •   Pts: ${summary.grade.points != null ? summary.grade.points.toFixed(1) : '—'}` +
+            `   •   Pos: ${summary.position ?? '—'}/${summary.classSize ?? '—'}`;
+        doc.text(summaryLine, cardLeft + 3, stripMidY);
 
-        const colA = cardLeft + 3;
-        const colB = cardLeft + CARD_W * 0.42;
-        const colC = cardLeft + CARD_W * 0.72;
-
-        // Row 1: totals & averages
-        doc.text(
-            `Total Marks: ${summary.totalMarks}/${summary.totalMax || (subjectList.length * 100)}`,
-            colA,
-            footerTop + 3.2
-        );
-        doc.text(
-            `Avg: ${summary.overallAverage}%   CBC: ${summary.grade.code}   Pts: ${summary.grade.points != null ? summary.grade.points.toFixed(1) : '—'}`,
-            colB,
-            footerTop + 3.2
-        );
-        doc.text(
-            `Pos: ${summary.position ?? '—'}/${summary.classSize ?? '—'}`,
-            colC,
-            footerTop + 3.2
-        );
-
-        // Row 2: assessed count, year, current year
-        doc.setFont('times', 'normal');
-        doc.setFontSize(6.5);
-        doc.setTextColor(...PDF_COLORS.text);
-        doc.text(
-            `Assessed: ${summary.assessedAtThisIndex}/${subjectCount}`,
-            colA,
-            footerTop + 7.0
-        );
-        doc.text(
-            `Year: ${summary.year}`,
-            colB,
-            footerTop + 7.0
-        );
-        doc.text(
-            `Current Year: ${summary.currentYear}`,
-            colC,
-            footerTop + 7.0
-        );
-
-        // Row 3: overall progress line (small)
         doc.setFont('times', 'italic');
-        doc.setFontSize(6.2);
+        doc.setFontSize(6.3);
         doc.setTextColor(...PDF_COLORS.gray);
         doc.text(
-            `Overall progress for ${term || meta?.term || 'this term'}: ${summary.overallAverage}% (${summary.grade.label})`,
-            colA,
-            footerTop + 11.0
+            `Assessed ${summary.assessedAtThisIndex}/${subjectCount}   •   Current Year ${summary.currentYear}   •   ${summary.grade.label}`,
+            cardLeft + 3,
+            stripLowY
+        );
+
+        // Tiny grading legend at bottom-right of strip
+        doc.setFont('times', 'italic');
+        doc.setFontSize(5.8);
+        doc.text(
+            'EE≥80  ME≥65  AE≥50  BE<50',
+            cardLeft + CARD_W - 3,
+            stripLowY,
+            { align: 'right' }
         );
     };
 
-    // ---- Iterate pages / students ----
+    // ---- Draw all cards across all pages ----
     students.forEach((student, idx) => {
         const slot = idx % PER_PAGE;
         if (idx > 0 && slot === 0) doc.addPage();
@@ -1152,22 +1144,11 @@ export async function downloadTranscripts({ students, meta, subjects, term, asse
         const cardTop = PRINT_TOP + slot * CARD_H;
 
         drawCard(student, cardTop);
-
-        // Crop marks on every card
         drawCropMarks(cardTop, cardTop + CARD_H);
 
-        // Inter-card dashed cut guide (skip above the first card; the
-        // bottom edge of the last card gets its own crop mark).
+        // Dashed cut line above each card (except the first).
         if (slot > 0) drawHorizontalCut(cardTop);
     });
-
-    // Vertical cut guide on every page — drawn last so it doesn't
-    // get overwritten by subsequent cards.
-    const totalPages = doc.internal.getNumberOfPages();
-    for (let p = 1; p <= totalPages; p += 1) {
-        doc.setPage(p);
-        drawVerticalCut();
-    }
 
     const safeTerm = String(term || meta?.term || 'Term').replace(/\s+/g, '_');
     return saveGeneratedPdf(
