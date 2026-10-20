@@ -32,6 +32,7 @@ const currentYear = new Date().getFullYear();
 const YEARS = [currentYear, currentYear - 1, currentYear - 2];
 
 // ---------- helpers ----------
+
 function fmtPct(n) {
     if (n === null || n === undefined || Number.isNaN(n)) return '—';
     return `${Number(n).toFixed(1)}%`;
@@ -40,12 +41,81 @@ function mean(arr) {
     if (!arr.length) return 0;
     return arr.reduce((s, v) => s + v, 0) / arr.length;
 }
-function normalizeScore(score, outOf = 100) {
-    if (score === null || score === undefined) return null;
-    const n = Number(score);
-    if (Number.isNaN(n)) return null;
-    return outOf === 100 ? n : (n / outOf) * 100;
+
+/**
+ * Normalise a score record's numeric value to a 0–100 percentage.
+ *
+ * `Results.jsx` writes `{ score, maxScore }`. Older / other paths may
+ * write `{ score, outOf }`. Multi-paper subjects additionally write
+ * `computedPercentage` which already accounts for paper weights, so we
+ * prefer it whenever present.
+ */
+function scoreToPercent(sc) {
+    if (!sc) return null;
+    // Multi-paper: percentage is already computed with weights.
+    const cp = Number(sc.computedPercentage);
+    if (sc.computedPercentage != null && Number.isFinite(cp)) return cp;
+
+    const raw = Number(sc.score);
+    if (!Number.isFinite(raw)) return null;
+
+    const denom = Number(
+        sc.maxScore != null ? sc.maxScore
+        : sc.outOf != null ? sc.outOf
+        : 100
+    );
+    if (!Number.isFinite(denom) || denom <= 0) return null;
+    if (denom === 100) return raw;
+    return (raw / denom) * 100;
 }
+
+/**
+ * Normalise a term field to "Term N" regardless of storage shape
+ * (e.g. "Term 1", "term 1", "1", 1).
+ */
+function normaliseTerm(value) {
+    if (value == null) return '';
+    const s = String(value).trim();
+    const m = s.match(/(\d+)/);
+    if (!m) return s;
+    return `Term ${m[1]}`;
+}
+
+/**
+ * Given a `student_scores` record, decide whether it belongs to `year`.
+ * Sources of truth, in order:
+ *   1. explicit `year` field (numeric)
+ *   2. `createdAt` / `updatedAt` Firestore Timestamp
+ *   3. `recordedAt` ISO string
+ * If none are present, we **include** the record (treat as this year) —
+ * otherwise we'd hide all historical data that predates the `year` field.
+ */
+function recordMatchesYear(sc, year) {
+    const y = Number(year);
+    if (!Number.isFinite(y)) return true;
+
+    if (sc.year != null && Number.isFinite(Number(sc.year))) {
+        return Number(sc.year) === y;
+    }
+    // Firestore Timestamp: has toMillis or toDate method
+    const ts =
+        sc.createdAt && typeof sc.createdAt.toDate === 'function' ? sc.createdAt
+        : sc.updatedAt && typeof sc.updatedAt.toDate === 'function' ? sc.updatedAt
+        : sc.createdAt && typeof sc.createdAt.toMillis === 'function' ? sc.createdAt
+        : sc.updatedAt && typeof sc.updatedAt.toMillis === 'function' ? sc.updatedAt
+        : null;
+    if (ts) {
+        const date = typeof ts.toDate === 'function' ? ts.toDate() : new Date(ts.toMillis());
+        return date.getFullYear() === y;
+    }
+    if (typeof sc.recordedAt === 'string' && sc.recordedAt) {
+        const d = new Date(sc.recordedAt);
+        if (!Number.isNaN(d.getTime())) return d.getFullYear() === y;
+    }
+    // No date info: include it (optimistic) rather than dropping it.
+    return true;
+}
+
 function gradeBand(avg) {
     if (avg === null || avg === undefined) return { label: 'No Data', cls: 'rp-band rp-band-na' };
     if (avg >= 75) return { label: 'Exceeding Expectation', cls: 'rp-band rp-band-ee' };
@@ -86,26 +156,37 @@ export default function Reports() {
         setLoading(true);
         setError(null);
         try {
+            // Roster
             const studentList = await loadStudentRoster(schoolId);
             setStudents(studentList);
 
-            const examsSnap = await getDocs(query(
-                collection(db, 'exams'),
-                where('schoolId', '==', schoolId),
-                where('term', '==', term),
-                where('year', '==', Number(year)),
-                limit(500)
-            ));
-            setExams(examsSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-
+            // ---- Scores ----
+            // Query by term only (no `year` filter). Older writes lack the
+            // `year` field, so a hard where() on year returns nothing.
+            // We fetch this term's records and filter by year client-side.
             const scoresSnap = await getDocs(query(
                 collection(db, 'student_scores'),
                 where('schoolId', '==', schoolId),
                 where('term', '==', term),
-                where('year', '==', Number(year)),
                 limit(5000)
             ));
-            setScores(scoresSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+            const rawScores = scoresSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+            // Keep only records that belong to the selected year (see helper).
+            const filteredByYear = rawScores.filter(sc => recordMatchesYear(sc, year));
+            setScores(filteredByYear);
+
+            // ---- Exams ----
+            // Same issue on the `exams` collection. Fetch by term only and
+            // filter by year client-side.
+            const examsSnap = await getDocs(query(
+                collection(db, 'exams'),
+                where('schoolId', '==', schoolId),
+                where('term', '==', term),
+                limit(500)
+            ));
+            const rawExams = examsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            setExams(rawExams.filter(e => recordMatchesYear(e, year)));
         } catch (err) {
             console.error('Reports.loadData:', err);
             setError(err.message);
@@ -149,7 +230,7 @@ export default function Reports() {
     const kpis = useMemo(() => {
         const byStudent = new Map();
         for (const sc of filteredScores) {
-            const pct = normalizeScore(sc.score, sc.outOf || 100);
+            const pct = scoreToPercent(sc);
             if (pct === null) continue;
             if (!byStudent.has(sc.studentId)) byStudent.set(sc.studentId, []);
             byStudent.get(sc.studentId).push(pct);
@@ -190,7 +271,7 @@ export default function Reports() {
         }
         const studentLevel = new Map(filteredStudents.map(s => [s.id, s.level]));
         for (const sc of filteredScores) {
-            const pct = normalizeScore(sc.score, sc.outOf || 100);
+            const pct = scoreToPercent(sc);
             if (pct === null) continue;
             const lvl = studentLevel.get(sc.studentId);
             if (!lvl || !byLevel.has(lvl)) continue;
@@ -214,7 +295,7 @@ export default function Reports() {
         const bySubject = new Map();
         for (const sc of filteredScores) {
             const subj = sc.subject || sc.subjectName || 'Unknown';
-            const pct = normalizeScore(sc.score, sc.outOf || 100);
+            const pct = scoreToPercent(sc);
             if (pct === null) continue;
             if (!bySubject.has(subj)) bySubject.set(subj, []);
             bySubject.get(subj).push(pct);
@@ -247,7 +328,7 @@ export default function Reports() {
         for (const sc of filteredScores) {
             const cls = studentClass.get(sc.studentId);
             if (!cls || !byClass.has(cls)) continue;
-            const pct = normalizeScore(sc.score, sc.outOf || 100);
+            const pct = scoreToPercent(sc);
             if (pct === null) continue;
             byClass.get(cls).scores.push(pct);
         }
@@ -273,13 +354,21 @@ export default function Reports() {
         return withScores[0] || null;
     }, [classRanksData]);
 
-    // ---------- CBC grade distribution ----------
+    // ---------- CBC grade distribution (per STUDENT, not per raw score) ----------
+    // The whole-school "grade distribution" is the count of students in each
+    // band based on their *overall average*, not the count of subject scores.
     const gradeDistribution = useMemo(() => {
         const counts = { EE: 0, ME: 0, AE: 0, BE: 0 };
+        const byStudent = new Map();
         for (const sc of filteredScores) {
-            const pct = normalizeScore(sc.score, sc.outOf || 100);
+            const pct = scoreToPercent(sc);
             if (pct === null) continue;
-            const g = getCBCGrade(pct);
+            if (!byStudent.has(sc.studentId)) byStudent.set(sc.studentId, []);
+            byStudent.get(sc.studentId).push(pct);
+        }
+        for (const arr of byStudent.values()) {
+            const avg = mean(arr);
+            const g = getCBCGrade(avg);
             if (counts[g.level] !== undefined) counts[g.level]++;
         }
         const total = Object.values(counts).reduce((s, v) => s + v, 0);
@@ -297,7 +386,7 @@ export default function Reports() {
     const topPerformers = useMemo(() => {
         const byStudent = new Map();
         for (const sc of filteredScores) {
-            const pct = normalizeScore(sc.score, sc.outOf || 100);
+            const pct = scoreToPercent(sc);
             if (pct === null) continue;
             if (!byStudent.has(sc.studentId)) byStudent.set(sc.studentId, []);
             byStudent.get(sc.studentId).push(pct);
@@ -330,10 +419,12 @@ export default function Reports() {
                 return;
             }
             try {
+                // Fetch every score for the year across all terms. We can't
+                // filter by term here (we want all of them) but we DO want to
+                // limit to the selected year via client-side `recordMatchesYear`.
                 const snap = await getDocs(query(
                     collection(db, 'student_scores'),
                     where('schoolId', '==', schoolId),
-                    where('year', '==', Number(year)),
                     limit(5000)
                 ));
                 if (cancelled) return;
@@ -341,8 +432,9 @@ export default function Reports() {
                 for (const d of snap.docs) {
                     const sc = d.data();
                     if (!filteredStudentIds.has(sc.studentId)) continue;
-                    const t = sc.term || 'Unknown';
-                    const pct = normalizeScore(sc.score, sc.outOf || 100);
+                    if (!recordMatchesYear(sc, year)) continue;
+                    const t = normaliseTerm(sc.term) || 'Unknown';
+                    const pct = scoreToPercent(sc);
                     if (pct === null) continue;
                     if (!byTerm.has(t)) byTerm.set(t, []);
                     byTerm.get(t).push(pct);
@@ -363,11 +455,34 @@ export default function Reports() {
     }, [schoolId, year, filteredStudentIds]);
 
     // ---------- PDF export ----------
+    // Pass the whole picture so the executive PDF can render pages 2–5.
     const handleExportPDF = async () => {
         setExporting(true);
         try {
-            const result = await downloadExecutiveReportsPDF(kpis, userData, term, year);
-            notify(`Executive report saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`, 'success');
+            const result = await downloadExecutiveReportsPDF(
+                {
+                    kpis,
+                    term,
+                    year,
+                    levelFilter,
+                    levelDisplay: LEVEL_DISPLAY_NAMES[levelFilter] || '',
+                    classFilter,
+                    topPerformers,
+                    classRanksData,
+                    levelChartData,
+                    subjectChartData,
+                    gradeDistribution,
+                    trendData,
+                    highestMeanClass
+                },
+                userData,
+                term,
+                year
+            );
+            notify(
+                `Executive report saved${result?.uri ? ' to Downloads/EduPriva' : ''}${result?.filename ? ` as ${result.filename}` : ''}.`,
+                'success'
+            );
         } catch (err) {
             console.error('PDF export failed:', err);
             notify('Export failed: ' + err.message, 'error');
@@ -473,7 +588,7 @@ export default function Reports() {
                                 No scores found for {term} {year}
                                 {levelFilter ? ` in ${LEVEL_DISPLAY_NAMES[levelFilter] || levelFilter}` : ''}
                                 {classFilter ? ` · ${classFilter}` : ''}.
-                                Change the filters above or ask teachers to enter exam scores first.
+                                {' '}Try clearing level/class filters, changing the term/year, or asking teachers to enter exam scores first.
                             </p>
                         </div>
                     </div>
@@ -655,7 +770,7 @@ export default function Reports() {
                             <div className="rp-chart-header">
                                 <div>
                                     <h3>Grade Distribution</h3>
-                                    <p className="rp-chart-sub">CBC performance bands</p>
+                                    <p className="rp-chart-sub">CBC performance bands (per student)</p>
                                 </div>
                                 <span className="rp-chart-badge">CBC</span>
                             </div>
@@ -717,7 +832,7 @@ export default function Reports() {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {classRanksData.map((cls, idx) => {
+                                        {classRanksData.map((cls) => {
                                             const ranked = cls.meanScore !== null;
                                             const rank = ranked
                                                 ? classRanksData.filter(c => c.meanScore !== null).findIndex(c => c.className === cls.className) + 1
@@ -816,7 +931,7 @@ export default function Reports() {
     );
 }
 
-// ---------- styles ----------
+// ---------- styles (unchanged) ----------
 const RP_STYLES = `
 .rp-page { padding: 0; }
 .rp-page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
@@ -845,16 +960,13 @@ const RP_STYLES = `
 .rp-empty-banner strong { font-size: 14px; display: block; margin-bottom: 4px; }
 .rp-empty-banner p { margin: 0; font-size: 13px; }
 
-/* Print root */
 .rp-print-root { display: flex; flex-direction: column; gap: 20px; }
 
-/* Branded header (for PDF) */
 .rp-branded-header { display: none; }
 @media print {
     .rp-branded-header { display: flex !important; justify-content: space-between; align-items: center; gap: 20px; border-bottom: 2px solid #1e293b; padding-bottom: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 }
 
-/* KPI grid */
 .rp-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
 .rp-kpi { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; box-shadow: var(--shadow); }
 .rp-kpi > div:first-child { min-width: 0; }
@@ -867,7 +979,6 @@ const RP_STYLES = `
 .rp-kpi-icon.tone-purple  { background: #faf5ff; color: #7c3aed; }
 .rp-kpi-icon.tone-amber   { background: #fffbeb; color: #d97706; }
 
-/* Highlight banner */
 .rp-highlight { background: #4f46e5; color: white; border-radius: 16px; padding: 22px 26px; display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; box-shadow: var(--shadow-lg); }
 .rp-highlight-left { display: flex; align-items: center; gap: 16px; }
 .rp-highlight-icon { width: 54px; height: 54px; border-radius: 16px; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }
@@ -877,7 +988,6 @@ const RP_STYLES = `
 .rp-highlight-right { text-align: right; }
 .rp-highlight-value { font-size: 30px; font-weight: 800; margin-top: 2px; }
 
-/* Charts */
 .rp-charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .rp-charts-row-3 { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
 @media (max-width: 1000px) {
@@ -894,7 +1004,6 @@ const RP_STYLES = `
 .rp-chart-empty i { font-size: 40px; color: #cbd5e1; }
 .rp-chart-empty p { font-size: 13px; margin: 0; }
 
-/* Cards with tables */
 .rp-card { background: white; border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
 .rp-card-header { padding: 20px 22px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; background: #f8fafc; }
 .rp-card-header h3 { font-size: 15px; font-weight: 700; color: var(--secondary); margin: 0; }
@@ -913,14 +1022,12 @@ const RP_STYLES = `
 .rp-capitalize { text-transform: capitalize; }
 .rp-table-footer { padding: 12px 22px; background: #f8fafc; font-size: 12px; color: var(--gray); text-align: center; border-top: 1px solid var(--border); }
 
-/* Rank medals */
 .rp-rank-medal { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; font-weight: 800; font-size: 14px; }
 .rp-rank-medal.rank-1 { background: #fef3c7; }
 .rp-rank-medal.rank-2 { background: #e2e8f0; }
 .rp-rank-medal.rank-3 { background: #ffedd5; }
 .rp-rank-plain { font-weight: 700; color: var(--gray); }
 
-/* CBC band pills */
 .rp-band { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; border: 1px solid; white-space: nowrap; }
 .rp-band-ee { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
 .rp-band-me { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
@@ -928,19 +1035,16 @@ const RP_STYLES = `
 .rp-band-be { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
 .rp-band-na { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
 
-/* Empty state */
 .rp-empty { padding: 60px 20px; text-align: center; color: var(--gray); }
 .rp-empty i { font-size: 44px; color: var(--border); display: block; margin-bottom: 12px; }
 .rp-empty p { font-size: 13px; margin: 0; }
 
-/* Branded footer */
 .rp-branded-footer { display: none; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); justify-content: space-between; align-items: center; font-size: 10px; color: var(--gray); gap: 12px; flex-wrap: wrap; }
 .rp-branded-footer-motto { font-style: italic; color: var(--primary); }
 @media print {
     .rp-branded-footer { display: flex !important; }
 }
 
-/* Print overrides */
 @media print {
     .rp-page-header, .rp-filters, .rp-feedback, .rp-empty-banner { display: none !important; }
     .rp-chart-card, .rp-card, .rp-kpi, .rp-highlight { break-inside: avoid; page-break-inside: avoid; box-shadow: none !important; }
