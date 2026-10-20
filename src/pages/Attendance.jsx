@@ -77,6 +77,10 @@ export default function Attendance() {
     const [existingRecord, setExistingRecord] = useState(null);
     const [saving, setSaving] = useState(false);
 
+    // ---- Class-teacher search ----
+    const [rosterSearch, setRosterSearch] = useState('');
+    const [historySearch, setHistorySearch] = useState('');
+
     // ---- History tab ------------------------------------------------------
     const [historyFrom, setHistoryFrom] = useState(startOfMonth());
     const [historyTo, setHistoryTo] = useState(endOfMonth());
@@ -110,6 +114,12 @@ export default function Attendance() {
         setClassReportStats(null);
         setClassScopeView(null);
     }, [reportClass, reportType, reportDate, reportFrom, reportTo, reportTerm]);
+
+    // Reset search whenever class/date/session changes so the roster
+    // view always starts clean.
+    useEffect(() => {
+        setRosterSearch('');
+    }, [selectedClass, selectedDate, selectedSession]);
 
     // ---- Notifications ----------------------------------------------------
     const showNotification = useCallback((message, type = 'info') => {
@@ -222,6 +232,33 @@ export default function Attendance() {
     }, [entries]);
 
     const totalStudents = roster.length;
+
+    // ---- Search-filtered roster (view-only; save still uses whole roster) --
+    const filteredRoster = useMemo(() => {
+        const term = rosterSearch.trim().toLowerCase();
+        if (!term) return roster;
+        return roster.filter((s) => {
+            const hay = [
+                s.firstName, s.lastName,
+                `${s.firstName || ''} ${s.lastName || ''}`,
+                s.admissionNumber, s.studentId,
+                s.email,
+            ].filter(Boolean).join(' ').toLowerCase();
+            return hay.includes(term);
+        });
+    }, [roster, rosterSearch]);
+
+    // ---- Search-filtered history -----------------------------------------
+    const filteredHistory = useMemo(() => {
+        const term = historySearch.trim().toLowerCase();
+        if (!term) return historyRecords;
+        return historyRecords.filter((r) => {
+            const hay = [
+                r.date, r.class, r.session, r.takenByName,
+            ].filter(Boolean).join(' ').toLowerCase();
+            return hay.includes(term);
+        });
+    }, [historyRecords, historySearch]);
 
     // ---- Take attendance handlers -----------------------------------------
     const setStudentStatus = (studentId, status) => {
@@ -378,7 +415,6 @@ export default function Attendance() {
         };
     };
 
-    // -------- Compute stats for the current filter, no PDF --------
     const computeSchoolWideStats = async (req) => {
         const records = await listAttendanceRecords({
             schoolId: req.schoolId,
@@ -421,7 +457,6 @@ export default function Attendance() {
         return { ...totals, marks, rate, rows: classRows };
     };
 
-    // -------- Compute stats for a single class, no PDF --------
     const computeClassStats = async (req) => {
         const records = await listAttendanceRecords({
             schoolId: req.schoolId,
@@ -445,7 +480,6 @@ export default function Attendance() {
         return { ...totals, marks, rate, records };
     };
 
-    // ---- VIEW: fetch and render stats inline ----
     const handleView = async () => {
         const req = buildReportRequest();
         if (!req) return showNotification('Select a class first', 'warning');
@@ -480,7 +514,6 @@ export default function Attendance() {
         }
     };
 
-    // ---- EXPORT PDF: generate and save ----
     const handleExportPDF = async () => {
         const req = buildReportRequest();
         if (!req) return showNotification('Select a class first', 'warning');
@@ -606,6 +639,25 @@ export default function Attendance() {
                 .att-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:15px; margin-bottom:15px; }
                 .att-field label { display:block; font-size:13px; font-weight:600; color:var(--secondary); margin-bottom:5px; }
                 .att-field input, .att-field select { width:100%; padding:10px 12px; border:2px solid var(--border); border-radius:8px; font-size:14px; background:white; }
+
+                /* Search bar used in Take Attendance + History */
+                .att-search-wrap { position:relative; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+                .att-search-input-wrap { position: relative; flex: 1; min-width: 220px; }
+                .att-search-icon { position:absolute; left:14px; top:50%; transform:translateY(-50%); color: var(--gray); font-size: 13px; pointer-events:none; }
+                .att-search-input {
+                    width:100%; padding: 10px 36px 10px 36px; font-size:14px;
+                    border: 2px solid var(--border); border-radius: 10px; background: white;
+                    transition: border-color .15s;
+                }
+                .att-search-input:focus { outline:none; border-color: var(--primary); }
+                .att-search-clear {
+                    position:absolute; right:8px; top:50%; transform:translateY(-50%);
+                    width:24px; height:24px; border:none; background:#eef2ff; color:var(--primary);
+                    border-radius:50%; cursor:pointer; font-size:11px; display:flex; align-items:center; justify-content:center;
+                }
+                .att-search-clear:hover { background:#dbeafe; }
+                .att-search-meta { font-size:12px; color:var(--gray); white-space: nowrap; }
+
                 @media(max-width:640px) {
                     .att-tab { padding:8px 12px; font-size:13px; }
                     .att-panel { padding:16px; }
@@ -713,53 +765,93 @@ export default function Attendance() {
                             </div>
                         ) : (
                             <>
-                                {roster.map((s) => {
-                                    const e = entries[s.id] || { status: 'present', note: '' };
-                                    return (
-                                        <div key={s.id} className="att-row">
-                                            <div style={{
-                                                width: 36, height: 36, borderRadius: '50%',
-                                                background: '#1a237e', color: 'white',
-                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                fontWeight: 600, fontSize: 14, flexShrink: 0,
-                                            }}>
-                                                {(s.firstName || 'S')[0]}
-                                            </div>
-                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                <div className="att-name">
-                                                    {s.firstName || ''} {s.lastName || ''}
+                                {/* Search box for the roster */}
+                                <div className="att-search-wrap">
+                                    <div className="att-search-input-wrap">
+                                        <i className="fas fa-search att-search-icon"></i>
+                                        <input
+                                            type="text"
+                                            className="att-search-input"
+                                            placeholder="Search student by name, admission no, or email…"
+                                            value={rosterSearch}
+                                            onChange={(e) => setRosterSearch(e.target.value)}
+                                            aria-label="Search students in this class"
+                                        />
+                                        {rosterSearch && (
+                                            <button
+                                                type="button"
+                                                className="att-search-clear"
+                                                onClick={() => setRosterSearch('')}
+                                                title="Clear search"
+                                            >
+                                                <i className="fas fa-times"></i>
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="att-search-meta">
+                                        {rosterSearch
+                                            ? `Showing ${filteredRoster.length} of ${roster.length}`
+                                            : `${roster.length} student${roster.length === 1 ? '' : 's'}`}
+                                    </div>
+                                </div>
+
+                                {filteredRoster.length === 0 ? (
+                                    <div style={{
+                                        textAlign: 'center', padding: 30, color: 'var(--gray)',
+                                        background: '#f8fafc', borderRadius: 10,
+                                    }}>
+                                        <i className="fas fa-search-minus" style={{ fontSize: 28, display: 'block', marginBottom: 8, color: '#cbd5e1' }}></i>
+                                        No students match “{rosterSearch}”.
+                                    </div>
+                                ) : (
+                                    filteredRoster.map((s) => {
+                                        const e = entries[s.id] || { status: 'present', note: '' };
+                                        return (
+                                            <div key={s.id} className="att-row">
+                                                <div style={{
+                                                    width: 36, height: 36, borderRadius: '50%',
+                                                    background: '#1a237e', color: 'white',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                    fontWeight: 600, fontSize: 14, flexShrink: 0,
+                                                }}>
+                                                    {(s.firstName || 'S')[0]}
                                                 </div>
-                                                <div className="att-adm">
-                                                    {s.admissionNumber || s.studentId || ''}
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div className="att-name">
+                                                        {s.firstName || ''} {s.lastName || ''}
+                                                    </div>
+                                                    <div className="att-adm">
+                                                        {s.admissionNumber || s.studentId || ''}
+                                                    </div>
                                                 </div>
+                                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                                    {STATUSES.map((st) => (
+                                                        <button
+                                                            key={st.value}
+                                                            type="button"
+                                                            className={`status-pill ${e.status === st.value ? 'selected' : ''}`}
+                                                            style={{
+                                                                background: e.status === st.value ? st.bg : 'white',
+                                                                color: e.status === st.value ? st.color : 'var(--gray)',
+                                                                borderColor: e.status === st.value ? st.color : 'var(--border)',
+                                                            }}
+                                                            onClick={() => setStudentStatus(s.id, st.value)}
+                                                        >
+                                                            {st.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <input
+                                                    className="att-input"
+                                                    placeholder="Note (optional)"
+                                                    value={e.note || ''}
+                                                    onChange={(ev) => setStudentNote(s.id, ev.target.value)}
+                                                    style={{ maxWidth: 200 }}
+                                                />
                                             </div>
-                                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                                                {STATUSES.map((st) => (
-                                                    <button
-                                                        key={st.value}
-                                                        type="button"
-                                                        className={`status-pill ${e.status === st.value ? 'selected' : ''}`}
-                                                        style={{
-                                                            background: e.status === st.value ? st.bg : 'white',
-                                                            color: e.status === st.value ? st.color : 'var(--gray)',
-                                                            borderColor: e.status === st.value ? st.color : 'var(--border)',
-                                                        }}
-                                                        onClick={() => setStudentStatus(s.id, st.value)}
-                                                    >
-                                                        {st.label}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                            <input
-                                                className="att-input"
-                                                placeholder="Note (optional)"
-                                                value={e.note || ''}
-                                                onChange={(ev) => setStudentNote(s.id, ev.target.value)}
-                                                style={{ maxWidth: 200 }}
-                                            />
-                                        </div>
-                                    );
-                                })}
+                                        );
+                                    })
+                                )}
 
                                 <div style={{ marginTop: 20, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                                     <button
@@ -770,6 +862,11 @@ export default function Attendance() {
                                         <i className="fas fa-save"></i>
                                         {saving ? 'Saving…' : 'Save Attendance'}
                                     </button>
+                                    {rosterSearch && (
+                                        <span style={{ alignSelf: 'center', fontSize: 12, color: 'var(--gray)' }}>
+                                            Search only filters the view — Save records all {roster.length} students.
+                                        </span>
+                                    )}
                                 </div>
                             </>
                         )}
@@ -818,31 +915,73 @@ export default function Attendance() {
                                 No records found for this range.
                             </div>
                         ) : (
-                            <div style={{ overflowX: 'auto' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                                    <thead>
-                                        <tr style={{ background: '#f8fafc' }}>
-                                            {['Date', 'Class', 'Session', 'Present', 'Absent', 'Late', 'Excused', 'Taken By'].map((h) => (
-                                                <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontSize: 12, textTransform: 'uppercase', color: 'var(--gray)' }}>{h}</th>
-                                            ))}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {historyRecords.map((r) => (
-                                            <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
-                                                <td style={{ padding: '10px 12px' }}>{r.date}</td>
-                                                <td style={{ padding: '10px 12px' }}>{r.class}</td>
-                                                <td style={{ padding: '10px 12px', textTransform: 'capitalize' }}>{r.session}</td>
-                                                <td style={{ padding: '10px 12px', color: '#16a34a', fontWeight: 600 }}>{r.counts?.present || 0}</td>
-                                                <td style={{ padding: '10px 12px', color: '#dc2626', fontWeight: 600 }}>{r.counts?.absent || 0}</td>
-                                                <td style={{ padding: '10px 12px', color: '#d97706', fontWeight: 600 }}>{r.counts?.late || 0}</td>
-                                                <td style={{ padding: '10px 12px', color: '#2563eb', fontWeight: 600 }}>{r.counts?.excused || 0}</td>
-                                                <td style={{ padding: '10px 12px', fontSize: 13, color: 'var(--gray)' }}>{r.takenByName || '—'}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
+                            <>
+                                {/* Search box for history records */}
+                                <div className="att-search-wrap">
+                                    <div className="att-search-input-wrap">
+                                        <i className="fas fa-search att-search-icon"></i>
+                                        <input
+                                            type="text"
+                                            className="att-search-input"
+                                            placeholder="Search by date, class, session, or teacher…"
+                                            value={historySearch}
+                                            onChange={(e) => setHistorySearch(e.target.value)}
+                                            aria-label="Search attendance history"
+                                        />
+                                        {historySearch && (
+                                            <button
+                                                type="button"
+                                                className="att-search-clear"
+                                                onClick={() => setHistorySearch('')}
+                                                title="Clear search"
+                                            >
+                                                <i className="fas fa-times"></i>
+                                            </button>
+                                        )}
+                                    </div>
+                                    <div className="att-search-meta">
+                                        {historySearch
+                                            ? `Showing ${filteredHistory.length} of ${historyRecords.length}`
+                                            : `${historyRecords.length} record${historyRecords.length === 1 ? '' : 's'}`}
+                                    </div>
+                                </div>
+
+                                {filteredHistory.length === 0 ? (
+                                    <div style={{
+                                        textAlign: 'center', padding: 30, color: 'var(--gray)',
+                                        background: '#f8fafc', borderRadius: 10,
+                                    }}>
+                                        <i className="fas fa-search-minus" style={{ fontSize: 28, display: 'block', marginBottom: 8, color: '#cbd5e1' }}></i>
+                                        No records match “{historySearch}”.
+                                    </div>
+                                ) : (
+                                    <div style={{ overflowX: 'auto' }}>
+                                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                            <thead>
+                                                <tr style={{ background: '#f8fafc' }}>
+                                                    {['Date', 'Class', 'Session', 'Present', 'Absent', 'Late', 'Excused', 'Taken By'].map((h) => (
+                                                        <th key={h} style={{ textAlign: 'left', padding: '10px 12px', fontSize: 12, textTransform: 'uppercase', color: 'var(--gray)' }}>{h}</th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {filteredHistory.map((r) => (
+                                                    <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                                                        <td style={{ padding: '10px 12px' }}>{r.date}</td>
+                                                        <td style={{ padding: '10px 12px' }}>{r.class}</td>
+                                                        <td style={{ padding: '10px 12px', textTransform: 'capitalize' }}>{r.session}</td>
+                                                        <td style={{ padding: '10px 12px', color: '#16a34a', fontWeight: 600 }}>{r.counts?.present || 0}</td>
+                                                        <td style={{ padding: '10px 12px', color: '#dc2626', fontWeight: 600 }}>{r.counts?.absent || 0}</td>
+                                                        <td style={{ padding: '10px 12px', color: '#d97706', fontWeight: 600 }}>{r.counts?.late || 0}</td>
+                                                        <td style={{ padding: '10px 12px', color: '#2563eb', fontWeight: 600 }}>{r.counts?.excused || 0}</td>
+                                                        <td style={{ padding: '10px 12px', fontSize: 13, color: 'var(--gray)' }}>{r.takenByName || '—'}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </>
                         )}
                     </div>
                 </>
