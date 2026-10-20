@@ -6,7 +6,10 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
 import { db } from '../firebase';
-import { doc, getDoc, updateDoc, serverTimestamp, collection, setDoc } from 'firebase/firestore';
+import {
+    doc, getDoc, updateDoc, serverTimestamp, collection, setDoc,
+    addDoc, deleteDoc, query, where, orderBy, limit, getDocs
+} from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { useSync } from '../context/SyncContext';
@@ -33,6 +36,7 @@ import {
 import { AuditLogService, AUDIT_ACTIONS } from '../services/auditService';
 
 import { showAppNotice } from '../utils/appNotice';
+
 // ============================================================
 // Constants
 // ============================================================
@@ -79,6 +83,7 @@ const PAGE_SIZE_UI = 10;
 const PAGE_SIZE_FETCH = 9999;
 const MAX_IMPORT_SIZE = 5 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 1000;
+const ARCHIVE_PAGE_SIZE = 50;
 
 // ============================================================
 // Helpers
@@ -179,9 +184,6 @@ export default function Students() {
     const [usingCachedData, setUsingCachedData] = useState(false);
 
     // ---- Teacher access ----
-    // `isTeacher` gates the UI. `teacherClasses` / `teacherLevels` drive
-    // the filter. Both are computed from `userData.assignments` when
-    // available, falling back to the legacy `classes` / `levels` fields.
     const [isTeacher, setIsTeacher] = useState(false);
     const [teacherLevels, setTeacherLevels] = useState([]);
     const [teacherClasses, setTeacherClasses] = useState([]);
@@ -206,6 +208,21 @@ export default function Students() {
     const [showPromoteModal, setShowPromoteModal] = useState(false);
     const [showBulkPromoteModal, setShowBulkPromoteModal] = useState(false);
     const [showImportResults, setShowImportResults] = useState(false);
+
+    // ---- NEW: Saving & archive UI ----
+    const [savingStudent, setSavingStudent] = useState(false);
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [deletingStudent, setDeletingStudent] = useState(null);
+    const [deleteReason, setDeleteReason] = useState('');
+    const [deleteConfirmChecked, setDeleteConfirmChecked] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+
+    const [showArchivedModal, setShowArchivedModal] = useState(false);
+    const [archivedList, setArchivedList] = useState([]);
+    const [archivedLoading, setArchivedLoading] = useState(false);
+    const [archivedError, setArchivedError] = useState('');
+    const [restoringId, setRestoringId] = useState(null);
+    const [archivedLoaded, setArchivedLoaded] = useState(false);
 
     const [editingStudent, setEditingStudent] = useState(null);
     const [selectedStudent, setSelectedStudent] = useState(null);
@@ -263,9 +280,6 @@ export default function Students() {
                 setIsTeacher(teacher);
 
                 if (teacher) {
-                    // Prefer the new `assignments` field. Each assignment
-                    // is `{ subject, classes: [...] }`. Flatten to get the
-                    // teacher's full class list.
                     const assignments = Array.isArray(userData.assignments)
                         ? userData.assignments
                         : [];
@@ -279,8 +293,6 @@ export default function Students() {
                         classesFromAssignments = [...set];
                     }
 
-                    // Fallback to the legacy `classes` field if assignments
-                    // are absent (older teacher docs before the pairing UI).
                     const legacyClasses = Array.isArray(userData.classes)
                         ? userData.classes
                         : userData.class
@@ -291,9 +303,6 @@ export default function Students() {
                         ? classesFromAssignments
                         : legacyClasses;
 
-                    // Levels: prefer explicit `levels`, else derive from
-                    // the effective class list against the school's
-                    // LEVEL_CLASSES table.
                     let effectiveLevels = Array.isArray(userData.levels)
                         ? userData.levels
                         : userData.level
@@ -377,9 +386,6 @@ export default function Students() {
         showNotification('Refreshed', 'success');
     }, [schoolId, loadFirstPage, showNotification]);
 
-    // Re-fetch when teacher scope finishes resolving (it's set inside
-    // the bootstrap effect, so the very first loadFirstPage may run
-    // before teacherClasses is populated).
     useEffect(() => {
         if (!isTeacher) return;
         if (!schoolId) return;
@@ -391,9 +397,6 @@ export default function Students() {
     // ============================================================
     // Derived lists (memoized)
     // ============================================================
-
-    // Students the current user is allowed to see. For teachers this
-    // is scoped to their assigned classes; for admins it's everything.
     const accessibleStudents = useMemo(() => {
         const base = showDeleted
             ? students
@@ -401,19 +404,16 @@ export default function Students() {
 
         if (!isTeacher) return base;
 
-        // Match by class first (teacher's authoritative list).
         if (teacherClasses.length > 0) {
             const classSet = new Set(teacherClasses);
             return base.filter((s) => classSet.has(s.class));
         }
 
-        // Fall back to level matching if we somehow don't have classes.
         if (teacherLevels.length > 0) {
             const levelSet = new Set(teacherLevels);
             return base.filter((s) => levelSet.has(s.level));
         }
 
-        // Teacher with no assignments: show nothing rather than everything.
         return [];
     }, [students, showDeleted, isTeacher, teacherClasses, teacherLevels]);
 
@@ -432,8 +432,6 @@ export default function Students() {
         });
     }, [accessibleStudents, searchTerm, levelFilter, classFilter, statusFilter, yearFilter]);
 
-    // Stats are computed from the accessible set, so a teacher sees
-    // totals for only their classes.
     const stats = useMemo(() => ({
         total: accessibleStudents.length,
         active: accessibleStudents.filter((s) => s.status === 'active').length,
@@ -442,12 +440,9 @@ export default function Students() {
         deleted: students.filter((s) => s.isDeleted).length,
     }), [accessibleStudents, students]);
 
-    // Filter dropdowns reflect only what the user can see. For teachers
-    // this means: their classes' levels, their classes, their years.
     const uniqueLevels = useMemo(() => {
         const set = new Set();
         accessibleStudents.forEach((s) => { if (s.level) set.add(s.level); });
-        // Preserve consistent ordering
         return [...set].sort(
             (a, b) => LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b)
         );
@@ -468,12 +463,8 @@ export default function Students() {
         return [...set].sort().reverse();
     }, [accessibleStudents]);
 
-    // For teachers, the class filter dropdown should offer only their
-    // assigned classes (even if some have zero current students).
     const teacherClassDropdownOptions = useMemo(() => {
         if (!isTeacher) return null;
-        // Prefer the full teacher assignment list; fall back to
-        // classes actually present in the visible students.
         if (teacherClasses.length > 0) {
             return [...teacherClasses].sort();
         }
@@ -542,154 +533,354 @@ export default function Students() {
 
     const handleFormSubmit = async (e) => {
         e.preventDefault();
+        if (savingStudent) return;
 
-        const base = {
-            firstName: formData.firstName.trim(),
-            lastName: formData.lastName.trim(),
-            email: formData.email?.trim() || generateEmail(formData.firstName, formData.lastName),
-            level: formData.level,
-            class: formData.class,
-            status: formData.status,
-            phone: formData.phone.trim(),
-            address: formData.address.trim(),
-            guardian: formData.guardian.trim(),
-            guardianPhone: formData.guardianPhone.trim(),
-            gender: formData.gender,
-            birthCertNo: formData.birthCertNo.trim(),
-            dateOfBirth: formData.dateOfBirth,
-            schoolId,
-            admissionYear: formData.admissionYear || new Date().getFullYear().toString(),
-        };
+        setSavingStudent(true);
+        try {
+            const base = {
+                firstName: formData.firstName.trim(),
+                lastName: formData.lastName.trim(),
+                email: formData.email?.trim() || generateEmail(formData.firstName, formData.lastName),
+                level: formData.level,
+                class: formData.class,
+                status: formData.status,
+                phone: formData.phone.trim(),
+                address: formData.address.trim(),
+                guardian: formData.guardian.trim(),
+                guardianPhone: formData.guardianPhone.trim(),
+                gender: formData.gender,
+                birthCertNo: formData.birthCertNo.trim(),
+                dateOfBirth: formData.dateOfBirth,
+                schoolId,
+                admissionYear: formData.admissionYear || new Date().getFullYear().toString(),
+            };
 
-        if (editingStudent) {
-            try {
-                if (isOnline) {
-                    await updateStudent(editingStudent.id, base, currentUser);
-                    await AuditLogService.logAction(
-                        schoolId,
-                        { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
-                        AUDIT_ACTIONS.STUDENT_UPDATED,
-                        {
-                            entityId: editingStudent.id,
-                            message: `Updated student ${editingStudent.studentId || editingStudent.admissionNumber || editingStudent.id}.`
-                        }
-                    );
-                } else {
-                    await addToSyncQueue('students', 'update', { id: editingStudent.id, ...base });
-                }
-                setStudents((prev) => sortStudentsByAdmission(prev.map((s) =>
-                    s.id === editingStudent.id ? { ...s, ...base } : s
-                )));
-                await saveStudentRoster(schoolId,
-                    sortStudentsByAdmission(students.map((s) =>
+            if (editingStudent) {
+                try {
+                    if (isOnline) {
+                        await updateStudent(editingStudent.id, base, currentUser);
+                        await AuditLogService.logAction(
+                            schoolId,
+                            { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                            AUDIT_ACTIONS.STUDENT_UPDATED,
+                            {
+                                entityId: editingStudent.id,
+                                message: `Updated student ${editingStudent.studentId || editingStudent.admissionNumber || editingStudent.id}.`
+                            }
+                        );
+                    } else {
+                        await addToSyncQueue('students', 'update', { id: editingStudent.id, ...base });
+                    }
+                    setStudents((prev) => sortStudentsByAdmission(prev.map((s) =>
                         s.id === editingStudent.id ? { ...s, ...base } : s
-                    )), { assignedClasses: isTeacher ? teacherClasses : [] });
-                showNotification('Student updated', 'success');
+                    )));
+                    await saveStudentRoster(schoolId,
+                        sortStudentsByAdmission(students.map((s) =>
+                            s.id === editingStudent.id ? { ...s, ...base } : s
+                        )), { assignedClasses: isTeacher ? teacherClasses : [] });
+                    showNotification('Student updated', 'success');
+                    setShowStudentModal(false);
+                } catch (err) {
+                    console.error('update failed:', err);
+                    showNotification('Failed to update: ' + err.message, 'error');
+                }
+                return;
+            }
+
+            if (!isOnline) {
+                showNotification(
+                    'Adding new students requires an internet connection so admission numbers stay unique. ' +
+                    'Editing existing students still works offline.',
+                    'warning'
+                );
+                return;
+            }
+
+            try {
+                let studentId;
+
+                if (formData.manualStudentId) {
+                    const cleaned = String(formData.manualStudentId).trim();
+                    if (!/^\d+$/.test(cleaned)) {
+                        showNotification('Manual ID must be numeric', 'error');
+                        return;
+                    }
+                    const formatted = formatAdmissionNumber(parseInt(cleaned, 10));
+                    const { duplicates } = await checkAdmissionNumberCollisions(schoolId, [formatted]);
+                    if (duplicates.length > 0) {
+                        showNotification(`ID ${formatted} is already in use`, 'error');
+                        return;
+                    }
+                    studentId = formatted;
+                    await ensureSchoolCounterAtLeast(schoolId, parseInt(cleaned, 10) + 1);
+                } else {
+                    const [reserved] = await reserveAdmissionNumbers(schoolId, 1);
+                    studentId = reserved;
+                }
+
+                const payload = { ...base, studentId, history: [], isDeleted: false };
+                const created = await createStudent(payload);
+                await AuditLogService.logAction(
+                    schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                    AUDIT_ACTIONS.STUDENT_CREATED,
+                    { entityId: created.id, message: `Created student record ${studentId}.` }
+                );
+
+                setStudents((prev) => sortStudentsByAdmission([created, ...prev]));
+                await saveStudentRoster(schoolId,
+                    sortStudentsByAdmission([created, ...students]),
+                    { assignedClasses: isTeacher ? teacherClasses : [] });
+
+                showNotification(`Student added — Admission No ${studentId}`, 'success');
                 setShowStudentModal(false);
             } catch (err) {
-                console.error('update failed:', err);
-                showNotification('Failed to update: ' + err.message, 'error');
+                console.error('create failed:', err);
+                showNotification('Failed to create: ' + err.message, 'error');
             }
+        } finally {
+            setSavingStudent(false);
+        }
+    };
+
+    // ============================================================
+    // Delete (with reason → archive → soft delete)
+    // ============================================================
+    const openDeleteModal = (student) => {
+        setDeletingStudent(student);
+        setDeleteReason('');
+        setDeleteConfirmChecked(false);
+        setShowDeleteModal(true);
+    };
+
+    const closeDeleteModal = () => {
+        if (deleting) return;
+        setShowDeleteModal(false);
+        setDeletingStudent(null);
+        setDeleteReason('');
+        setDeleteConfirmChecked(false);
+    };
+
+    const confirmArchive = async () => {
+        if (!deletingStudent || deleting) return;
+        const reason = deleteReason.trim();
+        if (reason.length < 3) {
+            showNotification('Please enter a reason (at least 3 characters).', 'warning');
             return;
         }
-
+        if (!deleteConfirmChecked) {
+            showNotification('Please tick the confirmation box.', 'warning');
+            return;
+        }
         if (!isOnline) {
             showNotification(
-                'Adding new students requires an internet connection so admission numbers stay unique. ' +
-                'Editing existing students still works offline.',
+                'Archiving requires an internet connection so the archive stays in sync.',
                 'warning'
             );
             return;
         }
 
+        const student = deletingStudent;
+        setDeleting(true);
         try {
-            let studentId;
-
-            if (formData.manualStudentId) {
-                const cleaned = String(formData.manualStudentId).trim();
-                if (!/^\d+$/.test(cleaned)) {
-                    showNotification('Manual ID must be numeric', 'error');
-                    return;
-                }
-                const formatted = formatAdmissionNumber(parseInt(cleaned, 10));
-                const { duplicates } = await checkAdmissionNumberCollisions(schoolId, [formatted]);
-                if (duplicates.length > 0) {
-                    showNotification(`ID ${formatted} is already in use`, 'error');
-                    return;
-                }
-                studentId = formatted;
-                await ensureSchoolCounterAtLeast(schoolId, parseInt(cleaned, 10) + 1);
-            } else {
-                const [reserved] = await reserveAdmissionNumbers(schoolId, 1);
-                studentId = reserved;
-            }
-
-            const payload = { ...base, studentId, history: [], isDeleted: false };
-            const created = await createStudent(payload);
-            await AuditLogService.logAction(
+            // 1. Write the full archive record first (rollback safety).
+            const archivePayload = {
                 schoolId,
-                { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
-                AUDIT_ACTIONS.STUDENT_CREATED,
-                { entityId: created.id, message: `Created student record ${studentId}.` }
-            );
+                originalId: student.id,
+                admissionNumber: student.admissionNumber || student.studentId || '',
+                firstName: student.firstName || '',
+                lastName: student.lastName || '',
+                email: student.email || '',
+                level: student.level || '',
+                class: student.class || '',
+                gender: student.gender || '',
+                dateOfBirth: student.dateOfBirth || '',
+                birthCertNo: student.birthCertNo || '',
+                phone: student.phone || '',
+                address: student.address || '',
+                guardian: student.guardian || '',
+                guardianPhone: student.guardianPhone || '',
+                admissionYear: student.admissionYear || '',
+                status: student.status || 'active',
+                history: student.history || [],
+                fullSnapshot: student,
+                reason,
+                archivedAt: new Date().toISOString(),
+                archivedBy: currentUser?.uid || null,
+                archivedByName: userData?.fullName || currentUser?.email || '',
+            };
+            await addDoc(collection(db, 'archived_students'), archivePayload);
 
-            setStudents((prev) => sortStudentsByAdmission([created, ...prev]));
-            await saveStudentRoster(schoolId,
-                sortStudentsByAdmission([created, ...students]),
-                { assignedClasses: isTeacher ? teacherClasses : [] });
-
-            showNotification(`Student added — Admission No ${studentId}`, 'success');
-            setShowStudentModal(false);
-        } catch (err) {
-            console.error('create failed:', err);
-            showNotification('Failed to create: ' + err.message, 'error');
-        }
-    };
-
-    // ============================================================
-    // Soft delete / restore
-    // ============================================================
-    const handleDeleteStudent = async (student) => {
-        const ok = window.confirm(
-            `Archive ${student.firstName || ''} ${student.lastName || ''}?\n\n` +
-            `Their record is kept (scores, fees, history) but they'll be hidden from active lists. ` +
-            `You can restore them later.`
-        );
-        if (!ok) return;
-
-        try {
+            // 2. Soft-delete the live record and stamp the reason.
             if (isOnline) {
                 await softDeleteStudent(student.id, currentUser?.uid);
-                await AuditLogService.logAction(
-                    schoolId,
-                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
-                    AUDIT_ACTIONS.STUDENT_ARCHIVED,
-                    {
-                        entityId: student.id,
-                        message: `Archived student ${student.studentId || student.admissionNumber || student.id}.`
-                    }
-                );
+                await updateDoc(doc(db, 'students', student.id), {
+                    deletionReason: reason,
+                    archivedAt: new Date().toISOString(),
+                    archivedBy: currentUser?.uid || null,
+                    status: 'archived',
+                });
             } else {
                 await addToSyncQueue('students', 'update', {
                     id: student.id,
                     isDeleted: true,
-                    status: 'deleted',
+                    status: 'archived',
                     deletedAt: new Date().toISOString(),
                     deletedBy: currentUser?.uid || null,
+                    deletionReason: reason,
                 });
             }
-            setStudents((prev) => prev.map((s) =>
-                s.id === student.id
-                    ? { ...s, isDeleted: true, status: 'deleted', deletedAt: new Date().toISOString() }
-                    : s
+
+            await AuditLogService.logAction(
+                schoolId,
+                { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                AUDIT_ACTIONS.STUDENT_ARCHIVED,
+                {
+                    entityId: student.id,
+                    message: `Archived student ${student.studentId || student.admissionNumber || student.id}. Reason: ${reason}`
+                }
+            );
+
+            // 3. Update local state.
+            setStudents((prev) => prev.map((s) => s.id === student.id
+                ? {
+                    ...s,
+                    isDeleted: true,
+                    status: 'archived',
+                    deletedAt: new Date().toISOString(),
+                    deletionReason: reason,
+                }
+                : s
             ));
-            showNotification('Student archived (restorable)', 'success');
+
+            // 4. Invalidate the archived cache so the next open re-fetches.
+            setArchivedLoaded(false);
+
+            showNotification('Student archived. You can restore from View Archived.', 'success');
+            setShowDeleteModal(false);
+            setDeletingStudent(null);
+            setDeleteReason('');
+            setDeleteConfirmChecked(false);
         } catch (err) {
-            console.error('delete failed:', err);
+            console.error('archive failed:', err);
             showNotification('Failed to archive: ' + err.message, 'error');
+        } finally {
+            setDeleting(false);
         }
     };
 
+    // ============================================================
+    // Restore (from archived_students)
+    // ============================================================
+    const loadArchived = useCallback(async () => {
+        if (!schoolId) return;
+        if (!isOnline) {
+            setArchivedError('You must be online to view archived students.');
+            return;
+        }
+        setArchivedLoading(true);
+        setArchivedError('');
+        try {
+            const snap = await getDocs(query(
+                collection(db, 'archived_students'),
+                where('schoolId', '==', schoolId),
+                orderBy('archivedAt', 'desc'),
+                limit(ARCHIVE_PAGE_SIZE)
+            ));
+            const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setArchivedList(items);
+            setArchivedLoaded(true);
+        } catch (err) {
+            // orderBy on a fresh collection without the index: retry without orderBy.
+            try {
+                const snap = await getDocs(query(
+                    collection(db, 'archived_students'),
+                    where('schoolId', '==', schoolId),
+                    limit(ARCHIVE_PAGE_SIZE)
+                ));
+                const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                items.sort((a, b) =>
+                    String(b.archivedAt || '').localeCompare(String(a.archivedAt || ''))
+                );
+                setArchivedList(items);
+                setArchivedLoaded(true);
+            } catch (err2) {
+                console.error('loadArchived failed:', err2);
+                setArchivedError('Failed to load archived students: ' + err2.message);
+            }
+        } finally {
+            setArchivedLoading(false);
+        }
+    }, [schoolId, isOnline]);
+
+    const openArchivedModal = () => {
+        setShowArchivedModal(true);
+        if (!archivedLoaded) loadArchived();
+    };
+
+    const handleRestoreArchived = async (archive) => {
+        if (restoringId) return;
+        if (!isOnline) {
+            showNotification('Restoring requires an internet connection.', 'warning');
+            return;
+        }
+        const ok = window.confirm(
+            `Restore ${archive.firstName || ''} ${archive.lastName || ''}?\n\n` +
+            `They will reappear in class lists, reports, and search.`
+        );
+        if (!ok) return;
+
+        setRestoringId(archive.id);
+        try {
+            // 1. Restore the live doc flags.
+            await restoreStudent(archive.originalId);
+            await updateDoc(doc(db, 'students', archive.originalId), {
+                isDeleted: false,
+                status: 'active',
+                deletedAt: null,
+                deletedBy: null,
+                deletionReason: null,
+                archivedAt: null,
+                archivedBy: null,
+            });
+
+            // 2. Delete the archive record (single source of truth).
+            await deleteDoc(doc(db, 'archived_students', archive.id));
+
+            // 3. Update the local student list.
+            setStudents((prev) => prev.map((s) =>
+                s.id === archive.originalId
+                    ? {
+                        ...s,
+                        isDeleted: false,
+                        status: 'active',
+                        deletedAt: null,
+                        deletionReason: null,
+                    }
+                    : s
+            ));
+            setArchivedList((prev) => prev.filter((a) => a.id !== archive.id));
+
+            await AuditLogService.logAction(
+                schoolId,
+                { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role: userData?.role },
+                AUDIT_ACTIONS.STUDENT_RESTORED,
+                {
+                    entityId: archive.originalId,
+                    message: `Restored student ${archive.admissionNumber || archive.originalId} from archive.`
+                }
+            );
+
+            showNotification(`${archive.firstName} ${archive.lastName} restored`, 'success');
+        } catch (err) {
+            console.error('restore from archive failed:', err);
+            showNotification('Failed to restore: ' + err.message, 'error');
+        } finally {
+            setRestoringId(null);
+        }
+    };
+
+    // Legacy restore from the "Show deleted" view — kept for backward-compat.
     const handleRestoreStudent = async (student) => {
         try {
             if (isOnline) {
@@ -717,6 +908,7 @@ export default function Students() {
                     ? { ...s, isDeleted: false, status: 'active', deletedAt: null, deletedBy: null }
                     : s
             ));
+            setArchivedLoaded(false);
             showNotification('Student restored', 'success');
         } catch (err) {
             console.error('restore failed:', err);
@@ -933,6 +1125,7 @@ export default function Students() {
                         const archiveRef = doc(collection(db, 'archived_students'));
                         await setDoc(archiveRef, {
                             schoolId: userData.schoolId,
+                            originalId: student.id,
                             studentId: student.id,
                             admissionNumber: student.admissionNumber || student.studentId || '',
                             firstName: student.firstName || '',
@@ -942,7 +1135,9 @@ export default function Students() {
                             class: student.class,
                             academicYear: year,
                             historicalRecords: student.history || [],
-                            archivedAt: new Date().toISOString()
+                            archivedAt: new Date().toISOString(),
+                            reason: 'Bulk promotion snapshot',
+                            isPromotionSnapshot: true,
                         });
                     } catch (archiveErr) {
                         console.error('Error archiving student:', archiveErr);
@@ -1312,7 +1507,7 @@ export default function Students() {
                             <div>
                                 <div className="name">
                                     {s.firstName || ''} {s.lastName || ''}
-                                    {isDeleted && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--danger)' }}>(deleted)</span>}
+                                    {isDeleted && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--danger)' }}>(archived)</span>}
                                 </div>
                                 <div className="email">{s.email || ''}</div>
                             </div>
@@ -1355,13 +1550,13 @@ export default function Students() {
                                         <button className="action-btn history" onClick={() => { setSelectedStudent(s); setShowHistoryModal(true); }} title="History">
                                             <i className="fas fa-history"></i>
                                         </button>
-                                        <button className="action-btn delete" onClick={() => handleDeleteStudent(s)} title="Archive">
+                                        <button className="action-btn delete" onClick={() => openDeleteModal(s)} title="Archive">
                                             <i className="fas fa-archive"></i>
                                         </button>
                                     </>
                                 )}
                                 {isDeleted && (
-                                    <button className="action-btn restore" onClick={() => handleRestoreStudent(s)} title="Restore">
+                                    <button className="action-btn restore" onClick={() => handleRestoreStudent(s)} title="Quick restore (use View Archived for full list)">
                                         <i className="fas fa-undo"></i>
                                     </button>
                                 )}
@@ -1390,6 +1585,19 @@ export default function Students() {
                 .action-btn.restore { background:#16a085; color:white; }
                 .action-btn.restore:hover { opacity:0.9; }
                 .teacher-access-badge { background:#eef2ff; color:#3730a3; padding:10px 16px; border-radius:8px; margin-bottom:20px; font-size:13px; font-weight:500; display:inline-flex; align-items:center; gap:8px; border:1px solid #c7d2fe; }
+                .btn-loading { opacity: 0.7; cursor: not-allowed !important; }
+                .inline-spinner {
+                    display: inline-block; width: 14px; height: 14px;
+                    border: 2px solid rgba(255,255,255,0.4);
+                    border-top-color: #fff; border-radius: 50%;
+                    animation: spin 0.8s linear infinite;
+                    margin-right: 6px; vertical-align: -2px;
+                }
+                @keyframes spin { to { transform: rotate(360deg); } }
+                .archive-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 14px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px; background:#fafbfc; }
+                .archive-row .arch-name { font-weight:700; color:var(--secondary); }
+                .archive-row .arch-meta { font-size:12px; color:var(--gray); margin-top:2px; }
+                .archive-row .arch-reason { font-size:12px; color:#9a3412; margin-top:4px; }
                 @media (max-width:768px) { .history-item { flex-direction:column; gap:5px; } }
             `}</style>
 
@@ -1468,7 +1676,7 @@ export default function Students() {
                     }}>
                         <input type="checkbox" checked={showDeleted}
                                onChange={(e) => setShowDeleted(e.target.checked)} />
-                        Show deleted
+                        Show archived
                     </label>
                 )}
 
@@ -1496,6 +1704,13 @@ export default function Students() {
                             setShowBulkPromoteModal(true);
                         }}>
                             <i className="fas fa-arrow-up"></i> Bulk Promote
+                        </button>
+                        <button
+                            className="btn btn-outline"
+                            onClick={openArchivedModal}
+                            title="View archived students and restore them"
+                        >
+                            <i className="fas fa-box-archive"></i> View Archived
                         </button>
                         <div className="file-upload-wrapper">
                             <input
@@ -1551,7 +1766,7 @@ export default function Students() {
                     <div className="modal">
                         <div className="modal-header">
                             <h2>{editingStudent ? 'Edit Student' : 'Add Student'}</h2>
-                            <button className="modal-close" onClick={() => setShowStudentModal(false)}>
+                            <button className="modal-close" onClick={() => setShowStudentModal(false)} disabled={savingStudent}>
                                 <i className="fas fa-times"></i>
                             </button>
                         </div>
@@ -1560,11 +1775,13 @@ export default function Students() {
                                 <div className="form-group">
                                     <label>First Name <span className="required">*</span></label>
                                     <input type="text" required value={formData.firstName}
+                                           disabled={savingStudent}
                                            onChange={(e) => setFormData({ ...formData, firstName: e.target.value })} />
                                 </div>
                                 <div className="form-group">
                                     <label>Last Name <span className="required">*</span></label>
                                     <input type="text" required value={formData.lastName}
+                                           disabled={savingStudent}
                                            onChange={(e) => setFormData({ ...formData, lastName: e.target.value })} />
                                 </div>
                             </div>
@@ -1581,7 +1798,7 @@ export default function Students() {
                             <div className="form-row">
                                 <div className="form-group">
                                     <label>Level <span className="required">*</span></label>
-                                    <select required value={formData.level}
+                                    <select required value={formData.level} disabled={savingStudent}
                                             onChange={(e) => setFormData({ ...formData, level: e.target.value, class: '' })}>
                                         <option value="">Select Level</option>
                                         {LEVEL_ORDER.map((l) => <option key={l} value={l}>{getLevelDisplayName(l)}</option>)}
@@ -1589,7 +1806,7 @@ export default function Students() {
                                 </div>
                                 <div className="form-group">
                                     <label>Class <span className="required">*</span></label>
-                                    <select required value={formData.class}
+                                    <select required value={formData.class} disabled={savingStudent}
                                             onChange={(e) => setFormData({ ...formData, class: e.target.value })}>
                                         <option value="">Select Class</option>
                                         {getClassOptions(formData.level, getLevelClasses).map((c) => (
@@ -1602,7 +1819,8 @@ export default function Students() {
                             <div className="form-row">
                                 <div className="form-group">
                                     <label>Gender</label>
-                                    <select value={formData.gender} onChange={(e) => setFormData({ ...formData, gender: e.target.value })}>
+                                    <select value={formData.gender} disabled={savingStudent}
+                                            onChange={(e) => setFormData({ ...formData, gender: e.target.value })}>
                                         <option value="">Select Gender</option>
                                         <option value="Male">Male</option>
                                         <option value="Female">Female</option>
@@ -1610,23 +1828,25 @@ export default function Students() {
                                 </div>
                                 <div className="form-group">
                                     <label>Date of Birth</label>
-                                    <input type="date" value={formData.dateOfBirth} onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })} />
+                                    <input type="date" value={formData.dateOfBirth} disabled={savingStudent}
+                                           onChange={(e) => setFormData({ ...formData, dateOfBirth: e.target.value })} />
                                 </div>
                                 <div className="form-group">
                                     <label>Birth Cert No.</label>
-                                    <input type="text" value={formData.birthCertNo} onChange={(e) => setFormData({ ...formData, birthCertNo: e.target.value })} />
+                                    <input type="text" value={formData.birthCertNo} disabled={savingStudent}
+                                           onChange={(e) => setFormData({ ...formData, birthCertNo: e.target.value })} />
                                 </div>
                             </div>
                             <div className="form-row">
                                 <div className="form-group">
                                     <label>Admission Year</label>
                                     <input type="number" min="2000" max={new Date().getFullYear() + 1}
-                                           value={formData.admissionYear}
+                                           value={formData.admissionYear} disabled={savingStudent}
                                            onChange={(e) => setFormData({ ...formData, admissionYear: e.target.value })} />
                                 </div>
                                 <div className="form-group">
                                     <label>Status</label>
-                                    <select value={formData.status}
+                                    <select value={formData.status} disabled={savingStudent}
                                             onChange={(e) => setFormData({ ...formData, status: e.target.value })}>
                                         {STATUS_OPTIONS
                                             .filter((o) => !['promoted', 'archived', 'graduated', 'deleted'].includes(o.value))
@@ -1641,12 +1861,14 @@ export default function Students() {
                                     <div style={{ display:'flex', gap:10, alignItems:'center', flexWrap:'wrap' }}>
                                         <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, cursor:'pointer' }}>
                                             <input type="checkbox" checked={formData.reserveIdNow}
+                                                   disabled={savingStudent}
                                                    onChange={(e) => setFormData({ ...formData, reserveIdNow: e.target.checked })} />
                                             Use automatic number
                                         </label>
                                         <input
                                             type="text" placeholder="or enter manually (numeric)"
                                             value={formData.manualStudentId}
+                                            disabled={savingStudent}
                                             onChange={(e) => setFormData({
                                                 ...formData,
                                                 manualStudentId: e.target.value.replace(/\D/g, ''),
@@ -1663,33 +1885,235 @@ export default function Students() {
 
                             <div className="form-group">
                                 <label>Phone Number</label>
-                                <input type="tel" value={formData.phone}
+                                <input type="tel" value={formData.phone} disabled={savingStudent}
                                        onChange={(e) => setFormData({ ...formData, phone: e.target.value })} />
                             </div>
                             <div className="form-group">
                                 <label>Address</label>
-                                <textarea rows="2" value={formData.address}
+                                <textarea rows="2" value={formData.address} disabled={savingStudent}
                                           onChange={(e) => setFormData({ ...formData, address: e.target.value })} />
                             </div>
                             <div className="form-group">
                                 <label>Guardian Name</label>
-                                <input type="text" value={formData.guardian}
+                                <input type="text" value={formData.guardian} disabled={savingStudent}
                                        onChange={(e) => setFormData({ ...formData, guardian: e.target.value })} />
                             </div>
                             <div className="form-group">
                                 <label>Guardian Phone</label>
-                                <input type="tel" value={formData.guardianPhone}
+                                <input type="tel" value={formData.guardianPhone} disabled={savingStudent}
                                        onChange={(e) => setFormData({ ...formData, guardianPhone: e.target.value })} />
                             </div>
 
                             <div className="modal-footer">
                                 <button type="button" className="btn btn-outline"
-                                        onClick={() => setShowStudentModal(false)}>Cancel</button>
-                                <button type="submit" className="btn btn-primary">
-                                    {editingStudent ? 'Update' : 'Save'}
+                                        onClick={() => setShowStudentModal(false)}
+                                        disabled={savingStudent}>
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    className={`btn btn-primary ${savingStudent ? 'btn-loading' : ''}`}
+                                    disabled={savingStudent}
+                                >
+                                    {savingStudent ? (
+                                        <>
+                                            <span className="inline-spinner" />
+                                            Saving…
+                                        </>
+                                    ) : (
+                                        editingStudent ? 'Update' : 'Save'
+                                    )}
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Delete (archive with reason) Modal */}
+            {showDeleteModal && deletingStudent && (
+                <div className="modal-overlay active">
+                    <div className="modal" style={{ maxWidth: 560 }}>
+                        <div className="modal-header">
+                            <h2>Archive Student</h2>
+                            <button className="modal-close" onClick={closeDeleteModal} disabled={deleting}>
+                                <i className="fas fa-times"></i>
+                            </button>
+                        </div>
+
+                        <div style={{
+                            background: '#fff7ed', border: '1px solid #fdba74',
+                            borderRadius: 10, padding: 14, marginBottom: 16, color: '#7c2d12'
+                        }}>
+                            <strong><i className="fas fa-triangle-exclamation"></i> What happens:</strong>
+                            <ul style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 13 }}>
+                                <li>All of {deletingStudent.firstName || 'this student'}'s data — scores, fees, history — is snapshotted into the archive.</li>
+                                <li>The student is removed from class lists, reports, and search.</li>
+                                <li>You can restore them later from <strong>View Archived</strong>.</li>
+                            </ul>
+                        </div>
+
+                        <div className="form-group">
+                            <label>Student</label>
+                            <div style={{ fontWeight: 600 }}>
+                                {deletingStudent.firstName} {deletingStudent.lastName}
+                                {' '}
+                                <span style={{ color: 'var(--gray)', fontWeight: 500 }}>
+                                    · {deletingStudent.studentId || deletingStudent.admissionNumber || 'N/A'}
+                                    {' · '}{deletingStudent.class || '—'}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="form-group">
+                            <label>Reason for archiving <span className="required">*</span></label>
+                            <textarea
+                                rows="3"
+                                value={deleteReason}
+                                onChange={(e) => setDeleteReason(e.target.value)}
+                                placeholder="e.g. Transferred to another school, duplicate record, guardian request, wrong entry…"
+                                disabled={deleting}
+                                required
+                            />
+                        </div>
+
+                        <label style={{ display:'flex', alignItems:'flex-start', gap:10, fontSize:13, marginBottom:14 }}>
+                            <input
+                                type="checkbox"
+                                checked={deleteConfirmChecked}
+                                onChange={(e) => setDeleteConfirmChecked(e.target.checked)}
+                                disabled={deleting}
+                                style={{ marginTop: 3 }}
+                            />
+                            <span>
+                                I understand this student will disappear from active records until restored.
+                            </span>
+                        </label>
+
+                        <div className="modal-footer">
+                            <button className="btn btn-outline" onClick={closeDeleteModal} disabled={deleting}>
+                                Cancel
+                            </button>
+                            <button
+                                className={`btn btn-primary ${deleting ? 'btn-loading' : ''}`}
+                                onClick={confirmArchive}
+                                disabled={deleting || !deleteConfirmChecked || deleteReason.trim().length < 3}
+                                style={{ background: '#b91c1c', borderColor: '#b91c1c' }}
+                            >
+                                {deleting ? (
+                                    <>
+                                        <span className="inline-spinner" />
+                                        Archiving…
+                                    </>
+                                ) : (
+                                    <>
+                                        <i className="fas fa-archive"></i> Archive Student
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* View Archived Modal */}
+            {showArchivedModal && (
+                <div className="modal-overlay active">
+                    <div className="modal" style={{ maxWidth: 760 }}>
+                        <div className="modal-header">
+                            <h2>Archived Students</h2>
+                            <button className="modal-close" onClick={() => setShowArchivedModal(false)}>
+                                <i className="fas fa-times"></i>
+                            </button>
+                        </div>
+
+                        <p style={{ fontSize: 13, color: 'var(--gray)', marginTop: -6, marginBottom: 12 }}>
+                            These students are isolated from active records. Restoring puts them back into class lists, reports, and search.
+                        </p>
+
+                        {archivedLoading && (
+                            <div style={{ textAlign: 'center', padding: 20 }}>
+                                <span className="inline-spinner" style={{ borderTopColor: 'var(--primary)' }} />
+                                {' '}Loading archive…
+                            </div>
+                        )}
+
+                        {!archivedLoading && archivedError && (
+                            <div style={{
+                                padding: 12, borderRadius: 8, background: '#fef2f2',
+                                color: '#991b1b', border: '1px solid #fecaca', fontSize: 13
+                            }}>
+                                {archivedError}
+                            </div>
+                        )}
+
+                        {!archivedLoading && !archivedError && archivedList.length === 0 && (
+                            <div style={{ textAlign: 'center', padding: 30, color: 'var(--gray)' }}>
+                                <i className="fas fa-box-open" style={{ fontSize: 32, display: 'block', marginBottom: 8 }} />
+                                No archived students.
+                            </div>
+                        )}
+
+                        {!archivedLoading && !archivedError && archivedList.length > 0 && (
+                            <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+                                {archivedList.map((a) => (
+                                    <div key={a.id} className="archive-row">
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div className="arch-name">
+                                                {a.firstName || ''} {a.lastName || ''}
+                                                {a.isPromotionSnapshot && (
+                                                    <span style={{
+                                                        marginLeft: 8, fontSize: 10, fontWeight: 700,
+                                                        padding: '2px 8px', borderRadius: 8,
+                                                        background: '#eef2ff', color: 'var(--primary)'
+                                                    }}>
+                                                        Promotion snapshot
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="arch-meta">
+                                                {a.admissionNumber || '—'}
+                                                {' · '}{a.class || '—'}
+                                                {' · '}{a.archivedAt ? new Date(a.archivedAt).toLocaleString() : '—'}
+                                            </div>
+                                            {a.reason && (
+                                                <div className="arch-reason">
+                                                    <i className="fas fa-circle-info"></i> {a.reason}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <button
+                                            className={`btn btn-primary ${restoringId === a.id ? 'btn-loading' : ''}`}
+                                            onClick={() => handleRestoreArchived(a)}
+                                            disabled={!!restoringId}
+                                            style={{ whiteSpace: 'nowrap' }}
+                                        >
+                                            {restoringId === a.id ? (
+                                                <>
+                                                    <span className="inline-spinner" />
+                                                    Restoring…
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <i className="fas fa-undo"></i> Restore
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        <div className="modal-footer">
+                            <button className="btn btn-outline" onClick={() => setShowArchivedModal(false)}>Close</button>
+                            <button
+                                className="btn btn-outline"
+                                onClick={loadArchived}
+                                disabled={archivedLoading || !isOnline}
+                            >
+                                <i className="fas fa-sync-alt"></i> Refresh
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
