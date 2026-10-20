@@ -1,5 +1,5 @@
 // src/pages/Teachers.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
@@ -18,7 +18,6 @@ import { LEVEL_SUBJECTS, LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/con
 import { showAppNotice } from '../utils/appNotice';
 // ---------------------------------------------------------------------------
 // Ordered list of school levels — mirrors SchoolProfile's order.
-// The school's `highestLevel` slices this list.
 // ---------------------------------------------------------------------------
 const LEVEL_ORDER = [
   'pre-primary',
@@ -28,19 +27,12 @@ const LEVEL_ORDER = [
   'senior-school',
 ];
 
-// Given the school's highest level, return the levels the school runs.
-// If highestLevel is missing or unknown, return every level (safe default).
 function getSchoolLevels(highestLevel) {
   const idx = LEVEL_ORDER.indexOf(highestLevel);
   if (idx === -1) return [...LEVEL_ORDER];
   return LEVEL_ORDER.slice(0, idx + 1);
 }
 
-// ---------------------------------------------------------------------------
-// Helper: given a class name, work out its level from LEVEL_CLASSES.
-// Used when reconstructing assignments from legacy teacher docs that
-// stored classes and subjects flat, without a level per pairing.
-// ---------------------------------------------------------------------------
 function inferLevelFromClass(className) {
   if (!className) return '';
   const target = String(className).trim().toLowerCase();
@@ -50,6 +42,14 @@ function inferLevelFromClass(className) {
     }
   }
   return '';
+}
+
+// ---------------------------------------------------------------------------
+// Helper: teacher display name for "taken by" hints.
+// ---------------------------------------------------------------------------
+function teacherName(t) {
+  if (!t) return '';
+  return `${t.firstName || ''} ${t.lastName || ''}`.trim() || t.email || 'Unknown teacher';
 }
 
 export default function Teachers() {
@@ -74,8 +74,6 @@ export default function Teachers() {
   const [schoolId, setSchoolId] = useState(null);
   const [usingCachedData, setUsingCachedData] = useState(false);
 
-  // Highest level the school runs (from schools/{schoolId}.highestLevel).
-  // Used to filter every level dropdown on this page.
   const [schoolHighestLevel, setSchoolHighestLevel] = useState('senior-school');
 
   // Filter state
@@ -87,9 +85,7 @@ export default function Teachers() {
   const [showTeacherModal, setShowTeacherModal] = useState(false);
   const [editingTeacher, setEditingTeacher] = useState(null);
 
-  // Form state — `assignments` is the authoritative pairing.
-  // Each entry carries its own `level`:
-  //   { level, subject, classes: [...] }
+  // Form state
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -101,7 +97,7 @@ export default function Teachers() {
     address: ''
   });
 
-  // Add-assignment sub-form state — the level now lives here.
+  // Add-assignment sub-form state
   const [newAssignmentLevel, setNewAssignmentLevel] = useState('');
   const [newAssignmentSubject, setNewAssignmentSubject] = useState('');
   const [newAssignmentClasses, setNewAssignmentClasses] = useState([]);
@@ -137,8 +133,6 @@ export default function Teachers() {
       const sid = userData?.schoolId || 'default_school';
       setSchoolId(sid);
 
-      // Load the school's highest level. Prefer cache first, then
-      // refresh from Firestore when online.
       try {
         let cachedSchool = await getFromIndexedDB('school_data', sid);
         if (!cachedSchool) {
@@ -235,7 +229,6 @@ export default function Teachers() {
     return [];
   };
 
-  // Derive the legacy flat fields from `assignments`.
   const deriveLegacyFields = (assignments) => {
     const subjectSet = new Set();
     const classSet = new Set();
@@ -252,7 +245,6 @@ export default function Teachers() {
     };
   };
 
-  // Reconstruct `assignments` from a legacy teacher doc.
   const reconstructAssignments = (teacher) => {
     if (Array.isArray(teacher.assignments) && teacher.assignments.length > 0) {
       return teacher.assignments.map(a => {
@@ -280,15 +272,10 @@ export default function Teachers() {
     return [];
   };
 
-  // Levels the school actually runs — derived from `schoolHighestLevel`.
-  // Used to filter every level dropdown on this page.
   const schoolLevels = getSchoolLevels(schoolHighestLevel);
 
-  // Is this level valid for the school?
   const isLevelAllowed = (lvl) => schoolLevels.includes(lvl);
 
-  // Classes for a level, additionally filtered by the school's custom
-  // classes configuration (getLevelClasses already does this).
   const getAvailableClasses = (level) => {
     if (!level || !isLevelAllowed(level)) return [];
     return getLevelClasses ? getLevelClasses(level) : (LEVEL_CLASSES[level] || []);
@@ -298,6 +285,48 @@ export default function Teachers() {
     if (!level || !isLevelAllowed(level)) return [];
     return LEVEL_SUBJECTS[level] || [];
   };
+
+  // ---------------------------------------------------------------
+  // Taken-assignment map
+  //
+  //   { [subject]: Map<className, { teacherId, teacherName }> }
+  //
+  // Aggregates every assignment across every teacher in the school,
+  // EXCLUDING the teacher currently being edited (so the admin can
+  // re-edit their own assignments without greying out their own
+  // classes).
+  // ---------------------------------------------------------------
+  const takenAssignments = useMemo(() => {
+    const map = new Map(); // subject -> Map(className -> holder)
+    const editingId = editingTeacher?.id || null;
+
+    teachers.forEach((t) => {
+      if (editingId && t.id === editingId) return; // skip self
+
+      const assignments = Array.isArray(t.assignments) && t.assignments.length > 0
+        ? t.assignments
+        : reconstructAssignments(t);
+
+      assignments.forEach((a) => {
+        const subject = a.subject;
+        if (!subject) return;
+        if (!map.has(subject)) map.set(subject, new Map());
+        const perSubject = map.get(subject);
+        (a.classes || []).forEach((cls) => {
+          // Keep the first holder — if data is already messy with
+          // duplicates, showing one is enough to prevent more.
+          if (!perSubject.has(cls)) {
+            perSubject.set(cls, {
+              teacherId: t.id,
+              teacherName: teacherName(t),
+            });
+          }
+        });
+      });
+    });
+
+    return map;
+  }, [teachers, editingTeacher]);
 
   // ---------------------------------------------------------------
   // Stats + filters
@@ -345,7 +374,7 @@ export default function Teachers() {
   };
 
   // ---------------------------------------------------------------
-  // Password — fixed default that admins share with teachers.
+  // Password
   // ---------------------------------------------------------------
   const DEFAULT_TEACHER_PASSWORD = '12345678';
 
@@ -454,7 +483,7 @@ export default function Teachers() {
   };
 
   // ---------------------------------------------------------------
-  // Resend invitation (uses password reset — kept for existing users)
+  // Resend invitation
   // ---------------------------------------------------------------
   const handleResendInvitation = async (teacher) => {
     if (!teacher.uid) {
@@ -551,6 +580,16 @@ export default function Teachers() {
   // ---------------------------------------------------------------
   // Assignment sub-form handlers
   // ---------------------------------------------------------------
+
+  // isClassTaken: has this (subject, class) pair been assigned by
+  // anyone other than the teacher currently being edited?
+  const isClassTaken = (subject, cls) => {
+    if (!subject || !cls) return null;
+    const perSubject = takenAssignments.get(subject);
+    if (!perSubject) return null;
+    return perSubject.get(cls) || null;
+  };
+
   const handleAddAssignment = () => {
     const level = newAssignmentLevel;
     const subject = newAssignmentSubject.trim();
@@ -560,7 +599,6 @@ export default function Teachers() {
       showNotification('Please select a level for this assignment.', 'warning');
       return;
     }
-    // Guard against a level the school doesn't run.
     if (!isLevelAllowed(level)) {
       showNotification(
         `This school does not run ${LEVEL_DISPLAY_NAMES[level] || level}. Choose a level up to ${LEVEL_DISPLAY_NAMES[schoolHighestLevel] || schoolHighestLevel}.`,
@@ -574,6 +612,21 @@ export default function Teachers() {
     }
     if (classes.length === 0) {
       showNotification('Please select at least one class.', 'warning');
+      return;
+    }
+
+    // Reject any class already taken for this subject.
+    const conflicts = classes
+      .map((cls) => ({ cls, holder: isClassTaken(subject, cls) }))
+      .filter((x) => !!x.holder);
+    if (conflicts.length > 0) {
+      const names = conflicts
+        .map((c) => `${c.cls} (${c.holder.teacherName})`)
+        .join(', ');
+      showNotification(
+        `${subject} is already assigned for: ${names}. Pick a different class or subject.`,
+        'error'
+      );
       return;
     }
 
@@ -888,7 +941,6 @@ export default function Teachers() {
       return;
     }
 
-    // Guard: reject assignments whose level exceeds the school's highest.
     const badLevels = formData.assignments
       .filter(a => a.level && !isLevelAllowed(a.level))
       .map(a => LEVEL_DISPLAY_NAMES[a.level] || a.level);
@@ -896,6 +948,25 @@ export default function Teachers() {
       const unique = [...new Set(badLevels)];
       showNotification(
         `Cannot save — the school's highest level is ${LEVEL_DISPLAY_NAMES[schoolHighestLevel] || schoolHighestLevel}. Remove: ${unique.join(', ')}.`,
+        'error'
+      );
+      return;
+    }
+
+    // Final safety net: reject if the form somehow contains a
+    // (subject, class) pair that another teacher already holds.
+    const crossConflicts = [];
+    formData.assignments.forEach((a) => {
+      (a.classes || []).forEach((cls) => {
+        const holder = isClassTaken(a.subject, cls);
+        if (holder) {
+          crossConflicts.push(`${a.subject} · ${cls} (${holder.teacherName})`);
+        }
+      });
+    });
+    if (crossConflicts.length > 0) {
+      showNotification(
+        `Cannot save — these assignments are already taken: ${crossConflicts.join(', ')}.`,
         'error'
       );
       return;
@@ -1075,6 +1146,24 @@ export default function Teachers() {
         showAppNotice(message, type);
     };
 
+  // ---------------------------------------------------------------
+  // Per-subject availability for the "Add Assignment" block
+  // ---------------------------------------------------------------
+  const availableClassesForNewAssignment = useMemo(() => {
+    const classes = getAvailableClasses(newAssignmentLevel);
+    const taken = newAssignmentSubject
+      ? takenAssignments.get(newAssignmentSubject)
+      : null;
+    return classes.map((cls) => {
+      const holder = taken ? taken.get(cls) : null;
+      return {
+        cls,
+        disabled: !!holder,
+        holder,
+      };
+    });
+  }, [newAssignmentLevel, newAssignmentSubject, takenAssignments, schoolHighestLevel]);
+
   if (loading) {
     return <LoadingSpinner fullScreen text="Loading teachers..." />;
   }
@@ -1164,6 +1253,13 @@ export default function Teachers() {
         .spinner-overlay.active { display: flex; }
         .spinner { width: 50px; height: 50px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
         .spinner-text { color: var(--secondary); font-weight: 500; font-size: 16px; }
+        .taken-hint { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .taken-pill {
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 3px 10px; font-size: 11px; font-weight: 600;
+          background: #fef3c7; color: #92400e; border: 1px solid #fde68a;
+          border-radius: 999px; white-space: nowrap;
+        }
         @media (max-width: 768px) {
           .stats-grid { grid-template-columns: repeat(2, 1fr); }
           .filters-section { flex-direction: column; align-items: stretch; }
@@ -1303,16 +1399,20 @@ export default function Teachers() {
                 </div>
               </div>
 
-              {/* Assignments builder — level is now inside each assignment */}
+              {/* Assignments builder */}
               <div className="form-group">
                 <label>Teaching Assignments <span className="required">*</span></label>
                 <div className="help-text" style={{ marginBottom: 12 }}>
                   Pair each level, subject, and the classes the teacher handles.
-                  A teacher can be assigned to multiple levels (e.g. Grade 6 East for
-                  Mathematics and Grade 7 West for Mathematics).
+                  A teacher can be assigned to multiple levels.
                   <br />
                   <strong>School runs levels up to:</strong>{' '}
                   {LEVEL_DISPLAY_NAMES[schoolHighestLevel] || schoolHighestLevel}.
+                  <br />
+                  <span style={{ color: '#92400e' }}>
+                    A class can only be assigned to one teacher per subject. Classes already taken
+                    for the selected subject are greyed out and marked "(taken)".
+                  </span>
                 </div>
 
                 {formData.assignments.length > 0 && (
@@ -1392,7 +1492,6 @@ export default function Teachers() {
                         }}
                       >
                         <option value="">Select level…</option>
-                        {/* Levels filtered to those the school actually runs. */}
                         {schoolLevels.map(lvl => (
                           <option key={lvl} value={lvl}>
                             {LEVEL_DISPLAY_NAMES[lvl] || lvl}
@@ -1404,7 +1503,13 @@ export default function Teachers() {
                       <label style={{ fontSize: 13 }}>Subject</label>
                       <select
                         value={newAssignmentSubject}
-                        onChange={(e) => setNewAssignmentSubject(e.target.value)}
+                        onChange={(e) => {
+                          setNewAssignmentSubject(e.target.value);
+                          // Clear any previously-selected classes that are now taken.
+                          setNewAssignmentClasses((prev) =>
+                            prev.filter((cls) => !isClassTaken(e.target.value, cls))
+                          );
+                        }}
                         disabled={!newAssignmentLevel}
                       >
                         <option value="">
@@ -1417,7 +1522,7 @@ export default function Teachers() {
                     </div>
                   </div>
 
-                  {/* Row 2: Classes */}
+                  {/* Row 2: Classes (with taken-disabled) */}
                   <div className="form-group" style={{ marginBottom: 12 }}>
                     <label style={{ fontSize: 13 }}>Classes</label>
                     <select
@@ -1427,21 +1532,51 @@ export default function Teachers() {
                         const opts = e.target.options;
                         const selected = [];
                         for (let i = 0; i < opts.length; i++) {
-                          if (opts[i].selected) selected.push(opts[i].value);
+                          if (opts[i].selected && !opts[i].disabled) selected.push(opts[i].value);
                         }
                         setNewAssignmentClasses(selected);
                       }}
                       disabled={!newAssignmentLevel}
-                      style={{ height: 120 }}
+                      style={{ height: 160 }}
                     >
-                      {getAvailableClasses(newAssignmentLevel).map(c => (
-                        <option key={c} value={c}>{c}</option>
+                      {availableClassesForNewAssignment.map(({ cls, disabled, holder }) => (
+                        <option
+                          key={cls}
+                          value={cls}
+                          disabled={disabled}
+                          title={disabled
+                            ? `Already assigned to ${holder?.teacherName || 'another teacher'} for ${newAssignmentSubject}`
+                            : undefined}
+                          style={disabled ? { color: '#94a3b8', fontStyle: 'italic' } : undefined}
+                        >
+                          {cls}{disabled ? ` — (taken by ${holder?.teacherName || 'another teacher'})` : ''}
+                        </option>
                       ))}
                     </select>
                     <div className="help-text">
                       Hold Ctrl/Cmd to select multiple classes.
                       {!newAssignmentLevel && ' Select a level to see classes.'}
+                      {newAssignmentLevel && !newAssignmentSubject && ' Select a subject to see which classes are still available.'}
                     </div>
+
+                    {/* Taken chips summary */}
+                    {newAssignmentSubject && (() => {
+                      const taken = availableClassesForNewAssignment.filter(c => c.disabled);
+                      if (taken.length === 0) return null;
+                      return (
+                        <div className="taken-hint">
+                          {taken.map(({ cls, holder }) => (
+                            <span key={cls} className="taken-pill" title={`${newAssignmentSubject} in ${cls} is held by ${holder?.teacherName || 'another teacher'}`}>
+                              <i className="fas fa-lock"></i>
+                              {cls}
+                              <span style={{ fontWeight: 500, opacity: 0.85 }}>
+                                · {holder?.teacherName || 'taken'}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <button
