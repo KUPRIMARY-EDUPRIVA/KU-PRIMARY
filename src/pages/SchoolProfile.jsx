@@ -1,5 +1,5 @@
 // src/pages/SchoolProfile.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { LEVEL_CLASSES, LEVEL_DISPLAY_NAMES } from '../utils/constants';
@@ -15,6 +15,7 @@ import LoadingSpinner from '../components/Common/LoadingSpinner';
 
 import { showAppNotice } from '../utils/appNotice';
 import { AuditLogService } from '../services/auditService';
+
 const DARAJA_FIELDS = [
     {
         key: 'consumerKey',
@@ -75,11 +76,7 @@ const DARAJA_FIELDS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Chatbot cache invalidation
-//
-// Called after a successful school save so the chatbot reflects the change
-// immediately instead of waiting out the 12-hour Blobs cache TTL.
-// Fire-and-forget: never throws, never blocks the UI.
+// Chatbot cache invalidation (unchanged)
 // ---------------------------------------------------------------------------
 async function invalidateChatbotCache({ currentUser, schoolId, prefixes = [] }) {
     try {
@@ -94,7 +91,6 @@ async function invalidateChatbotCache({ currentUser, schoolId, prefixes = [] }) 
             body: JSON.stringify({ prefixes })
         });
     } catch (e) {
-        // Non-fatal. The 12-hour TTL will self-heal.
         console.warn('Chatbot cache invalidation failed:', e);
     }
 }
@@ -132,7 +128,7 @@ async function uploadToCloudinary(file, folder) {
     return json.secure_url;
 }
 
-function loadImage(file) {
+function loadImageFromFile(file) {
     const objectUrl = URL.createObjectURL(file);
     return new Promise((resolve, reject) => {
         const image = new Image();
@@ -145,85 +141,133 @@ function loadImage(file) {
     });
 }
 
-function removeLightBackground(imageData) {
-    const { data, width, height } = imageData;
-    const queue = new Uint32Array(width * height);
-    let queueEnd = 0;
+// ---------------------------------------------------------------------------
+// Canvas-based background removal
+//
+// BFS flood-fill from the image edges: every "edge-connected" pixel that
+// looks like paper (bright, roughly neutral) is made transparent. Then a
+// light 1-pixel feather is applied along the resulting boundary so the
+// edges look clean rather than cut out.
+// ---------------------------------------------------------------------------
+function removeBackgroundFloodFill(canvas, options = {}) {
+    const {
+        threshold = 205,     // min(R,G,B) must be >= this (0..255)
+        tolerance = 48,      // max - min must be < this
+        feather = true,
+    } = options;
 
-    const addIfBackground = (index) => {
-        const offset = index * 4;
-        if (data[offset + 3] === 0) return;
-        const red = data[offset];
-        const green = data[offset + 1];
-        const blue = data[offset + 2];
-        if (
-            Math.min(red, green, blue) > 205
-            && Math.max(red, green, blue) - Math.min(red, green, blue) < 48
-        ) {
-            data[offset + 3] = 0;
-            queue[queueEnd++] = index;
-        }
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const { width, height } = canvas;
+    const imageData = ctx.getImageData(0, 0, width, height);
+    const { data } = imageData;
+
+    const totalPixels = width * height;
+    const visited = new Uint8Array(totalPixels);
+    const queue = new Int32Array(totalPixels);
+    let head = 0;
+    let tail = 0;
+
+    const passesThreshold = (idx) => {
+        const o = idx * 4;
+        const r = data[o];
+        const g = data[o + 1];
+        const b = data[o + 2];
+        const a = data[o + 3];
+        if (a === 0) return true; // already transparent
+        return (
+            Math.min(r, g, b) >= threshold
+            && (Math.max(r, g, b) - Math.min(r, g, b)) <= tolerance
+        );
     };
 
+    const enqueue = (idx) => {
+        if (idx < 0 || idx >= totalPixels) return;
+        if (visited[idx]) return;
+        if (!passesThreshold(idx)) return;
+        visited[idx] = 1;
+        queue[tail++] = idx;
+    };
+
+    // Seed from all four edges
     for (let x = 0; x < width; x += 1) {
-        addIfBackground(x);
-        addIfBackground((height - 1) * width + x);
+        enqueue(x);
+        enqueue((height - 1) * width + x);
     }
     for (let y = 1; y < height - 1; y += 1) {
-        addIfBackground(y * width);
-        addIfBackground(y * width + width - 1);
+        enqueue(y * width);
+        enqueue(y * width + (width - 1));
     }
 
-    for (let cursor = 0; cursor < queueEnd; cursor += 1) {
-        const pixel = queue[cursor];
-        const x = pixel % width;
-        if (x > 0) addIfBackground(pixel - 1);
-        if (x + 1 < width) addIfBackground(pixel + 1);
-        if (pixel >= width) addIfBackground(pixel - width);
-        if (pixel + width < width * height) addIfBackground(pixel + width);
+    // BFS
+    while (head < tail) {
+        const idx = queue[head++];
+        const x = idx % width;
+        if (x > 0) enqueue(idx - 1);
+        if (x < width - 1) enqueue(idx + 1);
+        if (idx >= width) enqueue(idx - width);
+        if (idx < totalPixels - width) enqueue(idx + width);
     }
-}
 
-async function prepareBrandingImage(file, removeBackground) {
-    const maxBytes = 1.8 * 1024 * 1024;
-    const { image, objectUrl } = await loadImage(file);
-    try {
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d', { willReadFrequently: removeBackground });
-        if (!context) throw new Error('Image processing is not supported on this device.');
+    // Make every visited pixel fully transparent
+    for (let i = 0; i < totalPixels; i += 1) {
+        if (visited[i]) data[i * 4 + 3] = 0;
+    }
 
-        const preservePng = file.type === 'image/png' && !removeBackground;
-        const mimeType = removeBackground || preservePng ? 'image/png' : 'image/jpeg';
-        const baseName = file.name.replace(/\.[^.]+$/, '') || 'school-branding';
-        let scale = Math.min(1, 2000 / Math.max(image.naturalWidth, image.naturalHeight));
-
-        for (let attempt = 0; attempt < 12; attempt += 1) {
-            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-            context.clearRect(0, 0, canvas.width, canvas.height);
-            context.drawImage(image, 0, 0, canvas.width, canvas.height);
-            if (removeBackground) {
-                const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-                removeLightBackground(pixels);
-                context.putImageData(pixels, 0, 0);
-            }
-
-            const qualities = mimeType === 'image/jpeg' ? [0.88, 0.78, 0.68, 0.58] : [undefined];
-            for (const quality of qualities) {
-                const blob = await new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
-                if (!blob) throw new Error('The selected image could not be processed.');
-                if (blob.size <= maxBytes) {
-                    const extension = mimeType === 'image/png' ? 'png' : 'jpg';
-                    return new File([blob], `${baseName}.${extension}`, { type: mimeType });
+    // Feather: for each remaining opaque pixel adjacent to a transparent
+    // one, drop alpha to ~50% so the edge blends.
+    if (feather) {
+        for (let y = 1; y < height - 1; y += 1) {
+            for (let x = 1; x < width - 1; x += 1) {
+                const idx = y * width + x;
+                if (visited[idx]) continue;
+                const o = idx * 4;
+                if (data[o + 3] === 0) continue;
+                const n1 = visited[idx - 1];
+                const n2 = visited[idx + 1];
+                const n3 = visited[idx - width];
+                const n4 = visited[idx + width];
+                if (n1 || n2 || n3 || n4) {
+                    data[o + 3] = Math.round(data[o + 3] * 0.55);
                 }
             }
-            scale *= 0.8;
         }
-
-        throw new Error('The image could not be resized below the 1.8 MB upload limit.');
-    } finally {
-        URL.revokeObjectURL(objectUrl);
     }
+
+    ctx.putImageData(imageData, 0, 0);
+}
+
+// Fit the source image into a working canvas no larger than maxEdge px.
+function makeWorkingCanvas(image, maxEdge = 1400) {
+    const ratio = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
+    const w = Math.max(1, Math.round(image.naturalWidth * ratio));
+    const h = Math.max(1, Math.round(image.naturalHeight * ratio));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(image, 0, 0, w, h);
+    return canvas;
+}
+
+// Crop the working canvas into a rectangle (in working-canvas coords).
+function cropCanvas(sourceCanvas, rect) {
+    const { x, y, w, h } = rect;
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(w));
+    out.height = Math.max(1, Math.round(h));
+    const ctx = out.getContext('2d');
+    ctx.drawImage(sourceCanvas, x, y, w, h, 0, 0, out.width, out.height);
+    return out;
+}
+
+function canvasToFile(canvas, baseName, mimeType = 'image/png') {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (!blob) return reject(new Error('Canvas encoding failed.'));
+            const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+            resolve(new File([blob], `${baseName}.${ext}`, { type: mimeType }));
+        }, mimeType, 0.92);
+    });
 }
 
 async function manageSchoolAdmins(currentUser, action, details = {}) {
@@ -241,6 +285,404 @@ async function manageSchoolAdmins(currentUser, action, details = {}) {
         throw new Error(result.error || 'Administrator operation failed.');
     }
     return result;
+}
+
+// ===========================================================================
+// Branding image modal: background removal + crop + zoom, then upload.
+// ===========================================================================
+function BrandingImageModal({
+    open,
+    kind,                   // 'stamp' | 'signature'
+    file,                   // File to process
+    onCancel,
+    onUpload,               // (processedFile) => Promise
+    showNotification,
+}) {
+    const [processing, setProcessing] = useState(false);
+    const [uploading, setUploading] = useState(false);
+    const [error, setError] = useState('');
+
+    // Controls
+    const [removeBg, setRemoveBg] = useState(true);
+    const [threshold, setThreshold] = useState(205);
+    const [tolerance, setTolerance] = useState(48);
+
+    // Source & preview canvases
+    const originalCanvasRef = useRef(null);      // working-size, no transparency
+    const cleanedCanvasRef = useRef(null);       // working-size, transparent bg
+    const previewCanvasRef = useRef(null);       // visible canvas in the modal
+
+    // Crop rect in *cleaned canvas* coords
+    const [cropRect, setCropRect] = useState(null);
+    // Display zoom for the preview viewport
+    const [zoom, setZoom] = useState(1);
+
+    // Drag state
+    const dragRef = useRef({ active: false, startX: 0, startY: 0, startCrop: null });
+
+    // ---- Load + process image when modal opens or file changes ----
+    useEffect(() => {
+        if (!open || !file) return;
+        let cancelled = false;
+        setError('');
+        setProcessing(true);
+        (async () => {
+            try {
+                const { image, objectUrl } = await loadImageFromFile(file);
+                if (cancelled) { URL.revokeObjectURL(objectUrl); return; }
+                const working = makeWorkingCanvas(image, 1400);
+                URL.revokeObjectURL(objectUrl);
+                originalCanvasRef.current = working;
+                // Start with the full-image crop rect
+                setCropRect({ x: 0, y: 0, w: working.width, h: working.height });
+                setZoom(1);
+                // Initial processing runs via the effect below.
+                setProcessing(false);
+            } catch (e) {
+                if (!cancelled) {
+                    setError(e.message || 'Could not open image.');
+                    setProcessing(false);
+                }
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [open, file]);
+
+    // ---- Recompute cleaned canvas when threshold / removeBg change ----
+    useEffect(() => {
+        if (!open) return;
+        if (!originalCanvasRef.current) return;
+        const src = originalCanvasRef.current;
+        // Clone into a fresh canvas so removal can be re-run cleanly
+        const working = document.createElement('canvas');
+        working.width = src.width;
+        working.height = src.height;
+        working.getContext('2d').drawImage(src, 0, 0);
+        if (removeBg) {
+            removeBackgroundFloodFill(working, { threshold, tolerance });
+        }
+        cleanedCanvasRef.current = working;
+        drawPreview();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, removeBg, threshold, tolerance]);
+
+    // ---- Draw the preview ----
+    const drawPreview = useCallback(() => {
+        const canvas = previewCanvasRef.current;
+        const cleaned = cleanedCanvasRef.current;
+        if (!canvas || !cleaned) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 480;
+        const cssH = canvas.clientHeight || 340;
+        if (canvas.width !== cssW * dpr || canvas.height !== cssH * dpr) {
+            canvas.width = Math.max(1, Math.floor(cssW * dpr));
+            canvas.height = Math.max(1, Math.floor(cssH * dpr));
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+
+        // Checker background so transparency is obvious
+        const tile = 8;
+        for (let y = 0; y < cssH; y += tile) {
+            for (let x = 0; x < cssW; x += tile) {
+                const on = ((x / tile) + (y / tile)) % 2 === 0;
+                ctx.fillStyle = on ? '#f2f3f6' : '#e5e7ee';
+                ctx.fillRect(x, y, tile, tile);
+            }
+        }
+
+        // Fit the cleaned image into the viewport at current zoom
+        const fitScale = Math.min(cssW / cleaned.width, cssH / cleaned.height) * zoom;
+        const drawW = cleaned.width * fitScale;
+        const drawH = cleaned.height * fitScale;
+        const offX = (cssW - drawW) / 2;
+        const offY = (cssH - drawH) / 2;
+        ctx.drawImage(cleaned, offX, offY, drawW, drawH);
+
+        // Darkened overlay outside the crop
+        if (cropRect) {
+            const cx = offX + cropRect.x * fitScale;
+            const cy = offY + cropRect.y * fitScale;
+            const cw = cropRect.w * fitScale;
+            const ch = cropRect.h * fitScale;
+            ctx.save();
+            ctx.fillStyle = 'rgba(15,23,42,0.55)';
+            ctx.beginPath();
+            ctx.rect(0, 0, cssW, cssH);
+            ctx.rect(cx, cy, cw, ch);
+            ctx.fill('evenodd');
+            ctx.restore();
+            ctx.strokeStyle = '#4f8ef7';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(cx, cy, cw, ch);
+
+            // Corner handles
+            const hs = 8;
+            ctx.fillStyle = '#4f8ef7';
+            [[cx, cy], [cx + cw, cy], [cx, cy + ch], [cx + cw, cy + ch]].forEach(([hx, hy]) => {
+                ctx.fillRect(hx - hs / 2, hy - hs / 2, hs, hs);
+            });
+        }
+    }, [cropRect, zoom]);
+
+    // Redraw on crop/zoom/size changes
+    useEffect(() => { drawPreview(); }, [drawPreview]);
+    useEffect(() => {
+        const onResize = () => drawPreview();
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, [drawPreview]);
+
+    // ---- Drag the crop rectangle ----
+    const toCanvasCoords = (e) => {
+        const canvas = previewCanvasRef.current;
+        if (!canvas) return { x: 0, y: 0, scale: 1, offX: 0, offY: 0 };
+        const cleaned = cleanedCanvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const cssW = rect.width;
+        const cssH = rect.height;
+        const fitScale = Math.min(cssW / cleaned.width, cssH / cleaned.height) * zoom;
+        const drawW = cleaned.width * fitScale;
+        const drawH = cleaned.height * fitScale;
+        const offX = (cssW - drawW) / 2;
+        const offY = (cssH - drawH) / 2;
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        return {
+            x: (px - offX) / fitScale,
+            y: (py - offY) / fitScale,
+            scale: fitScale,
+            offX,
+            offY,
+        };
+    };
+
+    const onPointerDown = (e) => {
+        if (!cropRect) return;
+        const p = toCanvasCoords(e);
+        if (p.x < cropRect.x || p.x > cropRect.x + cropRect.w) return;
+        if (p.y < cropRect.y || p.y > cropRect.y + cropRect.h) return;
+        dragRef.current = {
+            active: true,
+            startX: p.x,
+            startY: p.y,
+            startCrop: { ...cropRect },
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+    };
+
+    const onPointerMove = (e) => {
+        if (!dragRef.current.active) return;
+        const p = toCanvasCoords(e);
+        const dx = p.x - dragRef.current.startX;
+        const dy = p.y - dragRef.current.startY;
+        const cleaned = cleanedCanvasRef.current;
+        const sc = dragRef.current.startCrop;
+        const nx = Math.max(0, Math.min(cleaned.width - sc.w, sc.x + dx));
+        const ny = Math.max(0, Math.min(cleaned.height - sc.h, sc.y + dy));
+        setCropRect({ x: nx, y: ny, w: sc.w, h: sc.h });
+    };
+
+    const onPointerUp = () => { dragRef.current.active = false; };
+
+    const resetCrop = () => {
+        const c = cleanedCanvasRef.current;
+        if (!c) return;
+        setCropRect({ x: 0, y: 0, w: c.width, h: c.height });
+    };
+
+    const shrinkCrop = (factor) => {
+        const c = cleanedCanvasRef.current;
+        if (!c || !cropRect) return;
+        const nw = Math.max(20, cropRect.w * factor);
+        const nh = Math.max(20, cropRect.h * factor);
+        setCropRect({
+            x: cropRect.x + (cropRect.w - nw) / 2,
+            y: cropRect.y + (cropRect.h - nh) / 2,
+            w: nw,
+            h: nh,
+        });
+    };
+
+    // ---- Apply & upload ----
+    const handleUpload = async () => {
+        if (!cleanedCanvasRef.current || !cropRect) return;
+        setUploading(true);
+        setError('');
+        try {
+            const cropped = cropCanvas(cleanedCanvasRef.current, cropRect);
+            const baseName = `${kind || 'branding'}-${Date.now()}`;
+            // Always upload as PNG so transparency is preserved
+            const outFile = await canvasToFile(cropped, baseName, 'image/png');
+            await onUpload(outFile);
+        } catch (e) {
+            console.error('Branding upload failed:', e);
+            setError(e.message || 'Upload failed.');
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    if (!open) return null;
+
+    const title = kind === 'stamp' ? 'Prepare School Stamp' : 'Prepare Principal Signature';
+
+    return (
+        <div className="modal-overlay active" onClick={(e) => {
+            if (e.target === e.currentTarget && !uploading) onCancel();
+        }}>
+            <div className="modal" style={{ maxWidth: 920, width: '94vw' }}>
+                <div className="modal-header">
+                    <h2>{title}</h2>
+                    <button
+                        className="modal-close"
+                        onClick={() => { if (!uploading) onCancel(); }}
+                    >
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <p style={{ color: 'var(--gray)', fontSize: 13, marginTop: -6, marginBottom: 14 }}>
+                    Remove the paper background, crop to the ink area, and zoom in.
+                    The transparent PNG is what will be saved.
+                </p>
+
+                {/* Controls row */}
+                <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                    gap: 12, padding: 12, marginBottom: 12,
+                    background: '#f8fafc', borderRadius: 10,
+                    border: '1px solid var(--border)',
+                }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>
+                        <input
+                            type="checkbox"
+                            checked={removeBg}
+                            onChange={(e) => setRemoveBg(e.target.checked)}
+                        />
+                        Remove background
+                    </label>
+
+                    <div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--secondary)', marginBottom: 4 }}>
+                            Lightness threshold ({threshold})
+                        </div>
+                        <input
+                            type="range" min="120" max="245" step="1"
+                            value={threshold}
+                            disabled={!removeBg}
+                            onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
+                            style={{ width: '100%' }}
+                        />
+                    </div>
+
+                    <div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--secondary)', marginBottom: 4 }}>
+                            Neutrality tolerance ({tolerance})
+                        </div>
+                        <input
+                            type="range" min="4" max="120" step="1"
+                            value={tolerance}
+                            disabled={!removeBg}
+                            onChange={(e) => setTolerance(parseInt(e.target.value, 10))}
+                            style={{ width: '100%' }}
+                        />
+                    </div>
+
+                    <div>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--secondary)', marginBottom: 4 }}>
+                            Zoom ({zoom.toFixed(2)}×)
+                        </div>
+                        <input
+                            type="range" min="1" max="4" step="0.05"
+                            value={zoom}
+                            onChange={(e) => setZoom(parseFloat(e.target.value))}
+                            style={{ width: '100%' }}
+                        />
+                    </div>
+                </div>
+
+                {/* Preview */}
+                <div style={{
+                    border: '1px solid var(--border)',
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                    position: 'relative',
+                }}>
+                    <canvas
+                        ref={previewCanvasRef}
+                        style={{
+                            width: '100%',
+                            height: 340,
+                            display: 'block',
+                            cursor: dragRef.current.active ? 'grabbing' : 'grab',
+                            touchAction: 'none',
+                        }}
+                        onPointerDown={onPointerDown}
+                        onPointerMove={onPointerMove}
+                        onPointerUp={onPointerUp}
+                        onPointerCancel={onPointerUp}
+                    />
+                    {processing && (
+                        <div style={{
+                            position: 'absolute', inset: 0,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            background: 'rgba(255,255,255,0.7)',
+                            fontWeight: 600, color: 'var(--secondary)',
+                        }}>
+                            Processing…
+                        </div>
+                    )}
+                </div>
+
+                {error && (
+                    <div style={{
+                        marginTop: 10, padding: 10, borderRadius: 8,
+                        background: '#fee', color: '#a11', fontSize: 13,
+                    }}>
+                        {error}
+                    </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                    <button className="btn btn-outline" onClick={resetCrop}>
+                        <i className="fas fa-expand"></i> Reset crop
+                    </button>
+                    <button className="btn btn-outline" onClick={() => shrinkCrop(0.85)}>
+                        <i className="fas fa-search-plus"></i> Tighten crop
+                    </button>
+                </div>
+
+                <div className="modal-footer">
+                    <button
+                        className="btn btn-outline"
+                        onClick={() => { if (!uploading) onCancel(); }}
+                        disabled={uploading}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        className="btn btn-primary"
+                        onClick={handleUpload}
+                        disabled={uploading || processing}
+                    >
+                        {uploading ? (
+                            <>
+                                <span className="loading-spinner" style={spinnerStyle}></span>
+                                Uploading…
+                            </>
+                        ) : (
+                            <>
+                                <i className="fas fa-cloud-upload-alt"></i> Apply & Upload
+                            </>
+                        )}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
 }
 
 export default function SchoolProfile() {
@@ -329,8 +771,13 @@ export default function SchoolProfile() {
     const principalSignatureInputRef = useRef(null);
     const stampCameraInputRef = useRef(null);
     const principalSignatureCameraInputRef = useRef(null);
-    const [removeStampBackground, setRemoveStampBackground] = useState(true);
-    const [removeSignatureBackground, setRemoveSignatureBackground] = useState(true);
+
+    // Branding image modal state
+    const [brandingModal, setBrandingModal] = useState({
+        open: false,
+        kind: null,          // 'stamp' | 'signature'
+        file: null,
+    });
 
     const availableLevels = [
         { value: 'pre-primary', label: 'Pre-Primary' },
@@ -506,7 +953,6 @@ export default function SchoolProfile() {
         setDarajaForm((prev) => ({ ...prev, [id]: value }));
     };
 
-    // ---- Save general school profile ----
     const handleSave = async () => {
         if (saving) return;
         setSaving(true);
@@ -571,9 +1017,6 @@ export default function SchoolProfile() {
                     );
                 }
 
-                // Fire-and-forget: clear the chatbot cache for this school so
-                // the next chat query picks up the new name, motto, contact,
-                // classes, and subjects immediately.
                 invalidateChatbotCache({
                     currentUser,
                     schoolId,
@@ -596,7 +1039,6 @@ export default function SchoolProfile() {
         }
     };
 
-    // ---- Save Daraja credentials ----
     const handleSaveDaraja = async () => {
         if (savingDaraja) return;
 
@@ -643,7 +1085,6 @@ export default function SchoolProfile() {
                 updatedAt: new Date().toISOString()
             });
 
-            // Paybill is surfaced in the chatbot's contact topic — invalidate.
             invalidateChatbotCache({
                 currentUser,
                 schoolId,
@@ -693,7 +1134,7 @@ export default function SchoolProfile() {
     };
 
     // ============================================================
-    // Logo upload (Cloudinary)
+    // Logo upload (Cloudinary) — unchanged
     // ============================================================
     const handleLogoUpload = () => {
         if (!isOnline) {
@@ -732,7 +1173,8 @@ export default function SchoolProfile() {
     };
 
     // ============================================================
-    // Stamp upload (Cloudinary)
+    // Stamp + signature — now open the branding modal, do not upload
+    // immediately.
     // ============================================================
     const handleStampUpload = (inputRef = stampInputRef) => {
         if (!isOnline) {
@@ -742,33 +1184,6 @@ export default function SchoolProfile() {
         inputRef.current?.click();
     };
 
-    const handleStampFileChange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const schoolId = userData?.schoolId;
-        if (!schoolId) return;
-        setSaving(true);
-        try {
-            const preparedFile = await prepareBrandingImage(file, removeStampBackground);
-            const secureUrl = await uploadToCloudinary(preparedFile, `schools/${schoolId}/branding`);
-            await updateDoc(doc(db, 'schools', schoolId), {
-                stampUrl: secureUrl,
-                updatedAt: new Date().toISOString()
-            });
-            setSchoolData((prev) => ({ ...prev, stampUrl: secureUrl }));
-            showNotification('Stamp uploaded successfully!', 'success');
-        } catch (error) {
-            console.error('Error uploading stamp:', error);
-            showNotification('Failed to upload stamp: ' + error.message, 'error');
-        } finally {
-            setSaving(false);
-            e.target.value = '';
-        }
-    };
-
-    // ============================================================
-    // Principal signature upload (Cloudinary)
-    // ============================================================
     const handlePrincipalSignatureUpload = (inputRef = principalSignatureInputRef) => {
         if (!isOnline) {
             showNotification('You must be online to upload a signature.', 'warning');
@@ -777,27 +1192,46 @@ export default function SchoolProfile() {
         inputRef.current?.click();
     };
 
-    const handlePrincipalSignatureFileChange = async (e) => {
+    const handleStampFileChange = (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        setBrandingModal({ open: true, kind: 'stamp', file });
+        e.target.value = '';
+    };
+
+    const handlePrincipalSignatureFileChange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        setBrandingModal({ open: true, kind: 'signature', file });
+        e.target.value = '';
+    };
+
+    const closeBrandingModal = () => setBrandingModal({ open: false, kind: null, file: null });
+
+    const uploadBrandingImage = async (processedFile) => {
         const schoolId = userData?.schoolId;
-        if (!schoolId) return;
+        if (!schoolId) throw new Error('No school selected.');
+        const { kind } = brandingModal;
         setSaving(true);
         try {
-            const preparedFile = await prepareBrandingImage(file, removeSignatureBackground);
-            const secureUrl = await uploadToCloudinary(preparedFile, `schools/${schoolId}/branding`);
+            const secureUrl = await uploadToCloudinary(processedFile, `schools/${schoolId}/branding`);
+            const field = kind === 'stamp' ? 'stampUrl' : 'principalSignatureUrl';
             await updateDoc(doc(db, 'schools', schoolId), {
-                principalSignatureUrl: secureUrl,
+                [field]: secureUrl,
                 updatedAt: new Date().toISOString()
             });
-            setSchoolData((prev) => ({ ...prev, principalSignatureUrl: secureUrl }));
-            showNotification('Principal signature uploaded successfully!', 'success');
+            setSchoolData((prev) => ({ ...prev, [field]: secureUrl }));
+            showNotification(
+                kind === 'stamp' ? 'Stamp uploaded successfully!' : 'Principal signature uploaded successfully!',
+                'success'
+            );
+            closeBrandingModal();
         } catch (error) {
-            console.error('Error uploading signature:', error);
-            showNotification('Failed to upload signature: ' + error.message, 'error');
+            console.error('Branding upload failed:', error);
+            showNotification('Failed to upload: ' + error.message, 'error');
+            throw error;
         } finally {
             setSaving(false);
-            e.target.value = '';
         }
     };
 
@@ -931,7 +1365,6 @@ export default function SchoolProfile() {
         return counts;
     }, {});
 
-    // ---- Finance tab render ----
     const renderFinanceTab = () => {
         const isReadOnly = darajaConfigured;
 
@@ -1146,6 +1579,15 @@ export default function SchoolProfile() {
                 onChange={handlePrincipalSignatureFileChange}
             />
 
+            <BrandingImageModal
+                open={brandingModal.open}
+                kind={brandingModal.kind}
+                file={brandingModal.file}
+                onCancel={closeBrandingModal}
+                onUpload={uploadBrandingImage}
+                showNotification={showNotification}
+            />
+
             <div className="profile-card">
                 <div className="profile-header">
                     <div className="profile-avatar">
@@ -1276,23 +1718,15 @@ export default function SchoolProfile() {
                                                 <i className="fas fa-camera"></i> Take Photo
                                             </button>
                                         </div>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, fontSize: 12 }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={removeStampBackground}
-                                                onChange={(event) => setRemoveStampBackground(event.target.checked)}
-                                            />
-                                            Remove light background
-                                        </label>
                                         <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
-                                            Resized automatically for upload. Light paper background is made transparent.
+                                            You&apos;ll be able to remove the background, crop, and zoom before saving.
                                         </p>
                                     </div>
                                 </div>
                             </div>
 
                             <div className="form-group">
-                                <label>Principal's Signature</label>
+                                <label>Principal&apos;s Signature</label>
                                 <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
                                     <div style={{
                                         width: 140, height: 90, border: '2px dashed var(--border)',
@@ -1331,16 +1765,8 @@ export default function SchoolProfile() {
                                                 <i className="fas fa-camera"></i> Take Photo
                                             </button>
                                         </div>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, fontSize: 12 }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={removeSignatureBackground}
-                                                onChange={(event) => setRemoveSignatureBackground(event.target.checked)}
-                                            />
-                                            Remove light background
-                                        </label>
                                         <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
-                                            Resized automatically for upload. Light paper background is made transparent.
+                                            You&apos;ll be able to remove the background, crop, and zoom before saving.
                                         </p>
                                     </div>
                                 </div>
