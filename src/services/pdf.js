@@ -1413,7 +1413,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         doc.setFontSize(7);
         doc.setTextColor(...PDF_COLORS.gray);
         doc.text('Signature / Date', MARGIN, sigLineY + 3);
-        doc.text(principalName, MARGIN, sigLineY - 1);
+        
 
         // Uploaded principal signature ABOVE the line (left side)
         if (signatureUrl) {
@@ -1453,7 +1453,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
         doc.setFontSize(7);
         doc.setTextColor(102, 102, 102);
         doc.text(
-            `© ${new Date().getFullYear()} ${meta?.schoolName || 'EDUPRIVA'}. All rights reserved.  |  System designed and maintained by Edupriva  |  info.edupriva@gmail.com`,
+            `© ${new Date().getFullYear()} ${meta?.schoolName || 'EDUPRIVA'}.   |  System designed and maintained by Edupriva  |  info.edupriva@gmail.com`,
             pageWidth / 2, pageHeight - 5, { align: 'center' }
         );
     });
