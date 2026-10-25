@@ -1,6 +1,6 @@
 // src/components/Layout/Sidebar.jsx
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useBadges } from '../../context/BadgeContext';
@@ -13,7 +13,8 @@ import {
     collection,
     query,
     where,
-    getDocs
+    getDocs,
+    limit,
 } from 'firebase/firestore';
 import './Layout.css';
 
@@ -25,7 +26,7 @@ export default function Sidebar({ isOpen, onClose }) {
         currentUser,
         userData,
         userRole,
-        logout
+        logout,
     } = useAuth();
 
     const { badges } = useBadges();
@@ -35,164 +36,112 @@ export default function Sidebar({ isOpen, onClose }) {
     const [userAvatar, setUserAvatar] = useState('');
     const [feeBadge, setFeeBadge] = useState(0);
 
+    // Resolve the role early — used by several effects and render helpers.
+    const role = useMemo(
+        () => normalizeRole(userRole || userData?.role || 'user'),
+        [userRole, userData?.role]
+    );
+    const isStudent = role === 'student';
+
     // --------------------------------------------------
     // LOAD USER DATA
     // --------------------------------------------------
-
     useEffect(() => {
         if (currentUser) {
             loadUserProfile();
         }
-
-        if (userData && userData.schoolId) {
-            loadFeeBadge();
-        }
-
-        // These functions intentionally remain stable for this effect.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentUser, userData]);
+    }, [currentUser]);
+
+    // Fee badge is admin/headteacher/accountant only — never for students.
+    useEffect(() => {
+        if (!userData?.schoolId) {
+            setFeeBadge(0);
+            return;
+        }
+        if (isStudent) {
+            setFeeBadge(0);
+            return;
+        }
+        loadFeeBadge();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [userData?.schoolId, isStudent]);
 
     // --------------------------------------------------
     // LOAD USER PROFILE
     // --------------------------------------------------
-
     const loadUserProfile = async () => {
-        if (!currentUser || !currentUser.uid) {
-            return;
-        }
+        if (!currentUser?.uid) return;
 
         try {
             // ------------------------------------------
-            // 1. USERS COLLECTION
+            // 1. USERS COLLECTION (admins, headteacher, accountant, etc.)
             // ------------------------------------------
-
-            const userRef = doc(
-                db,
-                'users',
-                currentUser.uid
-            );
-
-            const userSnapshot = await getDoc(userRef);
-
+            const userSnapshot = await getDoc(doc(db, 'users', currentUser.uid));
             if (userSnapshot.exists()) {
                 const data = userSnapshot.data();
-
-                setUserName(
-                    data.fullName ||
-                    data.firstName ||
-                    'User'
-                );
-
-                setUserEmail(
-                    data.email ||
-                    currentUser.email ||
-                    ''
-                );
-
-                if (data.profileImageUrl) {
-                    setUserAvatar(data.profileImageUrl);
-                }
-
+                setUserName(data.fullName || data.firstName || 'User');
+                setUserEmail(data.email || currentUser.email || '');
+                if (data.profileImageUrl) setUserAvatar(data.profileImageUrl);
                 return;
             }
 
             // ------------------------------------------
             // 2. TEACHERS COLLECTION
             // ------------------------------------------
-
-            const teacherRef = doc(
-                db,
-                'teachers',
-                currentUser.uid
-            );
-
-            const teacherSnapshot = await getDoc(
-                teacherRef
-            );
-
+            const teacherSnapshot = await getDoc(doc(db, 'teachers', currentUser.uid));
             if (teacherSnapshot.exists()) {
                 const data = teacherSnapshot.data();
-
-                const firstName = data.firstName || '';
-                const lastName = data.lastName || '';
-
-                const fullName = (
-                    firstName + ' ' + lastName
-                ).trim();
-
-                setUserName(
-                    fullName || 'Teacher'
-                );
-
-                setUserEmail(
-                    data.email ||
-                    currentUser.email ||
-                    ''
-                );
-
-                if (data.profileImageUrl) {
-                    setUserAvatar(
-                        data.profileImageUrl
-                    );
-                }
-
+                const fullName = `${data.firstName || ''} ${data.lastName || ''}`.trim();
+                setUserName(fullName || 'Teacher');
+                setUserEmail(data.email || currentUser.email || '');
+                if (data.profileImageUrl) setUserAvatar(data.profileImageUrl);
                 return;
             }
 
             // ------------------------------------------
             // 3. STUDENTS COLLECTION
+            //    First try by UID (if the school provisioned the doc
+            //    that way); then fall back to email + schoolId, since
+            //    our login flow creates student auth users via email
+            //    and keeps the student doc keyed by its own ID.
             // ------------------------------------------
+            const studentByUid = await getDoc(doc(db, 'students', currentUser.uid));
+            if (studentByUid.exists()) {
+                const data = studentByUid.data();
+                applyStudentProfile(data);
+                return;
+            }
 
-            const studentRef = doc(
-                db,
-                'students',
-                currentUser.uid
-            );
-
-            const studentSnapshot = await getDoc(
-                studentRef
-            );
-
-            if (studentSnapshot.exists()) {
-                const data = studentSnapshot.data();
-
-                const firstName = data.firstName || '';
-                const lastName = data.lastName || '';
-
-                const fullName = (
-                    firstName + ' ' + lastName
-                ).trim();
-
-                setUserName(
-                    fullName || 'Student'
-                );
-
-                setUserEmail(
-                    data.email ||
-                    currentUser.email ||
-                    ''
-                );
-
-                if (data.profileImageUrl) {
-                    setUserAvatar(
-                        data.profileImageUrl
-                    );
+            if (currentUser.email && userData?.schoolId) {
+                const snap = await getDocs(query(
+                    collection(db, 'students'),
+                    where('schoolId', '==', userData.schoolId),
+                    where('email', '==', currentUser.email),
+                    limit(1)
+                ));
+                if (!snap.empty) {
+                    applyStudentProfile(snap.docs[0].data());
+                    return;
                 }
             }
         } catch (error) {
-            console.error(
-                'Error loading user profile:',
-                error
-            );
+            console.error('Error loading user profile:', error);
         }
     };
 
-    // --------------------------------------------------
-    // LOAD FEE BADGE
-    // --------------------------------------------------
+    const applyStudentProfile = (data) => {
+        const fullName = `${data.firstName || ''} ${data.lastName || ''}`.trim();
+        setUserName(fullName || 'Student');
+        setUserEmail(data.email || currentUser?.email || '');
+        if (data.profileImageUrl) setUserAvatar(data.profileImageUrl);
+    };
 
+    // --------------------------------------------------
+    // LOAD FEE BADGE (admin/headteacher/accountant only)
+    // --------------------------------------------------
     const loadFeeBadge = async () => {
-        if (!userData || !userData.schoolId) {
+        if (!userData?.schoolId) {
             setFeeBadge(0);
             return;
         }
@@ -200,57 +149,32 @@ export default function Sidebar({ isOpen, onClose }) {
         try {
             const invoicesQuery = query(
                 collection(db, 'fee_invoices'),
-                where(
-                    'schoolId',
-                    '==',
-                    userData.schoolId
-                ),
-                where(
-                    'status',
-                    '==',
-                    'pending'
-                )
+                where('schoolId', '==', userData.schoolId),
+                where('status', '==', 'pending')
             );
+            const invoicesSnapshot = await getDocs(invoicesQuery);
 
-            const invoicesSnapshot =
-                await getDocs(invoicesQuery);
-
-            const studentsQuery = query(
-                collection(db, 'students'),
-                where(
-                    'schoolId',
-                    '==',
-                    userData.schoolId
-                )
-            );
-
+            // Use the cached roster when available; otherwise load once.
             const cachedStudents = await getCachedStudentRoster(userData.schoolId);
-            const studentsSnapshot = cachedStudents ? null : await getDocs(studentsQuery);
+            let students = cachedStudents;
+
+            if (!students) {
+                const snap = await getDocs(query(
+                    collection(db, 'students'),
+                    where('schoolId', '==', userData.schoolId)
+                ));
+                students = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            }
 
             let overdueCount = 0;
-
-            const students = cachedStudents
-                || studentsSnapshot.docs.map((studentDoc) => studentDoc.data());
             students.forEach((student) => {
-
-                if (
-                    student.feeBalance &&
-                    student.feeBalance > 0
-                ) {
-                    overdueCount++;
-                }
+                if (student.isDeleted) return;
+                if (student.feeBalance && student.feeBalance > 0) overdueCount++;
             });
 
-            setFeeBadge(
-                invoicesSnapshot.size +
-                overdueCount
-            );
+            setFeeBadge(invoicesSnapshot.size + overdueCount);
         } catch (error) {
-            console.error(
-                'Error loading fee badge:',
-                error
-            );
-
+            console.error('Error loading fee badge:', error);
             setFeeBadge(0);
         }
     };
@@ -258,398 +182,180 @@ export default function Sidebar({ isOpen, onClose }) {
     // --------------------------------------------------
     // NAVIGATION
     // --------------------------------------------------
-
-    const handleNavigation = (path) => {
+    const handleNavigation = useCallback((path) => {
         navigate(path);
-
-        if (onClose) {
-            onClose();
-        }
-    };
+        if (onClose) onClose();
+    }, [navigate, onClose]);
 
     // --------------------------------------------------
     // LOGOUT
     // --------------------------------------------------
-
     const handleLogout = async () => {
         try {
             await logout();
-
             navigate('/login');
-
-            if (onClose) {
-                onClose();
-            }
+            if (onClose) onClose();
         } catch (error) {
-            console.error(
-                'Logout error:',
-                error
-            );
+            console.error('Logout error:', error);
         }
     };
 
     // --------------------------------------------------
     // RESULTS BADGE
     // --------------------------------------------------
-
     const getResultsBadgeClass = () => {
-        const resultsNum = parseInt(
-            badges.results,
-            10
-        );
-
-        if (isNaN(resultsNum)) {
-            return '';
-        }
-
-        if (resultsNum >= 70) {
-            return 'success';
-        }
-
-        if (resultsNum < 40) {
-            return 'danger';
-        }
-
+        const resultsNum = parseInt(badges.results, 10);
+        if (isNaN(resultsNum)) return '';
+        if (resultsNum >= 70) return 'success';
+        if (resultsNum < 40) return 'danger';
         return '';
     };
 
     // --------------------------------------------------
     // NAVIGATION GROUPS
     // --------------------------------------------------
-
-    const getNavGroups = () => {
-        const role = normalizeRole(userRole || userData?.role || 'user');
-
+    const groups = useMemo(() => {
         const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
         const isHeadteacher = role === 'headteacher';
         const isDeputyHeadteacher = role === 'deputy-headteacher';
         const isAccountant = role === 'accountant';
-
         const isTeacher = role === 'teacher';
-        const isTeacherOrDeputy = isTeacher  || isDeputyHeadteacher;
-
-        const isStudent =
-            role === 'student';
+        const isTeacherOrDeputy = isTeacher || isDeputyHeadteacher;
+        const studentRole = role === 'student';
 
         // ----------------------------------------------
-        // ADMIN
+        // ADMIN / HEADTEACHER
         // ----------------------------------------------
-
         const adminItems = [
-            {
-                path: '/dashboard',
-                icon: 'fa-tachometer-alt',
-                label: 'Dashboard',
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/students',
-                icon: 'fa-user-graduate',
-                label: 'Students',
-                badge: badges.students,
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/teachers',
-                icon: 'fa-chalkboard-teacher',
-                label: 'Teachers',
-                badge: badges.teachers,
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/exams',
-                icon: 'fa-file-alt',
-                label: 'Exams',
-                badge: badges.exams,
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/results',
-                icon: 'fa-chart-line',
-                label: 'Results',
-                badge: badges.results,
-                badgeClass:
-                    getResultsBadgeClass(),
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/attendance',
-                icon: 'fa-clipboard-check',
-                label: 'Attendance',
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/discipline',
-                icon: 'fa-scale-balanced',
-                label: 'Discipline',
-                show: isHeadteacher 
-            },
-            {
-                path: '/fees',
-                icon: 'fa-coins',
-                label: 'Fee Management',
-                badge: feeBadge,
-                badgeClass: 'danger',
-                show: isAdmin || isAccountant || isHeadteacher
-            },
-            {
-                path: '/communications',
-                icon: 'fa-comment-sms',
-                label: 'Communications',
-                show: isHeadteacher
-            },
-            {
-                path: '/reports',
-                icon: 'fa-chart-pie',
-                label: 'Reports',
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/studentreports',
-                icon: 'fa-file-alt',
-                label: 'Student Reports',
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/school-profile',
-                icon: 'fa-school',
-                label: 'School Profile',
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/audit-logs',
-                icon: 'fa-shield-alt',
-                label: 'Audit Logs',
-                show: isAdmin || isHeadteacher
-            },
-            {
-                path: '/transcripts',
-                icon: 'fa-graduation-cap',
-                label: 'Transcripts',
-                show: isAdmin || isHeadteacher
-            }
+            { path: '/dashboard', icon: 'fa-tachometer-alt', label: 'Dashboard', show: isAdmin || isHeadteacher },
+            { path: '/students', icon: 'fa-user-graduate', label: 'Students', badge: badges.students, show: isAdmin || isHeadteacher },
+            { path: '/teachers', icon: 'fa-chalkboard-teacher', label: 'Teachers', badge: badges.teachers, show: isAdmin || isHeadteacher },
+            { path: '/exams', icon: 'fa-file-alt', label: 'Exams', badge: badges.exams, show: isAdmin || isHeadteacher },
+            { path: '/results', icon: 'fa-chart-line', label: 'Results', badge: badges.results, badgeClass: getResultsBadgeClass(), show: isAdmin || isHeadteacher },
+            { path: '/attendance', icon: 'fa-clipboard-check', label: 'Attendance', show: isAdmin || isHeadteacher },
+            { path: '/discipline', icon: 'fa-scale-balanced', label: 'Discipline', show: isHeadteacher },
+            { path: '/fees', icon: 'fa-coins', label: 'Fee Management', badge: feeBadge, badgeClass: 'danger', show: isAdmin || isAccountant || isHeadteacher },
+            { path: '/communications', icon: 'fa-comment-sms', label: 'Communications', show: isHeadteacher },
+            { path: '/reports', icon: 'fa-chart-pie', label: 'Reports', show: isAdmin || isHeadteacher },
+            { path: '/studentreports', icon: 'fa-file-alt', label: 'Student Reports', show: isAdmin || isHeadteacher },
+            { path: '/school-profile', icon: 'fa-school', label: 'School Profile', show: isAdmin || isHeadteacher },
+            { path: '/audit-logs', icon: 'fa-shield-alt', label: 'Audit Logs', show: isAdmin || isHeadteacher },
+            { path: '/transcripts', icon: 'fa-graduation-cap', label: 'Transcripts', show: isAdmin || isHeadteacher },
         ];
 
         // ----------------------------------------------
-        // TEACHER
+        // TEACHER / DEPUTY
         // ----------------------------------------------
-
         const teacherItems = [
-            {
-                path: '/dashboard',
-                icon: 'fa-chalkboard-teacher',
-                label: 'Dashboard',
-                show: isTeacherOrDeputy
-            },
-            {
-                path: '/students',
-                icon: 'fa-user-graduate',
-                label: 'My Students',
-                show: isTeacherOrDeputy
-            },
-            {
-                path: '/results',
-                icon: 'fa-chart-line',
-                label: 'Results',
-                show: isTeacherOrDeputy
-            },
-            {
-                path: '/attendance',
-                icon: 'fa-clipboard-check',
-                label: 'Attendance',
-                show: isTeacherOrDeputy
-            },
-            {
-                path: '/myreports',
-                icon: 'fa-file-alt',
-                label: 'My Reports',
-                show: isTeacherOrDeputy
-            },
-            {
-                path: '/studentreports',
-                icon: 'fa-file-alt',
-                label: 'Student Reports',
-                show: isDeputyHeadteacher
-            },
-            {
-                path: '/discipline',
-                icon: 'fa-scale-balanced',
-                label: 'Discipline',
-                show: isDeputyHeadteacher
-            }
+            { path: '/dashboard', icon: 'fa-chalkboard-teacher', label: 'Dashboard', show: isTeacherOrDeputy },
+            { path: '/students', icon: 'fa-user-graduate', label: 'My Students', show: isTeacherOrDeputy },
+            { path: '/results', icon: 'fa-chart-line', label: 'Results', show: isTeacherOrDeputy },
+            { path: '/attendance', icon: 'fa-clipboard-check', label: 'Attendance', show: isTeacherOrDeputy },
+            { path: '/myreports', icon: 'fa-file-alt', label: 'My Reports', show: isTeacherOrDeputy },
+            { path: '/studentreports', icon: 'fa-file-alt', label: 'Student Reports', show: isDeputyHeadteacher },
+            { path: '/discipline', icon: 'fa-scale-balanced', label: 'Discipline', show: isDeputyHeadteacher },
         ];
 
         // ----------------------------------------------
-        // STUDENT
+        // STUDENT — the five student pages we've built
         // ----------------------------------------------
-
         const studentItems = [
             {
-                path: '/student-dashboard',
-                icon: 'fa-user-graduate',
-                label: 'My Dashboard',
-                show: isStudent
+                path: '/dashboard',
+                icon: 'fa-home',
+                label: 'Dashboard',
+                show: studentRole,
             },
             {
                 path: '/student-results',
                 icon: 'fa-chart-line',
                 label: 'My Results',
-                show: isStudent
+                show: studentRole,
             },
             {
-                path: '/student-fees',
+                path: '/studentreports',
+                icon: 'fa-file-alt',
+                label: 'Report Form',
+                show: studentRole,
+            },
+            {
+                path: '/attendance',
+                icon: 'fa-clipboard-check',
+                label: 'My Attendance',
+                show: studentRole,
+            },
+            {
+                path: '/fees',
                 icon: 'fa-coins',
                 label: 'My Fees',
-                show: isStudent
-            }
+                show: studentRole,
+            },
         ];
 
         // ----------------------------------------------
         // COMMON
         // ----------------------------------------------
-
         const commonItems = [
-            {
-                path: '/timetable',
-                icon: 'fa-calendar-alt',
-                label: 'Timetable',
-                show: !isAccountant
-            },
-            {
-                path: '/settings',
-                icon: 'fa-user-cog',
-                label: 'My Profile',
-                show: !isAccountant
-            }
+            { path: '/timetable', icon: 'fa-calendar-alt', label: 'Timetable', show: !isAccountant },
+            { path: '/settings', icon: 'fa-user-cog', label: 'My Profile', show: !isAccountant },
         ];
 
-        const visible = (items) => {
-            return items.filter(
-                (item) => item.show
-            );
-        };
+        const visible = (items) => items.filter((i) => i.show);
 
         return {
             main: [
                 ...visible(adminItems),
                 ...visible(teacherItems),
-                ...visible(studentItems)
+                ...visible(studentItems),
             ],
-            common: visible(commonItems)
+            common: visible(commonItems),
         };
-    };
-
-    const groups = getNavGroups();
+    }, [role, badges, feeBadge]);
 
     // --------------------------------------------------
     // ACTIVE PATH
     // --------------------------------------------------
-
     const firstAvailablePath = useMemo(() => {
-        if (groups.main.length > 0) {
-            return groups.main[0].path;
-        }
-
-        if (groups.common.length > 0) {
-            return groups.common[0].path;
-        }
-
+        if (groups.main.length > 0) return groups.main[0].path;
+        if (groups.common.length > 0) return groups.common[0].path;
         return null;
     }, [groups]);
 
     const effectiveActivePath = useMemo(() => {
         const allPaths = [
-            ...groups.main.map(
-                (item) => item.path
-            ),
-            ...groups.common.map(
-                (item) => item.path
-            )
+            ...groups.main.map((item) => item.path),
+            ...groups.common.map((item) => item.path),
         ];
-
-        if (
-            allPaths.includes(
-                location.pathname
-            )
-        ) {
-            return location.pathname;
-        }
-
+        if (allPaths.includes(location.pathname)) return location.pathname;
         return firstAvailablePath;
-    }, [
-        location.pathname,
-        groups,
-        firstAvailablePath
-    ]);
+    }, [location.pathname, groups, firstAvailablePath]);
 
     // --------------------------------------------------
     // RENDER NAV ITEM
     // --------------------------------------------------
-
-    const renderNavItem = (
-        item,
-        index
-    ) => {
-        const active =
-            effectiveActivePath === item.path;
-
+    const renderNavItem = (item, index) => {
+        const active = effectiveActivePath === item.path;
         return (
             <div
-                key={
-                    item.path +
-                    '_' +
-                    index
-                }
-                className={
-                    'nav-item ' +
-                    (active ? 'active' : '')
-                }
-                onClick={() =>
-                    handleNavigation(
-                        item.path
-                    )
-                }
+                key={item.path + '_' + index}
+                className={'nav-item ' + (active ? 'active' : '')}
+                onClick={() => handleNavigation(item.path)}
                 role="button"
                 tabIndex={0}
                 onKeyDown={(event) => {
-                    if (
-                        event.key === 'Enter' ||
-                        event.key === ' '
-                    ) {
-                        handleNavigation(
-                            item.path
-                        );
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        handleNavigation(item.path);
                     }
                 }}
-                aria-current={
-                    active
-                        ? 'page'
-                        : undefined
-                }
+                aria-current={active ? 'page' : undefined}
             >
-                <i
-                    className={
-                        'fas ' +
-                        item.icon
-                    }
-                ></i>
-
-                <span>
-                    {item.label}
-                </span>
-
-                {item.badge !== undefined &&
-                    item.badge > 0 && (
-                        <span
-                            className={
-                                'nav-badge ' +
-                                (item.badgeClass ||
-                                    '')
-                            }
-                        >
-                            {item.badge}
-                        </span>
-                    )}
+                <i className={'fas ' + item.icon}></i>
+                <span>{item.label}</span>
+                {item.badge !== undefined && item.badge > 0 && (
+                    <span className={'nav-badge ' + (item.badgeClass || '')}>
+                        {item.badge}
+                    </span>
+                )}
             </div>
         );
     };
@@ -657,15 +363,9 @@ export default function Sidebar({ isOpen, onClose }) {
     // --------------------------------------------------
     // RENDER
     // --------------------------------------------------
-
     return (
         <>
-            <div
-                className={
-                    'side-nav ' +
-                    (isOpen ? 'open' : '')
-                }
-            >
+            <div className={'side-nav ' + (isOpen ? 'open' : '')}>
                 {/* BRAND */}
                 <div className="side-nav-brand">
                     <div className="brand-logo">
@@ -673,29 +373,19 @@ export default function Sidebar({ isOpen, onClose }) {
                             src="/Logo.png"
                             alt="EduPriva"
                             onError={(event) => {
-                                event.currentTarget.style.display =
-                                    'none';
-
+                                event.currentTarget.style.display = 'none';
                                 event.currentTarget.parentElement.innerHTML =
                                     '<span style="font-size:24px;font-weight:700;color:#1a237e;">EP</span>';
                             }}
                         />
                     </div>
-
-                    <div className="brand-name">
-                        EDUPRIVA
-                    </div>
+                    <div className="brand-name">EDUPRIVA</div>
                 </div>
 
                 {/* NAVIGATION */}
                 <nav className="side-nav-menu">
-                    {groups.main.map(
-                        renderNavItem
-                    )}
-
-                    {groups.common.map(
-                        renderNavItem
-                    )}
+                    {groups.main.map(renderNavItem)}
+                    {groups.common.map(renderNavItem)}
                 </nav>
 
                 {/* USER FOOTER */}
@@ -706,78 +396,40 @@ export default function Sidebar({ isOpen, onClose }) {
                                 <img
                                     src={userAvatar}
                                     alt="Profile"
-                                    onError={(
-                                        event
-                                    ) => {
-                                        event.currentTarget.style.display =
-                                            'none';
-
+                                    onError={(event) => {
+                                        event.currentTarget.style.display = 'none';
                                         event.currentTarget.parentElement.textContent =
-                                            userName
-                                                .charAt(
-                                                    0
-                                                )
-                                                .toUpperCase();
+                                            userName.charAt(0).toUpperCase();
                                     }}
                                 />
                             ) : (
-                                <span>
-                                    {userName
-                                        .charAt(
-                                            0
-                                        )
-                                        .toUpperCase()}
-                                </span>
+                                <span>{userName.charAt(0).toUpperCase()}</span>
                             )}
                         </div>
-
                         <div className="user-info-mini">
-                            <div className="user-name">
-                                {userName}
-                            </div>
-
-                            <div className="user-email">
-                                {userEmail}
-                            </div>
+                            <div className="user-name">{userName}</div>
+                            <div className="user-email">{userEmail}</div>
                         </div>
                     </div>
-
                     <div
                         className="logout-btn"
-                        onClick={
-                            handleLogout
-                        }
+                        onClick={handleLogout}
                         role="button"
                         tabIndex={0}
-                        onKeyDown={(
-                            event
-                        ) => {
-                            if (
-                                event.key ===
-                                    'Enter' ||
-                                event.key === ' '
-                            ) {
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
                                 handleLogout();
                             }
                         }}
                     >
                         <i className="fas fa-sign-out-alt"></i>
-
-                        <span>
-                            Logout
-                        </span>
+                        <span>Logout</span>
                     </div>
                 </div>
             </div>
 
             {/* MOBILE OVERLAY */}
-            <div
-                className={
-                    'overlay ' +
-                    (isOpen ? 'show' : '')
-                }
-                onClick={onClose}
-            ></div>
+            <div className={'overlay ' + (isOpen ? 'show' : '')} onClick={onClose}></div>
         </>
     );
 }
