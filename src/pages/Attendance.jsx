@@ -7,7 +7,7 @@ import { useSchool } from '../context/SchoolContext';
 import { useSync } from '../context/SyncContext';
 import { db } from '../firebase';
 import {
-    doc, getDoc, collection, query, where, getDocs
+    doc, getDoc, collection, query, where, getDocs, limit
 } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
@@ -24,6 +24,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 import { showAppNotice } from '../utils/appNotice';
+
 // ------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------
@@ -54,11 +55,38 @@ const REPORT_TYPES = [
     { value: 'chronic', label: 'Chronic Absentees' },
 ];
 
+// Student: shared monthly status breakdown
+function buildMonthlyBuckets(records) {
+    const map = new Map();
+    records.forEach((r) => {
+        const key = (r.date || '').slice(0, 7); // YYYY-MM
+        if (!map.has(key)) {
+            map.set(key, {
+                key,
+                label: new Date(key + '-01').toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+                present: 0, absent: 0, late: 0, excused: 0, marks: 0,
+            });
+        }
+        const m = map.get(key);
+        m.marks += 1;
+        m[r.status] = (m[r.status] || 0) + 1;
+    });
+    return [...map.values()]
+        .sort((a, b) => b.key.localeCompare(a.key))
+        .map((m) => ({
+            ...m,
+            rate: m.marks ? Math.round(((m.present + m.late) / m.marks) * 100) : 0,
+        }));
+}
+
 export default function Attendance() {
     const navigate = useNavigate();
     const { currentUser, userData, userRole } = useAuth();
     const { getLevelClasses, configs } = useSchool();
     const { isOnline, addToSyncQueue } = useSync();
+
+    const role = normalizeRole(userRole || userData?.role || 'teacher');
+    const isStudent = role === 'student';
 
     // ---- Access resolution ------------------------------------------------
     const [loading, setLoading] = useState(true);
@@ -97,9 +125,18 @@ export default function Attendance() {
     const [reporting, setReporting] = useState(false);
     const [classReportStats, setClassReportStats] = useState(null);
 
-    // The class-scope view data (fetched independently by "View")
     const [classScopeView, setClassScopeView] = useState(null);
     const [viewLoading, setViewLoading] = useState(false);
+
+    /* =========================================================
+       STUDENT-ONLY STATE
+       ========================================================= */
+    const [myStudent, setMyStudent] = useState(null);
+    const [myLoading, setMyLoading] = useState(false);
+    const [myRecords, setMyRecords] = useState([]);            // personal daily log
+    const [myFrom, setMyFrom] = useState(startOfMonth());
+    const [myTo, setMyTo] = useState(todayISO());
+    const [myExporting, setMyExporting] = useState(false);
 
     useEffect(() => {
         if (!schoolData || reportType !== 'term') return;
@@ -108,25 +145,22 @@ export default function Attendance() {
         setReportTo(schoolData.currentTermEnd || todayISO());
     }, [schoolData, reportType]);
 
-    // Reset the in-page view when filters change, so the user knows to
-    // re-run "View" to see the new numbers.
     useEffect(() => {
         setClassReportStats(null);
         setClassScopeView(null);
     }, [reportClass, reportType, reportDate, reportFrom, reportTo, reportTerm]);
 
-    // Reset search whenever class/date/session changes so the roster
-    // view always starts clean.
     useEffect(() => {
         setRosterSearch('');
     }, [selectedClass, selectedDate, selectedSession]);
 
-    // ---- Notifications ----------------------------------------------------
     const showNotification = useCallback((message, type = 'info') => {
         showAppNotice(message, type);
     }, []);
 
-    // ---- Bootstrap --------------------------------------------------------
+    /* =========================================================
+       Bootstrap
+       ========================================================= */
     useEffect(() => {
         if (!currentUser || !userData) return;
         let cancelled = false;
@@ -143,10 +177,15 @@ export default function Attendance() {
                 if (cancelled) return;
                 setSchoolData(data);
 
-                const role = normalizeRole(userRole || userData?.role || 'teacher');
                 const admin = isSchoolAdminRole(role);
                 setIsAdmin(admin);
-                setActiveTab(admin ? 'reports' : 'take');
+
+                if (isStudent) {
+                    // Students don't take attendance. Default tab is their report.
+                    setActiveTab('reports');
+                } else {
+                    setActiveTab(admin ? 'reports' : 'take');
+                }
 
                 const classTeachers = data.classTeachers || {};
                 const mine = Object.entries(classTeachers)
@@ -155,7 +194,7 @@ export default function Attendance() {
 
                 setAssignedClasses(mine);
 
-                if (!admin && mine.length === 0) {
+                if (!admin && !isStudent && mine.length === 0) {
                     showNotification('You are not assigned as a class teacher.', 'warning');
                 } else {
                     setSelectedClass(mine[0] || '');
@@ -173,8 +212,238 @@ export default function Attendance() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentUser?.uid, userData?.schoolId]);
 
-    // ---- Load roster when class changes -----------------------------------
+    /* =========================================================
+       STUDENT: load own record + own attendance
+       ========================================================= */
     useEffect(() => {
+        if (!isStudent) return;
+        const schoolId = userData?.schoolId;
+        const email = userData?.email;
+        if (!schoolId || !email) return;
+
+        let cancelled = false;
+        (async () => {
+            setMyLoading(true);
+            try {
+                const snap = await getDocs(query(
+                    collection(db, 'students'),
+                    where('schoolId', '==', schoolId),
+                    where('email', '==', email),
+                    limit(1)
+                ));
+                if (cancelled) return;
+                if (snap.empty) {
+                    showNotification('Your student record was not found. Please contact the school office.', 'error');
+                    setMyStudent(null);
+                    return;
+                }
+                const docData = snap.docs[0];
+                setMyStudent({ id: docData.id, ...docData.data() });
+            } catch (e) {
+                console.error('Failed to load own student record:', e);
+                showNotification('Failed to load your attendance: ' + e.message, 'error');
+            } finally {
+                if (!cancelled) setMyLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isStudent, userData?.schoolId, userData?.email]);
+
+    const loadMyAttendance = useCallback(async () => {
+        if (!isStudent || !myStudent || !schoolData?.id) return;
+        setMyLoading(true);
+        try {
+            // Pull the class's records in the range, then filter down to this student.
+            const records = await listAttendanceRecords({
+                schoolId: schoolData.id,
+                cls: myStudent.class,
+                fromDate: myFrom,
+                toDate: myTo,
+                max: 500,
+            });
+
+            const mine = [];
+            (records || []).forEach((rec) => {
+                const entriesArr = Array.isArray(rec.entries) ? rec.entries : [];
+                const hit = entriesArr.find((e) => e.studentId === myStudent.id);
+                if (!hit) return;
+                mine.push({
+                    id: rec.id,
+                    date: rec.date,
+                    session: rec.session,
+                    class: rec.class,
+                    status: hit.status || 'present',
+                    note: hit.note || '',
+                    takenByName: rec.takenByName || '',
+                });
+            });
+
+            // Sort descending by date
+            mine.sort((a, b) => {
+                if (a.date !== b.date) return String(b.date).localeCompare(String(a.date));
+                return String(a.session).localeCompare(String(b.session));
+            });
+
+            setMyRecords(mine);
+        } catch (e) {
+            console.error('Failed to load own attendance:', e);
+            showNotification('Failed to load your attendance: ' + e.message, 'error');
+            setMyRecords([]);
+        } finally {
+            setMyLoading(false);
+        }
+    }, [isStudent, myStudent, schoolData?.id, myFrom, myTo, showNotification]);
+
+    useEffect(() => {
+        if (isStudent && myStudent) {
+            loadMyAttendance();
+        }
+    }, [isStudent, myStudent, myFrom, myTo, loadMyAttendance]);
+
+    // Student attendance totals + monthly breakdown
+    const myStats = useMemo(() => {
+        const totals = { present: 0, absent: 0, late: 0, excused: 0, marks: 0 };
+        myRecords.forEach((r) => {
+            totals.marks += 1;
+            if (totals[r.status] !== undefined) totals[r.status] += 1;
+        });
+        const rate = totals.marks
+            ? Math.round(((totals.present + totals.late) / totals.marks) * 100)
+            : 0;
+        return { ...totals, rate };
+    }, [myRecords]);
+
+    const myMonthly = useMemo(() => buildMonthlyBuckets(myRecords), [myRecords]);
+
+    /* =========================================================
+       STUDENT: export my attendance PDF
+       ========================================================= */
+    const handleExportMyPDF = async () => {
+        if (!myStudent) {
+            showNotification('Your record is still loading...', 'warning');
+            return;
+        }
+        if (myRecords.length === 0) {
+            showNotification('No attendance records to export for this range.', 'warning');
+            return;
+        }
+        setMyExporting(true);
+        try {
+            const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+            // Header band
+            pdf.setFillColor(26, 35, 126);
+            pdf.rect(0, 0, 210, 30, 'F');
+            pdf.setTextColor(255, 255, 255);
+            pdf.setFontSize(16);
+            pdf.text(schoolData?.name || schoolData?.schoolName || 'School', 14, 13);
+            pdf.setFontSize(11);
+            pdf.text('Personal Attendance Report', 14, 20);
+            pdf.setFontSize(9);
+            pdf.text(
+                `${myFrom} to ${myTo}  •  Attendance rate ${myStats.rate}%`,
+                14, 26
+            );
+
+            // Student identity block
+            pdf.setTextColor(30, 41, 59);
+            pdf.setFontSize(11);
+            pdf.text('Student', 14, 42);
+            pdf.setFontSize(13);
+            pdf.text(`${myStudent.firstName || ''} ${myStudent.lastName || ''}`.trim(), 14, 48);
+            pdf.setFontSize(10);
+            pdf.setTextColor(90, 90, 90);
+            pdf.text(
+                `Admission: ${myStudent.admissionNumber || myStudent.studentId || '—'}   •   Class: ${myStudent.class || '—'}` +
+                (myStudent.level ? ` (${LEVEL_DISPLAY_NAMES[myStudent.level] || myStudent.level})` : ''),
+                14, 54
+            );
+
+            // Stats strip
+            autoTable(pdf, {
+                startY: 60,
+                body: [
+                    ['Sessions', 'Present', 'Absent', 'Late', 'Excused', 'Rate'],
+                    [
+                        String(myStats.marks),
+                        String(myStats.present),
+                        String(myStats.absent),
+                        String(myStats.late),
+                        String(myStats.excused),
+                        `${myStats.rate}%`,
+                    ],
+                ],
+                theme: 'grid',
+                styles: { fontSize: 10, cellPadding: 3, halign: 'center' },
+                headStyles: { fillColor: [26, 35, 126], textColor: 255, fontStyle: 'bold' },
+                bodyStyles: { textColor: 40 },
+            });
+
+            // Monthly summary
+            if (myMonthly.length > 0) {
+                autoTable(pdf, {
+                    startY: pdf.lastAutoTable.finalY + 8,
+                    head: [['Month', 'Sessions', 'Present', 'Absent', 'Late', 'Excused', 'Rate']],
+                    body: myMonthly.map((m) => [
+                        m.label, String(m.marks), String(m.present), String(m.absent),
+                        String(m.late), String(m.excused), `${m.rate}%`,
+                    ]),
+                    styles: { fontSize: 9, cellPadding: 3 },
+                    headStyles: { fillColor: [26, 35, 126], textColor: 255 },
+                    margin: { left: 14, right: 14 },
+                });
+            }
+
+            // Daily log
+            autoTable(pdf, {
+                startY: pdf.lastAutoTable.finalY + 8,
+                head: [['Date', 'Session', 'Status', 'Note']],
+                body: myRecords.slice(0, 200).map((r) => [
+                    r.date || '—',
+                    (r.session || '').toString().replace(/^\w/, (c) => c.toUpperCase()),
+                    (r.status || '').toString().replace(/^\w/, (c) => c.toUpperCase()),
+                    r.note || '',
+                ]),
+                styles: { fontSize: 9, cellPadding: 2 },
+                headStyles: { fillColor: [26, 35, 126], textColor: 255 },
+                columnStyles: {
+                    0: { cellWidth: 26 },
+                    1: { cellWidth: 26 },
+                    2: { cellWidth: 26 },
+                    3: { cellWidth: 'auto' },
+                },
+                margin: { left: 14, right: 14 },
+            });
+
+            // Footer
+            const pageCount = pdf.internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                pdf.setPage(i);
+                pdf.setFontSize(8);
+                pdf.setTextColor(150);
+                pdf.text(
+                    `Generated ${new Date().toLocaleString()}  •  Page ${i} of ${pageCount}`,
+                    105, 292, { align: 'center' }
+                );
+            }
+
+            const filename = `attendance_${(myStudent.admissionNumber || myStudent.studentId || 'student')}_${myFrom}_to_${myTo}.pdf`;
+            const saved = await savePdfBlob(pdf.output('blob'), filename);
+            showNotification(`Saved ${saved.filename} to ${saved.location || 'your Downloads folder'}.`, 'success');
+        } catch (e) {
+            console.error('Student attendance PDF failed:', e);
+            showNotification('Failed to generate your report: ' + e.message, 'error');
+        } finally {
+            setMyExporting(false);
+        }
+    };
+
+    /* =========================================================
+       Teacher/admin: load roster when class changes
+       ========================================================= */
+    useEffect(() => {
+        if (isStudent) return;
         if (!selectedClass || !schoolData) return;
         (async () => {
             try {
@@ -201,9 +470,11 @@ export default function Attendance() {
             }
         })();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedClass, selectedDate, selectedSession, schoolData]);
+    }, [selectedClass, selectedDate, selectedSession, schoolData, isStudent]);
 
-    // ---- Helpers ----------------------------------------------------------
+    /* =========================================================
+       Helpers
+       ========================================================= */
     const findLevelForClass = useCallback((cls) => {
         if (!cls) return '';
         for (const [level, list] of Object.entries(configs?.customClasses
@@ -233,7 +504,6 @@ export default function Attendance() {
 
     const totalStudents = roster.length;
 
-    // ---- Search-filtered roster (view-only; save still uses whole roster) --
     const filteredRoster = useMemo(() => {
         const term = rosterSearch.trim().toLowerCase();
         if (!term) return roster;
@@ -248,7 +518,6 @@ export default function Attendance() {
         });
     }, [roster, rosterSearch]);
 
-    // ---- Search-filtered history -----------------------------------------
     const filteredHistory = useMemo(() => {
         const term = historySearch.trim().toLowerCase();
         if (!term) return historyRecords;
@@ -260,7 +529,9 @@ export default function Attendance() {
         });
     }, [historyRecords, historySearch]);
 
-    // ---- Take attendance handlers -----------------------------------------
+    /* =========================================================
+       Teacher: Take attendance handlers
+       ========================================================= */
     const setStudentStatus = (studentId, status) => {
         setEntries((prev) => ({
             ...prev,
@@ -344,7 +615,9 @@ export default function Attendance() {
         }
     };
 
-    // ---- History ----------------------------------------------------------
+    /* =========================================================
+       History / reports (teacher/admin)
+       ========================================================= */
     const loadHistory = async () => {
         if (!schoolData) return;
         setHistoryLoading(true);
@@ -365,11 +638,10 @@ export default function Attendance() {
     };
 
     useEffect(() => {
-        if (activeTab === 'history') loadHistory();
+        if (activeTab === 'history' && !isStudent) loadHistory();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab]);
 
-    // ---- Reports ----------------------------------------------------------
     const buildReportRequest = () => {
         const allClasses = isAdmin && reportClass === '__all__';
         const cls = allClasses ? '' : (reportClass || selectedClass);
@@ -582,11 +854,269 @@ export default function Attendance() {
         }
     };
 
-    // ------------------------------------------------------------
-    // Access denied screen
-    // ------------------------------------------------------------
+    /* =========================================================
+       RENDER
+       ========================================================= */
     if (loading) return <LoadingSpinner fullScreen text="Loading attendance…" />;
 
+    // =========================================================
+    // STUDENT VIEW
+    // =========================================================
+    if (isStudent) {
+        if (myLoading && !myStudent) {
+            return <LoadingSpinner fullScreen text="Loading your attendance..." />;
+        }
+
+        if (!myStudent) {
+            return (
+                <Layout title="My Attendance">
+                    <div style={{
+                        background: 'white', borderRadius: 12, padding: 40,
+                        textAlign: 'center', boxShadow: '0 4px 6px rgba(0,0,0,0.07)',
+                    }}>
+                        <i className="fas fa-user-slash" style={{ fontSize: 64, color: '#e0e6ed', marginBottom: 20 }}></i>
+                        <h2 style={{ color: 'var(--secondary)', marginBottom: 10 }}>
+                            Student record not found
+                        </h2>
+                        <p style={{ color: 'var(--gray)', maxWidth: 500, margin: '0 auto' }}>
+                            We couldn't locate your student record for this school.
+                            Please contact the school office so they can confirm your account.
+                        </p>
+                    </div>
+                </Layout>
+            );
+        }
+
+        const rateColor = myStats.rate >= 90 ? 'var(--success)'
+            : myStats.rate >= 75 ? 'var(--warning)'
+            : myStats.rate > 0 ? 'var(--danger)'
+            : 'var(--gray)';
+
+        return (
+            <Layout title="My Attendance">
+                <style>{`
+                    .att-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:15px; margin-bottom:25px; }
+                    .att-stat { background:white; border-radius:12px; padding:18px; box-shadow:0 4px 6px rgba(0,0,0,0.07); }
+                    .att-stat-label { font-size:11px; text-transform:uppercase; color:var(--gray); letter-spacing:.5px; font-weight:600; }
+                    .att-stat-value { font-size:26px; font-weight:700; margin-top:4px; }
+                    .att-panel { background:white; border-radius:12px; padding:22px; box-shadow:0 4px 6px rgba(0,0,0,0.07); }
+                    .att-btn { padding:10px 18px; border-radius:8px; font-weight:600; border:none; cursor:pointer; display:inline-flex; align-items:center; gap:8px; font-size:14px; }
+                    .att-btn-primary { background:var(--primary); color:white; }
+                    .att-btn-outline { background:transparent; border:2px solid var(--border); color:var(--secondary); }
+                    .att-btn:disabled { opacity:.6; cursor:not-allowed; }
+                    .att-field label { display:block; font-size:13px; font-weight:600; color:var(--secondary); margin-bottom:5px; }
+                    .att-field input { width:100%; padding:10px 12px; border:2px solid var(--border); border-radius:8px; font-size:14px; background:white; }
+                    .att-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:15px; margin-bottom:15px; }
+                `}</style>
+
+                {/* Header card */}
+                <div style={{
+                    background: 'linear-gradient(135deg, #1a237e, #3949ab)',
+                    color: 'white', borderRadius: 16, padding: 24,
+                    marginBottom: 20, display: 'flex', gap: 20,
+                    alignItems: 'center', flexWrap: 'wrap',
+                }}>
+                    <div style={{
+                        width: 64, height: 64, borderRadius: 16,
+                        background: 'rgba(255,255,255,0.18)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 24, fontWeight: 700,
+                    }}>
+                        {`${myStudent.firstName?.[0] || ''}${myStudent.lastName?.[0] || ''}`.toUpperCase() || 'S'}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ fontSize: 13, opacity: 0.85, fontWeight: 600, letterSpacing: 0.5 }}>
+                            MY ATTENDANCE
+                        </div>
+                        <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>
+                            {myStudent.firstName} {myStudent.lastName}
+                        </div>
+                        <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>
+                            {myStudent.admissionNumber || myStudent.studentId || '—'}
+                            {' · '}{myStudent.class || '—'}
+                            {myStudent.level && ` · ${LEVEL_DISPLAY_NAMES[myStudent.level] || myStudent.level}`}
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+                        <div style={{
+                            fontSize: 32, fontWeight: 800,
+                            color: myStats.rate >= 90 ? '#86efac'
+                                : myStats.rate >= 75 ? '#fde68a'
+                                : myStats.rate > 0 ? '#fecaca'
+                                : 'rgba(255,255,255,0.7)'
+                        }}>
+                            {myLoading ? '…' : `${myStats.rate}%`}
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.85 }}>Overall rate</div>
+                    </div>
+                </div>
+
+                {/* Range picker */}
+                <div style={{
+                    background: 'white', borderRadius: 12, padding: 16,
+                    boxShadow: '0 4px 6px rgba(0,0,0,0.07)', marginBottom: 20,
+                }}>
+                    <div className="att-grid" style={{ marginBottom: 12 }}>
+                        <div className="att-field">
+                            <label>From</label>
+                            <input type="date" value={myFrom} max={myTo} onChange={(e) => setMyFrom(e.target.value)} />
+                        </div>
+                        <div className="att-field">
+                            <label>To</label>
+                            <input type="date" value={myTo} min={myFrom} max={todayISO()} onChange={(e) => setMyTo(e.target.value)} />
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        <button
+                            className="att-btn att-btn-outline"
+                            onClick={loadMyAttendance}
+                            disabled={myLoading}
+                        >
+                            <i className="fas fa-sync-alt"></i>
+                            {myLoading ? 'Refreshing…' : 'Refresh'}
+                        </button>
+                        <button
+                            className="att-btn att-btn-primary"
+                            onClick={handleExportMyPDF}
+                            disabled={myExporting || myRecords.length === 0}
+                        >
+                            <i className="fas fa-file-pdf"></i>
+                            {myExporting ? 'Exporting…' : 'Export My Report (PDF)'}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Stats */}
+                <div className="att-stats">
+                    <div className="att-stat">
+                        <div className="att-stat-label">Attendance rate</div>
+                        <div className="att-stat-value" style={{ color: rateColor }}>{myStats.rate}%</div>
+                    </div>
+                    <div className="att-stat">
+                        <div className="att-stat-label">Sessions</div>
+                        <div className="att-stat-value" style={{ color: '#1a237e' }}>{myStats.marks}</div>
+                    </div>
+                    <div className="att-stat">
+                        <div className="att-stat-label">Present</div>
+                        <div className="att-stat-value" style={{ color: '#16a34a' }}>{myStats.present}</div>
+                    </div>
+                    <div className="att-stat">
+                        <div className="att-stat-label">Absent</div>
+                        <div className="att-stat-value" style={{ color: '#dc2626' }}>{myStats.absent}</div>
+                    </div>
+                    <div className="att-stat">
+                        <div className="att-stat-label">Late</div>
+                        <div className="att-stat-value" style={{ color: '#d97706' }}>{myStats.late}</div>
+                    </div>
+                    <div className="att-stat">
+                        <div className="att-stat-label">Excused</div>
+                        <div className="att-stat-value" style={{ color: '#2563eb' }}>{myStats.excused}</div>
+                    </div>
+                </div>
+
+                {/* Monthly breakdown */}
+                {myMonthly.length > 0 && (
+                    <>
+                        <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--secondary)', margin: '8px 0 12px' }}>
+                            <i className="fas fa-calendar"></i> Monthly Breakdown
+                        </h3>
+                        <div className="att-panel" style={{ padding: 0, overflowX: 'auto', marginBottom: 20 }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                <thead>
+                                    <tr style={{ background: '#f8fafc' }}>
+                                        {['Month', 'Sessions', 'Present', 'Absent', 'Late', 'Excused', 'Rate'].map((h) => (
+                                            <th key={h} style={{
+                                                padding: 10, textAlign: 'left',
+                                                fontSize: 12, textTransform: 'uppercase',
+                                                color: 'var(--gray)', fontWeight: 700,
+                                            }}>{h}</th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {myMonthly.map((m) => (
+                                        <tr key={m.key} style={{ borderTop: '1px solid var(--border)' }}>
+                                            <td style={{ padding: 10, fontWeight: 600 }}>{m.label}</td>
+                                            <td style={{ padding: 10 }}>{m.marks}</td>
+                                            <td style={{ padding: 10, color: '#16a34a', fontWeight: 600 }}>{m.present}</td>
+                                            <td style={{ padding: 10, color: '#dc2626', fontWeight: 600 }}>{m.absent}</td>
+                                            <td style={{ padding: 10, color: '#d97706', fontWeight: 600 }}>{m.late}</td>
+                                            <td style={{ padding: 10, color: '#2563eb', fontWeight: 600 }}>{m.excused}</td>
+                                            <td style={{ padding: 10, fontWeight: 700, color: 'var(--primary)' }}>{m.rate}%</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </>
+                )}
+
+                {/* Daily log */}
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--secondary)', margin: '8px 0 12px' }}>
+                    <i className="fas fa-clipboard-list"></i> Daily Log ({myRecords.length})
+                </h3>
+                {myLoading ? (
+                    <div className="att-panel" style={{ textAlign: 'center', padding: 30, color: 'var(--gray)' }}>
+                        <i className="fas fa-spinner fa-spin" style={{ fontSize: 24, marginBottom: 10 }}></i>
+                        <div>Loading your attendance…</div>
+                    </div>
+                ) : myRecords.length === 0 ? (
+                    <div className="att-panel" style={{ textAlign: 'center', padding: 40, color: 'var(--gray)' }}>
+                        <i className="fas fa-calendar-times" style={{ fontSize: 48, display: 'block', marginBottom: 12, color: '#e0e6ed' }}></i>
+                        No attendance records found for this range.
+                    </div>
+                ) : (
+                    <div className="att-panel" style={{ padding: 0, overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <thead>
+                                <tr style={{ background: '#f8fafc' }}>
+                                    {['Date', 'Session', 'Status', 'Note'].map((h) => (
+                                        <th key={h} style={{
+                                            padding: 10, textAlign: 'left',
+                                            fontSize: 12, textTransform: 'uppercase',
+                                            color: 'var(--gray)', fontWeight: 700,
+                                        }}>{h}</th>
+                                    ))}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {myRecords.map((r) => {
+                                    const meta = STATUS_MAP[r.status] || STATUS_MAP.present;
+                                    return (
+                                        <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                                            <td style={{ padding: 10 }}>{r.date || '—'}</td>
+                                            <td style={{ padding: 10, textTransform: 'capitalize' }}>{r.session || '—'}</td>
+                                            <td style={{ padding: 10 }}>
+                                                <span style={{
+                                                    display: 'inline-block',
+                                                    padding: '3px 10px',
+                                                    borderRadius: 20,
+                                                    fontSize: 12,
+                                                    fontWeight: 700,
+                                                    background: meta.bg,
+                                                    color: meta.color,
+                                                    textTransform: 'capitalize',
+                                                }}>
+                                                    {meta.label}
+                                                </span>
+                                            </td>
+                                            <td style={{ padding: 10, color: 'var(--gray)', fontSize: 13 }}>
+                                                {r.note || '—'}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </Layout>
+        );
+    }
+
+    // =========================================================
+    // TEACHER/ADMIN VIEW
+    // =========================================================
     if (!isAdmin && assignedClasses.length === 0) {
         return (
             <Layout title="Attendance">
@@ -608,9 +1138,6 @@ export default function Attendance() {
         );
     }
 
-    // ------------------------------------------------------------
-    // Main page
-    // ------------------------------------------------------------
     return (
         <Layout title="Attendance">
             <style>{`
@@ -765,7 +1292,6 @@ export default function Attendance() {
                             </div>
                         ) : (
                             <>
-                                {/* Search box for the roster */}
                                 <div className="att-search-wrap">
                                     <div className="att-search-input-wrap">
                                         <i className="fas fa-search att-search-icon"></i>
@@ -916,7 +1442,6 @@ export default function Attendance() {
                             </div>
                         ) : (
                             <>
-                                {/* Search box for history records */}
                                 <div className="att-search-wrap">
                                     <div className="att-search-input-wrap">
                                         <i className="fas fa-search att-search-icon"></i>
@@ -1090,7 +1615,6 @@ export default function Attendance() {
                         </p>
                     )}
 
-                    {/* Two separate buttons */}
                     <div style={{ marginTop: 14, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                         <button
                             className="att-btn att-btn-outline"
@@ -1111,7 +1635,6 @@ export default function Attendance() {
                         </button>
                     </div>
 
-                    {/* ========== Inline View: School-wide ========== */}
                     {classReportStats && reportClass === '__all__' && (
                         <div style={{ marginTop: 20 }}>
                             <div className="att-stats">
@@ -1146,7 +1669,6 @@ export default function Attendance() {
                         </div>
                     )}
 
-                    {/* ========== Inline View: Single class ========== */}
                     {classScopeView && (
                         <div style={{ marginTop: 20 }}>
                             <div className="att-stats">
