@@ -51,8 +51,16 @@ const getEmailDomain = (email) => {
     if (!email || typeof email !== 'string') return '';
     const at = email.lastIndexOf('@');
     if (at === -1) return '';
-    return email.slice(at + 1).trim().toLowerCase();
+    return email
+        .slice(at + 1)
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/\.+$/, ''); // strip trailing dots
 };
+
+const normalizeEmail = (email) =>
+    String(email || '').trim().toLowerCase();
 
 // --------------------------------------------------------------
 // Student first-login password change modal
@@ -75,7 +83,6 @@ function StudentPasswordChangeModal({ onDone, onCancel }) {
             const user = getAuth().currentUser;
             if (!user) throw new Error('Session expired. Please sign in again.');
             await updatePassword(user, newPassword);
-            // Best-effort: clear the mustChangePassword flag on the student doc.
             const studentDocId = sessionStorage.getItem('userId');
             if (studentDocId) {
                 await updateDoc(doc(db, 'students', studentDocId), {
@@ -326,19 +333,12 @@ export default function Login() {
 
     // ----------------------------------------------------------
     // Auto-detect school from an email's domain.
-    //
-    // Order of resolution:
-    //   1. schools.emailDomain == domain        (fast, indexed)
-    //   2. schools.schoolDomain == domain       (legacy field)
-    //   3. Fallback: scan students in cached_users (offline-first)
-    //
-    // Returns { schoolId, schoolName, schoolDomain } or null.
     // ----------------------------------------------------------
     const findSchoolByEmailDomain = async (email) => {
         const domain = getEmailDomain(email);
         if (!domain) return null;
 
-        // 1. Fast path — try direct query on schools collection.
+        // 1. Fast path — direct query on schools.emailDomain
         if (isOnline) {
             try {
                 const byDomain = await getDocs(query(
@@ -359,11 +359,11 @@ export default function Login() {
                 console.warn('findSchoolByEmailDomain query failed:', e.message);
             }
 
-            // 2. Legacy field name fallback.
+            // 2. Legacy field name fallback
             try {
                 const byLegacy = await getDocs(query(
                     collection(db, 'schools'),
-                    where('schoolDomain', '==', domain),
+                    where('schoolDomain', '==', domain.replace(/\.com$/, '')),
                     limit(1)
                 ));
                 if (!byLegacy.empty) {
@@ -380,7 +380,7 @@ export default function Login() {
             }
         }
 
-        // 3. Offline fallback — scan the cached users list.
+        // 3. Offline fallback — cached users
         const hit = cachedUsers.find((u) => {
             if (!u.email) return false;
             return getEmailDomain(u.email) === domain && u.schoolId;
@@ -398,13 +398,14 @@ export default function Login() {
 
     // ----------------------------------------------------------
     // Find the student's doc by email + (optionally) schoolId.
-    // Matches the login flow used by Attendance/Fees/Dashboard.
+    // Runs AFTER Firebase sign-in so rules allow the read.
     // ----------------------------------------------------------
     const findStudentDoc = async ({ email, schoolId }) => {
-        if (!email) return null;
+        const cleanEmail = normalizeEmail(email);
+        if (!cleanEmail) return null;
 
         const buildQuery = (sid) => {
-            const constraints = [where('email', '==', email)];
+            const constraints = [where('email', '==', cleanEmail)];
             if (sid) constraints.unshift(where('schoolId', '==', sid));
             return query(collection(db, 'students'), ...constraints, limit(1));
         };
@@ -417,7 +418,6 @@ export default function Login() {
                     return { id: d.id, ...d.data() };
                 }
                 // If schoolId was provided but nothing matched, retry by email only
-                // (helps when schoolId normalization differs between docs).
                 if (schoolId) {
                     const retry = await getDocs(buildQuery(null));
                     if (!retry.empty) {
@@ -431,7 +431,8 @@ export default function Login() {
         }
         // Offline fallback
         const hit = cachedUsers.find((u) =>
-            u.email === email && (!schoolId || u.schoolId === schoolId)
+            normalizeEmail(u.email) === cleanEmail &&
+            (!schoolId || u.schoolId === schoolId)
         );
         return hit || null;
     };
@@ -795,149 +796,156 @@ export default function Login() {
     };
 
     // ----------------------------------------------------------
-    // STUDENT LOGIN — email + admission number (no school code!)
-    //
-    // 1. Auto-detect school from email domain.
-    // 2. Locate the student doc by email + schoolId.
-    // 3. Attempt Firebase sign-in with admissionNumber as password.
-    // 4. Force password change if mustChangePassword is true
-    //    OR if passwordChangedAt is missing.
+    // STUDENT LOGIN — email + admission number
+    //   1. Auto-detect school from email domain.
+    //   2. Sign in with (email, admissionNumber) — Firebase verifies.
+    //   3. NOW authenticated — find the student doc safely.
+    //   4. Persist session and prompt for password change if needed.
     // ----------------------------------------------------------
     const handleStudentLogin = async (e) => {
-    e.preventDefault();
-    clearMessages();
+        e.preventDefault();
+        clearMessages();
 
-    if (!isOnline) {
-        showMessage('Connect to the internet for your first sign-in.', 'error');
-        return;
-    }
-    if (!validateEmail(studentEmail)) {
-        showMessage('Please enter a valid email address.', 'error');
-        return;
-    }
-    const admission = String(studentAdmissionNumber || '').trim();
-    if (!admission) {
-        showMessage('Please enter your admission number.', 'error');
-        return;
-    }
-
-    setLoading(true);
-    try {
-        // ── 1. Detect school from email domain (public read on schools) ──
-        const school = await findSchoolByEmailDomain(studentEmail);
-        if (!school) {
-            showMessage(
-                "We couldn't find a school matching your email. " +
-                'Please double-check your email, or contact your school office if you think this is a mistake.',
-                'error'
-            );
-            setLoading(false);
+        if (!isOnline) {
+            showMessage('Connect to the internet for your first sign-in.', 'error');
+            return;
+        }
+        if (!validateEmail(studentEmail)) {
+            showMessage('Please enter a valid email address.', 'error');
+            return;
+        }
+        const admission = String(studentAdmissionNumber || '').trim();
+        if (!admission) {
+            showMessage('Please enter your admission number.', 'error');
             return;
         }
 
-        // ── 2. Sign in FIRST — Firebase verifies email + password ──
-        let credential;
+        setLoading(true);
         try {
-            credential = await signInWithEmailAndPassword(
-                auth,
-                studentEmail.trim(),
-                admission
-            );
-        } catch (err) {
-            if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+            // ── 1. Detect school from email domain ──
+            const school = await findSchoolByEmailDomain(studentEmail);
+            if (!school) {
                 showMessage(
-                    'Your password has already been changed. Sign in with your new password ' +
-                    'using the "Staff / Admin" tab, or use "Forgot Password" to reset it.',
+                    "We couldn't find a school matching your email. " +
+                    'Please double-check your email, or contact your school office if you think this is a mistake.',
                     'error'
                 );
-            } else if (err.code === 'auth/user-not-found') {
-                showMessage(
-                    'Your login account has not been set up yet. Please contact your school office.',
-                    'error'
-                );
-            } else {
-                showMessage('Sign-in failed: ' + (err.message || err.code), 'error');
+                setLoading(false);
+                return;
             }
-            setLoading(false);
-            return;
-        }
 
-        const user = credential.user;
-
-        // ── 3. NOW authenticated — query students safely ──
-        const student = await findStudentDoc({
-            email: studentEmail.trim().toLowerCase(),
-            schoolId: school.schoolId,
-        });
-        if (!student) {
-            // Auth succeeded but no student doc — unusual, but handle it.
-            showMessage(
-                'You are signed in, but your student record could not be found for ' +
-                school.schoolName + '. Please contact your school office.',
-                'error'
-            );
-            await auth.signOut();
-            setLoading(false);
-            return;
-        }
-
-        // ── 4. Persist session + cache ──
-        const roleColl = 'students';
-        sessionStorage.setItem('userRole', roleColl);
-        sessionStorage.setItem('userId', student.id);
-
-        await cacheUserData({
-            uid: user.uid,
-            email: user.email,
-            collection: roleColl,
-            ...student,
-        });
-
-        if (isOnline) {
+            // ── 2. Sign in FIRST ──
+            let credential;
             try {
-                await updateDoc(doc(db, 'students', student.id), {
-                    lastLogin: serverTimestamp(),
-                    uid: user.uid,
-                });
-            } catch (e) { console.warn('lastLogin update failed:', e.message); }
+                credential = await signInWithEmailAndPassword(
+                    auth,
+                    normalizeEmail(studentEmail),
+                    admission
+                );
+            } catch (err) {
+                if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+                    showMessage(
+                        'Your password has already been changed. Sign in with your new password ' +
+                        'using the "Staff / Admin" tab, or use "Forgot Password" to reset it.',
+                        'error'
+                    );
+                } else if (err.code === 'auth/user-not-found') {
+                    showMessage(
+                        'Your login account has not been set up yet. Please contact your school office.',
+                        'error'
+                    );
+                } else {
+                    showMessage('Sign-in failed: ' + (err.message || err.code), 'error');
+                }
+                setLoading(false);
+                return;
+            }
 
-            AuditLogService.logAction(
-                school.schoolId,
-                {
-                    uid: user.uid,
-                    fullName:
-                        student.fullName ||
-                        `${student.firstName || ''} ${student.lastName || ''}`.trim(),
-                    email: user.email,
-                    role: 'student',
-                },
-                'LOGIN',
-                { message: 'Student sign-in (email auto-detected school)' }
-            ).catch((e) => console.warn('Audit log failed:', e.message));
-        }
+            const user = credential.user;
 
-        unlockSession();
+            // ── 3. Authenticated — query students safely ──
+            const student = await findStudentDoc({
+                email: normalizeEmail(studentEmail),
+                schoolId: school.schoolId,
+            });
+            if (!student) {
+                showMessage(
+                    'You are signed in, but your student record could not be found for ' +
+                    school.schoolName + '. Please contact your school office.',
+                    'error'
+                );
+                await auth.signOut();
+                setLoading(false);
+                return;
+            }
 
-        // ── 5. Force password change on first login ──
-        const mustChange =
-            student.mustChangePassword === true || student.passwordChangedAt == null;
-        if (mustChange) {
-            setPendingPasswordChange(true);
+            // ── 4. Persist session ──
+            const roleColl = 'students';
+            sessionStorage.setItem('userRole', roleColl);
+            sessionStorage.setItem('userId', student.id);
+
+            await cacheUserData({
+                uid: user.uid,
+                email: user.email,
+                collection: roleColl,
+                ...student,
+            });
+
+            if (isOnline) {
+                try {
+                    await updateDoc(doc(db, 'students', student.id), {
+                        lastLogin: serverTimestamp(),
+                        uid: user.uid,
+                    });
+                } catch (e) { console.warn('lastLogin update failed:', e.message); }
+
+                AuditLogService.logAction(
+                    school.schoolId,
+                    {
+                        uid: user.uid,
+                        fullName:
+                            student.fullName ||
+                            `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+                        email: user.email,
+                        role: 'student',
+                    },
+                    'LOGIN',
+                    { message: 'Student sign-in (email auto-detected school)' }
+                ).catch((e) => console.warn('Audit log failed:', e.message));
+            }
+
+            unlockSession();
+
+            // ── 5. Forced password change ──
+            const mustChange =
+                student.mustChangePassword === true || student.passwordChangedAt == null;
+            if (mustChange) {
+                setPendingPasswordChange(true);
+                setLoading(false);
+                return;
+            }
+
+            showMessage('Welcome back! Redirecting…', 'success');
+            setTimeout(() => navigateToDashboard(roleColl), 1200);
+        } catch (error) {
+            console.error('Student login error:', error);
+            showMessage(error.message || 'Student sign-in failed.', 'error');
+        } finally {
             setLoading(false);
-            return;
         }
+    };
 
-        showMessage('Welcome back! Redirecting…', 'success');
-        setTimeout(() => navigateToDashboard(roleColl), 1200);
-    } catch (error) {
-        console.error('Student login error:', error);
-        showMessage(error.message || 'Student sign-in failed.', 'error');
-    } finally {
-        setLoading(false);
-    }
-};
+    // Called by StudentPasswordChangeModal after the modal's own
+    // updatePassword() succeeds. Just flips state and redirects.
+    const completeStudentPasswordChange = () => {
+        setPendingPasswordChange(false);
+        showMessage('Password updated. Redirecting…', 'success');
+        const role = sessionStorage.getItem('userRole') || 'students';
+        setTimeout(() => navigateToDashboard(role), 1200);
+    };
+
     // ----------------------------------------------------------
-    // SIGNUP (unchanged, but stamps emailDomain for future logins)
+    // SIGNUP (stamps emailDomain for future student logins)
     // ----------------------------------------------------------
     const handleSignup = async (e) => {
         e.preventDefault();
@@ -977,9 +985,6 @@ export default function Login() {
 
             const schoolId = generateSchoolId(signupSchoolName);
 
-            // The email domain for this school — derived the SAME way
-            // Students.jsx derives it, so student emails from that page
-            // will resolve back to this exact school on login.
             const firstWord = signupSchoolName
                 .split(' ')[0]
                 .toLowerCase()
@@ -994,9 +999,8 @@ export default function Login() {
                 adminName: signupAdminFullName,
                 adminImageUrl: profileUrl,
                 adminEmail: signupEmail,
-                // NEW: auto-detection key
                 emailDomain,
-                schoolDomain: emailDomain.replace(/\.com$/, ''), // legacy compat
+                schoolDomain: emailDomain.replace(/\.com$/, ''),
                 subscriptionStatus: 'inactive',
                 trialStartDate: serverTimestamp(),
                 trialEndDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
@@ -1497,9 +1501,7 @@ export default function Login() {
                     </div>
                 </div>
             </div>
-
-           
-           <style>{`
+  <style>{`
                 * {
                     margin: 0;
                     padding: 0;
