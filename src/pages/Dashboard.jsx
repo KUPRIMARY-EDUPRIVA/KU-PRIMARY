@@ -1,5 +1,5 @@
 // src/pages/Dashboard.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
@@ -13,14 +13,39 @@ import {
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { getMemory, setMemory } from '../services/cache';
+import { fetchNetlifyFunction } from '../services/netlifyApi';
+import {
+    listAttendanceRecords,
+    startOfMonth as attStartOfMonth,
+    todayISO as attTodayISO,
+} from '../services/attendanceService';
 
 import { showAppNotice } from '../utils/appNotice';
+
+// CBC grading helper (inline — mirrors utils/constants.getCBCGrade)
+const getCBCGrade = (score) => {
+    const s = Number(score);
+    if (!Number.isFinite(s)) return { code: '—', points: 0 };
+    if (s >= 80) return { code: 'A', points: 12 };
+    if (s >= 75) return { code: 'A-', points: 11 };
+    if (s >= 70) return { code: 'B+', points: 10 };
+    if (s >= 65) return { code: 'B', points: 9 };
+    if (s >= 60) return { code: 'B-', points: 8 };
+    if (s >= 55) return { code: 'C+', points: 7 };
+    if (s >= 50) return { code: 'C', points: 6 };
+    if (s >= 45) return { code: 'C-', points: 5 };
+    if (s >= 40) return { code: 'D+', points: 4 };
+    if (s >= 35) return { code: 'D', points: 3 };
+    if (s >= 30) return { code: 'D-', points: 2 };
+    return { code: 'E', points: 1 };
+};
+
 // Utility function to format time
 const formatTimeAgo = (date) => {
     if (!date) return 'Just now';
     const now = new Date();
     const diff = now - date;
-    
+
     if (diff < 60000) return 'Just now';
     if (diff < 3600000) return Math.floor(diff / 60000) + ' minutes ago';
     if (diff < 86400000) return Math.floor(diff / 3600000) + ' hours ago';
@@ -30,11 +55,11 @@ const formatTimeAgo = (date) => {
 
 // Level display constants
 const LEVEL_DISPLAY_NAMES = {
-  'pre-primary': 'Pre-Primary',
-  'lower-primary': 'Lower Primary',
-  'upper-primary': 'Upper Primary',
-  'junior-school': 'Junior School',
-  'senior-school': 'Senior School'
+    'pre-primary': 'Pre-Primary',
+    'lower-primary': 'Lower Primary',
+    'upper-primary': 'Upper Primary',
+    'junior-school': 'Junior School',
+    'senior-school': 'Senior School'
 };
 
 const getLevelDisplayName = (level) => LEVEL_DISPLAY_NAMES[level] || level || 'N/A';
@@ -62,50 +87,24 @@ async function getDashboardCount(cacheKey, countQuery) {
 // ============================================
 // MOTIVATIONAL MESSAGES
 // ============================================
-
-// Get current term based on month
 const getCurrentTerm = () => {
-    const month = new Date().getMonth(); // 0 = January, 11 = December
-    
-    // Term 1: January (0) - April (3)
-    if (month >= 0 && month <= 3) {
-        return { term: 1, name: 'Term 1', startMonth: 'January', endMonth: 'April' };
-    }
-    // Term 2: May (4) - August (7)
-    else if (month >= 4 && month <= 7) {
-        return { term: 2, name: 'Term 2', startMonth: 'May', endMonth: 'August' };
-    }
-    // Term 3: September (8) - November (10)
-    else if (month >= 8 && month <= 10) {
-        return { term: 3, name: 'Term 3', startMonth: 'September', endMonth: 'November' };
-    }
-    // December (11) - Holiday
-    else {
-        return { term: 0, name: 'Holiday', startMonth: 'December', endMonth: 'December' };
-    }
+    const month = new Date().getMonth();
+    if (month >= 0 && month <= 3) return { term: 1, name: 'Term 1', startMonth: 'January', endMonth: 'April' };
+    if (month >= 4 && month <= 7) return { term: 2, name: 'Term 2', startMonth: 'May', endMonth: 'August' };
+    if (month >= 8 && month <= 10) return { term: 3, name: 'Term 3', startMonth: 'September', endMonth: 'November' };
+    return { term: 0, name: 'Holiday', startMonth: 'December', endMonth: 'December' };
 };
 
-// Check if currently in holiday (December, or between terms)
 const isHoliday = () => {
     const month = new Date().getMonth();
     const day = new Date().getDate();
-    
-    // December is holiday month
     if (month === 11) return true;
-    
-    // Between Term 1 and Term 2 (April break - typically mid to end April)
     if (month === 3 && day >= 15) return true;
-    
-    // Between Term 2 and Term 3 (August break - typically mid to end August)
     if (month === 7 && day >= 15) return true;
-    
-    // Between Term 3 and Term 1 (November break - typically mid to end November)
     if (month === 10 && day >= 15) return true;
-    
     return false;
 };
 
-// Get time of day greeting
 const getTimeGreeting = () => {
     const hour = new Date().getHours();
     if (hour >= 5 && hour < 12) return 'Good morning';
@@ -114,26 +113,13 @@ const getTimeGreeting = () => {
     return 'Good night';
 };
 
-// Get motivational message based on time, term, and month
 const getMotivationalMessage = (userRole, schoolData) => {
-    const now = new Date();
-    const hour = now.getHours();
-    const month = now.getMonth();
-    const day = now.getDate();
+    const hour = new Date().getHours();
     const currentTerm = getCurrentTerm();
     const holiday = isHoliday();
     const greeting = getTimeGreeting();
-    
-    // Get school name
     const schoolName = schoolData?.name || schoolData?.schoolName || 'your school';
-    
-    // Get user role display
-    const roleDisplay = isSchoolAdminRole(userRole)
-        && normalizeRole(userRole) !== 'super-admin' ? 'administrator' :
-                       userRole === 'teacher' ? 'educator' : 
-                       userRole === 'student' ? 'student' : 'user';
-    
-    // Morning messages (5 AM - 12 PM)
+
     if (hour >= 5 && hour < 12) {
         if (holiday) {
             return [
@@ -143,7 +129,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Rise and shine! The holidays are a perfect time to relax, read, and plan ahead.`
             ][Math.floor(Math.random() * 4)];
         }
-        
         if (currentTerm.term === 1) {
             return [
                 ` ${greeting}! A new academic year begins. Welcome to ${currentTerm.name}! Let's make it a great year at ${schoolName}.`,
@@ -152,7 +137,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` ${greeting}! As we begin ${currentTerm.name}, remember that every day is a chance to learn something new.`
             ][Math.floor(Math.random() * 4)];
         }
-        
         if (currentTerm.term === 2) {
             return [
                 ` ${greeting}! Welcome to ${currentTerm.name}! Keep pushing forward and giving your best.`,
@@ -161,7 +145,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` ${greeting}! ${currentTerm.name} is in full swing. Stay focused on your goals.`
             ][Math.floor(Math.random() * 4)];
         }
-        
         if (currentTerm.term === 3) {
             return [
                 ` ${greeting}! Welcome to ${currentTerm.name}! This is the final stretch. Finish strong!`,
@@ -170,15 +153,12 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` ${greeting}! ${currentTerm.name} - the home stretch! Make every day count.`
             ][Math.floor(Math.random() * 4)];
         }
-        
-        // Default
         return [
             ` ${greeting}! Have a blessed day at ${schoolName}. Make the most of every opportunity.`,
             ` ${greeting}! Each day is a gift. Use it wisely at ${schoolName}.`
         ][Math.floor(Math.random() * 2)];
     }
-    
-    // Afternoon messages (12 PM - 5 PM)
+
     if (hour >= 12 && hour < 17) {
         if (holiday) {
             return [
@@ -187,7 +167,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good afternoon! Make the most of your holiday break. You've earned it!`
             ][Math.floor(Math.random() * 3)];
         }
-        
         if (currentTerm.term === 1) {
             return [
                 ` Good afternoon! ${currentTerm.name} is off to a great start. Keep the momentum going at ${schoolName}.`,
@@ -195,7 +174,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good afternoon! The first term is a time for fresh starts. Make it count.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         if (currentTerm.term === 2) {
             return [
                 ` Good afternoon! ${currentTerm.name} is in progress. Stay committed to your goals.`,
@@ -203,7 +181,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good afternoon! ${currentTerm.name} - the journey continues. Stay determined.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         if (currentTerm.term === 3) {
             return [
                 ` Good afternoon! ${currentTerm.name} - finish strong! The end is in sight.`,
@@ -211,14 +188,12 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good afternoon! ${currentTerm.name} is the final chapter. Make it your best.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         return [
             ` Good afternoon! Keep shining bright at ${schoolName}.`,
             ` Good afternoon! Your dedication is making a difference.`
         ][Math.floor(Math.random() * 2)];
     }
-    
-    // Evening messages (5 PM - 9 PM)
+
     if (hour >= 17 && hour < 21) {
         if (holiday) {
             return [
@@ -227,7 +202,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good evening! Spend quality time with loved ones during this holiday season.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         if (currentTerm.term === 1) {
             return [
                 ` Good evening! What a great start to ${currentTerm.name}. Keep up the momentum.`,
@@ -235,7 +209,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good evening! Your efforts this ${currentTerm.name} will shape the year ahead.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         if (currentTerm.term === 2) {
             return [
                 ` Good evening! ${currentTerm.name} is in full swing. Stay focused and determined.`,
@@ -243,7 +216,6 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good evening! Your consistency in ${currentTerm.name} will lead to success.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         if (currentTerm.term === 3) {
             return [
                 ` Good evening! ${currentTerm.name} - the final stretch. Finish strong!`,
@@ -251,14 +223,12 @@ const getMotivationalMessage = (userRole, schoolData) => {
                 ` Good evening! The end is near. Give it your all in ${currentTerm.name}.`
             ][Math.floor(Math.random() * 3)];
         }
-        
         return [
             ` Good evening! Reflect on the day and prepare for tomorrow at ${schoolName}.`,
             ` Good evening! Your hard work is making a difference.`
         ][Math.floor(Math.random() * 2)];
     }
-    
-    // Night messages (9 PM - 5 AM)
+
     return [
         ` Good night! Rest well and prepare for a new day at ${schoolName}.`,
         ` Good night! A good night's rest leads to a successful tomorrow.`,
@@ -266,30 +236,28 @@ const getMotivationalMessage = (userRole, schoolData) => {
     ][Math.floor(Math.random() * 3)];
 };
 
-// Get term status display
 const getTermStatusDisplay = () => {
     const currentTerm = getCurrentTerm();
     const holiday = isHoliday();
-    
-    if (holiday) {
-        return ' School is on Holiday';
-    }
-    
+    if (holiday) return ' School is on Holiday';
     return `📚 ${currentTerm.name}`;
 };
 
+// ============================================
+// COMPONENT
+// ============================================
 export default function Dashboard() {
     const navigate = useNavigate();
     const { currentUser, userData, userRole } = useAuth();
     const isSchoolAdmin = isSchoolAdminRole(userRole || userData?.role)
         && normalizeRole(userRole || userData?.role) !== 'super-admin';
-    const { 
-        isOnline, 
+    const {
+        isOnline,
         saveToIndexedDB,
         getFromIndexedDB
     } = useSync();
-    
-    // State for stats
+
+    // ---- Stats ----
     const [stats, setStats] = useState({
         totalStudents: 0,
         totalTeachers: 0,
@@ -308,20 +276,30 @@ export default function Dashboard() {
     const [usingCachedData, setUsingCachedData] = useState(false);
     const [motivationalMessage, setMotivationalMessage] = useState('');
     const [termStatus, setTermStatus] = useState('');
-    
-    // Role-specific state
+
+    // ---- Role-specific ----
     const [teacherData, setTeacherData] = useState(null);
     const [studentData, setStudentData] = useState(null);
     const [myExams, setMyExams] = useState([]);
     const [myScores, setMyScores] = useState([]);
     const [upcomingExams, setUpcomingExams] = useState([]);
     const [recentResults, setRecentResults] = useState([]);
-    
-    // Refs
+
+    // ---- NEW: Student dashboard metrics ----
+    const [attendanceStats, setAttendanceStats] = useState(null);   // { rate, present, absent, late, excused, sessions, marks }
+    const [attendanceLoading, setAttendanceLoading] = useState(false);
+    const [averageScore, setAverageScore] = useState(null);
+    const [averageScoreGrade, setAverageScoreGrade] = useState(null);
+    const [feeBalance, setFeeBalance] = useState(null);
+    const [feeBalanceLoading, setFeeBalanceLoading] = useState(false);
+
+    // ---- Refs ----
     const statsTimeout = useRef(null);
     const realtimeListeners = useRef([]);
-    
-    // Load data on mount
+
+    // ==================================================
+    // BOOTSTRAP
+    // ==================================================
     useEffect(() => {
         if (currentUser && userData) {
             loadSchoolData();
@@ -330,32 +308,34 @@ export default function Dashboard() {
             setupRealtimeListeners();
             updateMotivationalMessage();
         }
-        
+
         return () => {
             realtimeListeners.current.forEach(unsubscribe => {
                 try { unsubscribe(); } catch (e) { console.warn('Error unsubscribing:', e); }
             });
-            if (statsTimeout.current) {
-                clearTimeout(statsTimeout.current);
-            }
+            if (statsTimeout.current) clearTimeout(statsTimeout.current);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentUser, userData, isOnline, userRole]);
 
-    // Update motivational message when schoolData changes
     useEffect(() => {
-        if (schoolData) {
-            updateMotivationalMessage();
-        }
+        if (schoolData) updateMotivationalMessage();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [schoolData, userRole]);
 
-    // Update motivational message
     const updateMotivationalMessage = () => {
         const message = getMotivationalMessage(userRole, schoolData);
         setMotivationalMessage(message);
         setTermStatus(getTermStatusDisplay());
     };
 
-    // Load role-specific data
+    const showNotification = useCallback((message, type = 'info') => {
+        showAppNotice(message, type);
+    }, []);
+
+    // ==================================================
+    // ROLE-SPECIFIC LOADERS
+    // ==================================================
     const loadRoleSpecificData = async () => {
         const schoolId = userData?.schoolId;
         if (!schoolId) return;
@@ -371,21 +351,16 @@ export default function Dashboard() {
         }
     };
 
-    // Load teacher data
+    // ---- Teacher ----
     const loadTeacherData = async (schoolId) => {
         try {
             let teacher = null;
-            
-            // Try cache first
             const cachedTeachers = await getFromIndexedDB('teachers');
             if (cachedTeachers) {
-                teacher = cachedTeachers.find(t => 
-                    t.email === currentUser?.email && 
-                    t.schoolId === schoolId
+                teacher = cachedTeachers.find(t =>
+                    t.email === currentUser?.email && t.schoolId === schoolId
                 );
             }
-
-            // If online, fetch fresh
             if (isOnline) {
                 const q = query(
                     collection(db, 'teachers'),
@@ -396,21 +371,15 @@ export default function Dashboard() {
                 if (!snapshot.empty) {
                     const docData = snapshot.docs[0];
                     teacher = { id: docData.id, ...docData.data() };
-                    // Cache teacher data
                     const allTeachers = cachedTeachers || [];
                     const index = allTeachers.findIndex(t => t.email === currentUser?.email);
-                    if (index >= 0) {
-                        allTeachers[index] = teacher;
-                    } else {
-                        allTeachers.push(teacher);
-                    }
+                    if (index >= 0) allTeachers[index] = teacher;
+                    else allTeachers.push(teacher);
                     await saveToIndexedDB('teachers', allTeachers);
                 }
             }
-
             if (teacher) {
                 setTeacherData(teacher);
-                // Load teacher's exams
                 await loadTeacherExams(schoolId, teacher);
             }
         } catch (error) {
@@ -418,15 +387,12 @@ export default function Dashboard() {
         }
     };
 
-    // Load teacher's exams
     const loadTeacherExams = async (schoolId, teacher) => {
         try {
             const teacherClasses = teacher.classes || [];
             const teacherLevels = teacher.level ? [teacher.level] : (teacher.levels || []);
-            
             if (teacherClasses.length === 0 && teacherLevels.length === 0) return;
 
-            // Build query for exams that match teacher's classes or levels
             let examQuery;
             if (teacherClasses.length > 0) {
                 examQuery = query(
@@ -443,17 +409,15 @@ export default function Dashboard() {
             }
 
             const snapshot = await getDocs(examQuery);
-            const exams = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                startDate: doc.data().startDate?.toDate?.() || new Date(),
-                endDate: doc.data().endDate?.toDate?.() || new Date()
+            const exams = snapshot.docs.map(d => ({
+                id: d.id,
+                ...d.data(),
+                startDate: d.data().startDate?.toDate?.() || new Date(),
+                endDate: d.data().endDate?.toDate?.() || new Date()
             }));
-
             setMyExams(exams);
 
-            // Load submissions for teacher's exams
-            const submissionPromises = exams.map(exam => 
+            const submissionPromises = exams.map(exam =>
                 getDocs(query(
                     collection(db, 'exam_submissions'),
                     where('examId', '==', exam.id),
@@ -461,44 +425,39 @@ export default function Dashboard() {
                 ))
             );
             const submissionResults = await Promise.all(submissionPromises);
-            const submissions = submissionResults.flatMap(snapshot => 
-                snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+            const submissions = submissionResults.flatMap(s =>
+                s.docs.map(d => ({ id: d.id, ...d.data() }))
             );
-            
-            // Update stats with teacher-specific data
+
             const pendingSubmissions = submissions.filter(s => s.status === 'pending').length;
             const totalSubmissions = submissions.length;
             const gradedSubmissions = submissions.filter(s => s.status === 'graded' || s.status === 'published').length;
-            
+
             setStats(prev => ({
                 ...prev,
-                pendingSubmissions: pendingSubmissions,
-                resultsPublished: totalSubmissions > 0 ? `${Math.round((gradedSubmissions / totalSubmissions) * 100)}%` : '0%'
+                pendingSubmissions,
+                resultsPublished: totalSubmissions > 0
+                    ? `${Math.round((gradedSubmissions / totalSubmissions) * 100)}%`
+                    : '0%'
             }));
 
-            // Cache submissions
             await saveToIndexedDB('exam_submissions', submissions);
-
         } catch (error) {
             console.error('Error loading teacher exams:', error);
         }
     };
 
-    // Load student data
+    // ---- Student ----
     const loadStudentData = async (schoolId) => {
         try {
             let student = null;
-            
-            // Try cache first
             const cachedStudents = await getFromIndexedDB('students');
             if (cachedStudents) {
-                student = cachedStudents.find(s => 
-                    s.email === currentUser?.email && 
-                    s.schoolId === schoolId
+                student = cachedStudents.find(s =>
+                    s.email === currentUser?.email && s.schoolId === schoolId
                 );
             }
 
-            // If online, fetch fresh
             if (isOnline) {
                 const q = query(
                     collection(db, 'students'),
@@ -509,37 +468,36 @@ export default function Dashboard() {
                 if (!snapshot.empty) {
                     const docData = snapshot.docs[0];
                     student = { id: docData.id, ...docData.data() };
-                    // Cache student data
                     const allStudents = cachedStudents || [];
                     const index = allStudents.findIndex(s => s.email === currentUser?.email);
-                    if (index >= 0) {
-                        allStudents[index] = student;
-                    } else {
-                        allStudents.push(student);
-                    }
+                    if (index >= 0) allStudents[index] = student;
+                    else allStudents.push(student);
                     await saveToIndexedDB('students', allStudents);
                 }
             }
 
             if (student) {
                 setStudentData(student);
-                // Load student's exams and scores
                 await loadStudentExamsAndScores(schoolId, student);
+
+                // Load new metrics in parallel
+                await Promise.all([
+                    loadStudentAttendanceStats(schoolId, student),
+                    loadStudentAverageScore(schoolId, student),
+                    loadStudentFeeBalance(schoolId, student),
+                ]);
             }
         } catch (error) {
             console.error('Error loading student data:', error);
         }
     };
 
-    // Load student's exams and scores
     const loadStudentExamsAndScores = async (schoolId, student) => {
         try {
             const studentClass = student.class;
             const studentLevel = student.level;
-            
             if (!studentClass && !studentLevel) return;
 
-            // Load exams for student's class/level
             let examQuery;
             if (studentClass) {
                 examQuery = query(
@@ -556,64 +514,167 @@ export default function Dashboard() {
             }
 
             const examSnapshot = await getDocs(examQuery);
-            const exams = examSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
-                startDate: doc.data().startDate?.toDate?.() || new Date(),
-                endDate: doc.data().endDate?.toDate?.() || new Date()
+            const exams = examSnapshot.docs.map(d => ({
+                id: d.id,
+                ...d.data(),
+                startDate: d.data().startDate?.toDate?.() || new Date(),
+                endDate: d.data().endDate?.toDate?.() || new Date()
             }));
 
-            // Filter upcoming exams (not started yet)
             const now = new Date();
             const upcoming = exams.filter(e => new Date(e.startDate) > now);
             setUpcomingExams(upcoming);
 
-            // Load scores for this student
             const scoresQuery = query(
                 collection(db, 'student_scores'),
                 where('schoolId', '==', schoolId),
                 where('studentId', '==', student.id || student.studentId)
             );
             const scoresSnapshot = await getDocs(scoresQuery);
-            const scores = scoresSnapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
+            const scores = scoresSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
             setMyScores(scores);
 
-            // Get recent results (published scores)
             const recent = scores.filter(s => s.status === 'published' || s.status === 'graded');
             setRecentResults(recent.slice(0, 5));
 
-            // Update stats for student
             const completedExams = exams.filter(e => new Date(e.endDate) < now);
             const gradedCount = scores.filter(s => s.score !== undefined && s.score !== null).length;
-            
+
             setStats(prev => ({
                 ...prev,
                 activeExams: upcoming.length,
-                resultsPublished: completedExams.length > 0 ? 
-                    `${Math.round((gradedCount / completedExams.length) * 100)}%` : '0%'
+                resultsPublished: completedExams.length > 0
+                    ? `${Math.round((gradedCount / completedExams.length) * 100)}%`
+                    : '0%'
             }));
 
-            // Cache data
             await saveToIndexedDB('student_exams', exams);
             await saveToIndexedDB('student_scores', scores);
-
         } catch (error) {
             console.error('Error loading student exams and scores:', error);
         }
     };
 
-    // Load school data from database or cache
+    // ---- NEW: Student attendance stats (current term) ----
+    const loadStudentAttendanceStats = async (schoolId, student) => {
+        setAttendanceLoading(true);
+        try {
+            const termStart = schoolData?.termStart || attStartOfMonth();
+            const toDate = attTodayISO();
+
+            const records = await listAttendanceRecords({
+                schoolId,
+                cls: student.class,
+                fromDate: termStart,
+                toDate,
+                max: 500,
+            });
+
+            const totals = { sessions: 0, present: 0, absent: 0, late: 0, excused: 0, marks: 0 };
+            (records || []).forEach((rec) => {
+                totals.sessions += 1;
+                const entries = Array.isArray(rec.entries) ? rec.entries : [];
+                const mine = entries.find((e) => e.studentId === student.id);
+                if (!mine) return;
+                totals.marks += 1;
+                const s = mine.status || 'present';
+                if (totals[s] !== undefined) totals[s] += 1;
+            });
+
+            const rate = totals.marks
+                ? Math.round(((totals.present + totals.late) / totals.marks) * 100)
+                : 0;
+
+            setAttendanceStats({ ...totals, rate });
+        } catch (e) {
+            console.warn('Attendance stats load failed:', e);
+            setAttendanceStats(null);
+        } finally {
+            setAttendanceLoading(false);
+        }
+    };
+
+    // ---- NEW: Student average score ----
+    const loadStudentAverageScore = async (schoolId, student) => {
+        try {
+            const scoresSnap = await getDocs(query(
+                collection(db, 'student_scores'),
+                where('schoolId', '==', schoolId),
+                where('studentId', '==', student.id)
+            ));
+            if (scoresSnap.empty) {
+                setAverageScore(null);
+                setAverageScoreGrade(null);
+                return;
+            }
+
+            const scores = scoresSnap.docs.map((d) => d.data());
+            const published = scores.filter(s => s.status === 'published' || s.status === 'graded');
+            const pool = published.length ? published : scores;
+            if (pool.length === 0) {
+                setAverageScore(null);
+                setAverageScoreGrade(null);
+                return;
+            }
+
+            // Use the most-recent assessment type across all scores so we don't
+            // mix 'Assessment 1' with 'End-Term', etc.
+            const latestType = pool[0].assessmentType || 'Assessment 1';
+            const sameType = pool.filter(s => (s.assessmentType || 'Assessment 1') === latestType);
+
+            const values = sameType
+                .map(s => (s.computedPercentage != null ? Number(s.computedPercentage) : Number(s.score)))
+                .filter(v => Number.isFinite(v));
+
+            if (values.length === 0) {
+                setAverageScore(null);
+                setAverageScoreGrade(null);
+                return;
+            }
+
+            const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+            setAverageScore(avg);
+            setAverageScoreGrade(getCBCGrade(avg));
+        } catch (e) {
+            console.warn('Average score load failed:', e);
+            setAverageScore(null);
+            setAverageScoreGrade(null);
+        }
+    };
+
+    // ---- NEW: Student fee balance via Netlify function ----
+    const loadStudentFeeBalance = async (schoolId, student) => {
+        setFeeBalanceLoading(true);
+        try {
+            const res = await fetchNetlifyFunction('get-student-balance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    schoolId,
+                    admissionNumber: student.admissionNumber || student.studentId || '',
+                }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            setFeeBalance(Number(data.balance) || 0);
+        } catch (e) {
+            console.warn('Fee balance load failed:', e);
+            setFeeBalance(null);
+        } finally {
+            setFeeBalanceLoading(false);
+        }
+    };
+
+    // ==================================================
+    // SCHOOL DATA
+    // ==================================================
     const loadSchoolData = async () => {
         try {
             const schoolId = userData?.schoolId;
             if (!schoolId) return;
 
-            // Try to get from cache first
             let schoolData = await getFromIndexedDB('school_data', schoolId);
-            
+
             if (schoolData) {
                 setSchoolData(schoolData);
                 setStats(prev => ({
@@ -622,7 +683,6 @@ export default function Dashboard() {
                 }));
             }
 
-            // If online, fetch fresh data
             if (isOnline) {
                 const schoolDoc = await getDoc(doc(db, 'schools', schoolId));
                 if (schoolDoc.exists()) {
@@ -632,7 +692,6 @@ export default function Dashboard() {
                         ...prev,
                         subscriptionStatus: data.subscriptionStatus || 'inactive'
                     }));
-                    // Cache the data
                     await saveToIndexedDB('school_data', { id: schoolId, ...data });
                 }
             }
@@ -640,8 +699,10 @@ export default function Dashboard() {
             console.error('Error loading school data:', error);
         }
     };
-    
-    // Update badges and dispatch stats update for sidebar
+
+    // ==================================================
+    // DASHBOARD STATS
+    // ==================================================
     const updateBadges = () => {
         const badgeData = {
             students: stats.totalStudents,
@@ -652,8 +713,7 @@ export default function Dashboard() {
         window.dispatchEvent(new CustomEvent('badgeUpdate', { detail: badgeData }));
         window.dispatchEvent(new CustomEvent('statsUpdate', { detail: stats }));
     };
-    
-    // Load dashboard data with offline support
+
     const loadDashboardData = async () => {
         setStatsLoading(true);
         try {
@@ -663,22 +723,20 @@ export default function Dashboard() {
                 setStatsLoading(false);
                 return;
             }
-            
-            // Try to load cached stats first
+
             const cachedStats = await getFromIndexedDB('stats_cache', 'dashboard_stats');
             if (cachedStats) {
                 setStats(cachedStats);
                 setUsingCachedData(true);
                 updateBadges();
             }
-            
-            // If online, fetch fresh data
+
             if (isOnline) {
                 const statsData = await calculateDashboardStats(schoolId);
                 setStats(statsData);
                 setUsingCachedData(false);
                 updateBadges();
-                
+
                 await saveToIndexedDB('stats_cache', {
                     id: 'dashboard_stats',
                     type: 'dashboard_stats',
@@ -686,11 +744,9 @@ export default function Dashboard() {
                     lastUpdated: new Date().toISOString()
                 });
             }
-            
-            // Load activities and notifications
+
             await loadRecentActivities(schoolId);
             await loadNotifications(schoolId);
-            
         } catch (error) {
             console.error('Error loading dashboard data:', error);
             await loadCachedStats();
@@ -698,13 +754,11 @@ export default function Dashboard() {
             setStatsLoading(false);
         }
     };
-    
-    // Calculate dashboard stats based on role
+
     const calculateDashboardStats = async (schoolId) => {
         try {
-            let subscriptionStatus = schoolData?.subscriptionStatus || 'inactive';
+            const subscriptionStatus = schoolData?.subscriptionStatus || 'inactive';
 
-            // If user is admin, get full stats
             if (isSchoolAdmin) {
                 const [
                     studentsCount,
@@ -721,34 +775,30 @@ export default function Dashboard() {
                     getResultsPublishedPercentage(schoolId),
                     getStorageUsage(schoolId)
                 ]);
-                
+
                 return {
                     totalStudents: studentsCount,
                     totalTeachers: teachersCount,
                     activeExams: activeExamsCount,
                     pendingSubmissions: pendingSubmissionsCount,
-                    resultsPublished: resultsPublished,
-                    subscriptionStatus: subscriptionStatus,
+                    resultsPublished,
+                    subscriptionStatus,
                     storageUsage: storageUsed,
                     lastSync: new Date().toISOString()
                 };
             }
 
-            // For teacher and student, stats are already loaded in role-specific functions
-            // Return existing stats with updated subscription
             return {
                 ...stats,
-                subscriptionStatus: subscriptionStatus,
+                subscriptionStatus,
                 lastSync: new Date().toISOString()
             };
-
         } catch (error) {
             console.error('Error calculating stats:', error);
             return getDefaultStats();
         }
     };
-    
-    // Get default stats
+
     const getDefaultStats = () => ({
         totalStudents: 0,
         totalTeachers: 0,
@@ -759,8 +809,7 @@ export default function Dashboard() {
         storageUsage: '0 MB',
         lastSync: 'Never'
     });
-    
-    // Get collection count with offline fallback
+
     const getCollectionCount = async (collectionName, schoolId) => {
         try {
             if (collectionName === 'students') {
@@ -779,8 +828,7 @@ export default function Dashboard() {
             return cached ? cached.filter(item => item.schoolId === schoolId).length : 0;
         }
     };
-    
-    // Get active exams count
+
     const getActiveExamsCount = async (schoolId) => {
         try {
             const today = new Date();
@@ -796,8 +844,7 @@ export default function Dashboard() {
             return 0;
         }
     };
-    
-    // Get pending submissions count
+
     const getPendingSubmissionsCount = async (schoolId) => {
         try {
             const q = query(
@@ -811,8 +858,7 @@ export default function Dashboard() {
             return 0;
         }
     };
-    
-    // Get results published percentage
+
     const getResultsPublishedPercentage = async (schoolId) => {
         try {
             const [publishedCount, totalCount] = await Promise.all([
@@ -831,8 +877,7 @@ export default function Dashboard() {
             return '0%';
         }
     };
-    
-    // Get storage usage
+
     const getStorageUsage = async (schoolId) => {
         try {
             const cachedStudents = await getCachedStudentRoster(schoolId);
@@ -856,26 +901,20 @@ export default function Dashboard() {
                     query(collection(db, 'student_scores'), where('schoolId', '==', schoolId))
                 )
             ]);
-            
+
             const totalDocs = studentCount + teacherCount + examCount + scoreCount;
             const estimatedMB = Math.max(1, Math.round((totalDocs * 0.2) + 2));
-            
-            if (estimatedMB >= 1024) {
-                return `${(estimatedMB / 1024).toFixed(1)} GB`;
-            } else {
-                return `${estimatedMB} MB`;
-            }
+            return estimatedMB >= 1024
+                ? `${(estimatedMB / 1024).toFixed(1)} GB`
+                : `${estimatedMB} MB`;
         } catch (error) {
             console.error('Error calculating storage usage:', error);
             const cachedStats = await getFromIndexedDB('stats_cache', 'dashboard_stats');
-            if (cachedStats && cachedStats.storageUsage) {
-                return cachedStats.storageUsage;
-            }
+            if (cachedStats && cachedStats.storageUsage) return cachedStats.storageUsage;
             return '0 MB';
         }
     };
-    
-    // Load cached stats
+
     const loadCachedStats = async () => {
         try {
             const cachedStats = await getFromIndexedDB('stats_cache', 'dashboard_stats');
@@ -898,25 +937,24 @@ export default function Dashboard() {
             updateBadges();
         }
     };
-    
-    // Update notification count
+
+    // ==================================================
+    // NOTIFICATIONS / ACTIVITIES
+    // ==================================================
     const updateNotificationCount = (count) => {
         setNotificationBadge(count);
-        window.dispatchEvent(new CustomEvent('notificationUpdate', { 
-            detail: { count, notifications } 
+        window.dispatchEvent(new CustomEvent('notificationUpdate', {
+            detail: { count, notifications }
         }));
     };
-    
-    // Load recent activities with offline support
+
     const loadRecentActivities = async (schoolId) => {
         try {
-            // Try to get cached activities first
             const cachedActivities = await getFromIndexedDB('activities');
             if (cachedActivities && cachedActivities.length > 0) {
                 setActivities(cachedActivities.slice(0, 5));
             }
 
-            // If online, fetch fresh data
             if (isOnline) {
                 const q = query(
                     collection(db, 'activities'),
@@ -925,10 +963,10 @@ export default function Dashboard() {
                     limit(5)
                 );
                 const snapshot = await getDocs(q);
-                const activitiesData = snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data(),
-                    timestamp: doc.data().timestamp?.toDate?.() || new Date()
+                const activitiesData = snapshot.docs.map(d => ({
+                    id: d.id,
+                    ...d.data(),
+                    timestamp: d.data().timestamp?.toDate?.() || new Date()
                 }));
                 setActivities(activitiesData);
                 await saveToIndexedDB('activities', activitiesData);
@@ -937,11 +975,9 @@ export default function Dashboard() {
             console.error('Error loading activities:', error);
         }
     };
-    
-    // Load notifications with offline support
+
     const loadNotifications = async (schoolId) => {
         try {
-            // Try to get cached notifications first
             const cachedNotifications = await getFromIndexedDB('notifications');
             if (cachedNotifications && cachedNotifications.length > 0) {
                 const unread = cachedNotifications.filter(n => !n.read);
@@ -949,7 +985,6 @@ export default function Dashboard() {
                 updateNotificationCount(unread.length);
             }
 
-            // If online, fetch fresh data
             if (isOnline) {
                 const q = query(
                     collection(db, 'notifications'),
@@ -959,11 +994,11 @@ export default function Dashboard() {
                     limit(10)
                 );
                 const snapshot = await getDocs(q);
-                const notificationsData = snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data(),
-                    createdAt: doc.data().createdAt?.toDate?.() || new Date(),
-                    time: formatTimeAgo(doc.data().createdAt?.toDate?.() || new Date())
+                const notificationsData = snapshot.docs.map(d => ({
+                    id: d.id,
+                    ...d.data(),
+                    createdAt: d.data().createdAt?.toDate?.() || new Date(),
+                    time: formatTimeAgo(d.data().createdAt?.toDate?.() || new Date())
                 }));
                 setNotifications(notificationsData);
                 updateNotificationCount(notificationsData.length);
@@ -973,28 +1008,27 @@ export default function Dashboard() {
             console.error('Error loading notifications:', error);
         }
     };
-    
-    // Setup realtime listeners with offline support
+
+    // ==================================================
+    // REALTIME LISTENERS
+    // ==================================================
     const setupRealtimeListeners = () => {
         const schoolId = userData?.schoolId;
         if (!schoolId || !isOnline) return;
 
-        // Clean up old listeners
         realtimeListeners.current.forEach(unsubscribe => {
             try { unsubscribe(); } catch (e) { console.warn('Error unsubscribing:', e); }
         });
         realtimeListeners.current = [];
 
-        // Only admin gets full realtime stats
         if (isSchoolAdmin) {
-            // Teachers listener
             const teachersListener = onSnapshot(
                 query(collection(db, 'teachers'), where('schoolId', '==', schoolId)),
                 async (snapshot) => {
                     const count = snapshot.size;
                     setStats(prev => ({ ...prev, totalTeachers: count }));
                     updateBadges();
-                    const teachersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    const teachersData = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
                     await saveToIndexedDB('teachers', teachersData);
                 },
                 (error) => console.error('Teachers listener error:', error)
@@ -1002,14 +1036,13 @@ export default function Dashboard() {
             realtimeListeners.current.push(() => teachersListener());
         }
 
-        // Activities listener (for all roles)
         const activitiesListener = onSnapshot(
             query(collection(db, 'activities'), where('schoolId', '==', schoolId), orderBy('timestamp', 'desc'), limit(5)),
             async (snapshot) => {
-                const activitiesData = snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data(),
-                    timestamp: doc.data().timestamp?.toDate?.() || new Date()
+                const activitiesData = snapshot.docs.map(d => ({
+                    id: d.id,
+                    ...d.data(),
+                    timestamp: d.data().timestamp?.toDate?.() || new Date()
                 }));
                 setActivities(activitiesData);
                 await saveToIndexedDB('activities', activitiesData);
@@ -1017,16 +1050,15 @@ export default function Dashboard() {
             (error) => console.error('Activities listener error:', error)
         );
         realtimeListeners.current.push(() => activitiesListener());
-        
-        // Notifications listener (for all roles)
+
         const notificationsListener = onSnapshot(
             query(collection(db, 'notifications'), where('schoolId', '==', schoolId), where('read', '==', false), orderBy('createdAt', 'desc'), limit(10)),
             async (snapshot) => {
-                const notificationsData = snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data(),
-                    createdAt: doc.data().createdAt?.toDate?.() || new Date(),
-                    time: formatTimeAgo(doc.data().createdAt?.toDate?.() || new Date())
+                const notificationsData = snapshot.docs.map(d => ({
+                    id: d.id,
+                    ...d.data(),
+                    createdAt: d.data().createdAt?.toDate?.() || new Date(),
+                    time: formatTimeAgo(d.data().createdAt?.toDate?.() || new Date())
                 }));
                 setNotifications(notificationsData);
                 updateNotificationCount(notificationsData.length);
@@ -1036,25 +1068,19 @@ export default function Dashboard() {
         );
         realtimeListeners.current.push(() => notificationsListener());
 
-        // Teacher-specific realtime listeners
         if (userRole === 'teacher' && teacherData) {
             const teacherClasses = teacherData.classes || [];
             const teacherLevels = teacherData.level ? [teacherData.level] : (teacherData.levels || []);
-            
+
             if (teacherClasses.length > 0 || teacherLevels.length > 0) {
-                // Listen for exam submissions for teacher's classes
                 const submissionsListener = onSnapshot(
                     query(collection(db, 'exam_submissions'), where('schoolId', '==', schoolId), where('status', '==', 'pending')),
-                    async (snapshot) => {
-                        const pendingSubs = snapshot.docs.filter(doc => {
-                            const data = doc.data();
-                            // Check if this submission is for a class/level the teacher teaches
+                    (snapshot) => {
+                        const pendingSubs = snapshot.docs.filter(d => {
+                            const data = d.data();
                             return teacherClasses.includes(data.class) || teacherLevels.includes(data.level);
                         });
-                        setStats(prev => ({ 
-                            ...prev, 
-                            pendingSubmissions: pendingSubs.length 
-                        }));
+                        setStats(prev => ({ ...prev, pendingSubmissions: pendingSubs.length }));
                     },
                     (error) => console.error('Submissions listener error:', error)
                 );
@@ -1062,9 +1088,7 @@ export default function Dashboard() {
             }
         }
 
-        // Student-specific realtime listeners
         if (userRole === 'student' && studentData) {
-            // Listen for new scores for this student
             const scoresListener = onSnapshot(
                 query(
                     collection(db, 'student_scores'),
@@ -1072,27 +1096,52 @@ export default function Dashboard() {
                     where('studentId', '==', studentData.id || studentData.studentId)
                 ),
                 async (snapshot) => {
-                    const scores = snapshot.docs.map(doc => ({
-                        id: doc.id,
-                        ...doc.data()
-                    }));
+                    const scores = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
                     setMyScores(scores);
                     const published = scores.filter(s => s.status === 'published' || s.status === 'graded');
                     setRecentResults(published.slice(0, 5));
+
+                    // Recompute average from the live set
+                    const pool = published.length ? published : scores;
+                    if (pool.length > 0) {
+                        const latestType = pool[0].assessmentType || 'Assessment 1';
+                        const sameType = pool.filter(s => (s.assessmentType || 'Assessment 1') === latestType);
+                        const values = sameType
+                            .map(s => (s.computedPercentage != null ? Number(s.computedPercentage) : Number(s.score)))
+                            .filter(v => Number.isFinite(v));
+                        if (values.length > 0) {
+                            const avg = Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+                            setAverageScore(avg);
+                            setAverageScoreGrade(getCBCGrade(avg));
+                        }
+                    }
+
                     await saveToIndexedDB('student_scores', scores);
                 },
                 (error) => console.error('Scores listener error:', error)
             );
             realtimeListeners.current.push(() => scoresListener());
+
+            // Live attendance updates for this student's class
+            const attendanceListener = onSnapshot(
+                query(
+                    collection(db, 'attendance'),
+                    where('schoolId', '==', schoolId),
+                    where('class', '==', studentData.class || '')
+                ),
+                () => {
+                    // Re-fetch aggregated stats to keep the math consistent
+                    loadStudentAttendanceStats(schoolId, studentData).catch(() => {});
+                },
+                (error) => console.error('Attendance listener error:', error)
+            );
+            realtimeListeners.current.push(() => attendanceListener());
         }
     };
-    
-    // Show notification
-    const showNotification = (message, type = 'info') => {
-        showAppNotice(message, type);
-    };
-    
-    // Handle quick actions based on role
+
+    // ==================================================
+    // QUICK ACTIONS
+    // ==================================================
     const handleQuickAction = (action) => {
         const actions = {
             'add-student': () => navigate('/students?action=add'),
@@ -1106,17 +1155,13 @@ export default function Dashboard() {
             'take-exam': () => navigate('/exams/take'),
             'my-classes': () => navigate('/classes')
         };
-        if (actions[action]) {
-            actions[action]();
-        }
+        if (actions[action]) actions[action]();
     };
-    
-    // Handle filter activities
+
     const handleFilterActivities = () => {
         showNotification('Filter functionality coming soon!', 'info');
     };
-    
-    // Handle export activities
+
     const handleExportActivities = async () => {
         if (activities.length === 0) {
             showNotification('No activities to export', 'warning');
@@ -1124,15 +1169,14 @@ export default function Dashboard() {
         }
         try {
             const csv = convertToCSV(activities);
-            downloadCSV(csv, `activities_${new Date().toISOString().slice(0,10)}.csv`);
+            downloadCSV(csv, `activities_${new Date().toISOString().slice(0, 10)}.csv`);
             showNotification('Activities exported successfully', 'success');
         } catch (error) {
             console.error('Error exporting activities:', error);
             showNotification('Failed to export activities', 'error');
         }
     };
-    
-    // Convert to CSV
+
     const convertToCSV = (data) => {
         const headers = ['Description', 'Type', 'Time'];
         const rows = data.map(item => [
@@ -1142,8 +1186,7 @@ export default function Dashboard() {
         ]);
         return [headers, ...rows].map(row => row.join(',')).join('\n');
     };
-    
-    // Download CSV
+
     const downloadCSV = (content, filename) => {
         const blob = new Blob([content], { type: 'text/csv' });
         const url = window.URL.createObjectURL(blob);
@@ -1154,7 +1197,9 @@ export default function Dashboard() {
         window.URL.revokeObjectURL(url);
     };
 
-    // Render role-specific stats grid
+    // ==================================================
+    // RENDER: STATS GRID
+    // ==================================================
     const renderStatsGrid = () => {
         if (isSchoolAdmin) {
             return (
@@ -1162,9 +1207,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Total Students</div>
-                            <div className="stat-icon students">
-                                <i className="fas fa-user-graduate"></i>
-                            </div>
+                            <div className="stat-icon students"><i className="fas fa-user-graduate"></i></div>
                         </div>
                         <div className="stat-value">{stats.totalStudents}</div>
                         <div className="stat-footer">
@@ -1179,9 +1222,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Total Teachers</div>
-                            <div className="stat-icon teachers">
-                                <i className="fas fa-chalkboard-teacher"></i>
-                            </div>
+                            <div className="stat-icon teachers"><i className="fas fa-chalkboard-teacher"></i></div>
                         </div>
                         <div className="stat-value">{stats.totalTeachers}</div>
                         <div className="stat-footer">
@@ -1196,9 +1237,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Active Exams</div>
-                            <div className="stat-icon exams">
-                                <i className="fas fa-file-alt"></i>
-                            </div>
+                            <div className="stat-icon exams"><i className="fas fa-file-alt"></i></div>
                         </div>
                         <div className="stat-value">{stats.activeExams}</div>
                         <div className="stat-footer">
@@ -1213,9 +1252,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Pending Submissions</div>
-                            <div className="stat-icon submissions">
-                                <i className="fas fa-tasks"></i>
-                            </div>
+                            <div className="stat-icon submissions"><i className="fas fa-tasks"></i></div>
                         </div>
                         <div className="stat-value">{stats.pendingSubmissions}</div>
                         <div className="stat-footer">
@@ -1230,9 +1267,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Results Published</div>
-                            <div className="stat-icon results">
-                                <i className="fas fa-chart-line"></i>
-                            </div>
+                            <div className="stat-icon results"><i className="fas fa-chart-line"></i></div>
                         </div>
                         <div className="stat-value">{stats.resultsPublished}</div>
                         <div className="stat-footer">
@@ -1240,20 +1275,16 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Storage Usage</div>
-                            <div className="stat-icon storage">
-                                <i className="fas fa-database"></i>
-                            </div>
+                            <div className="stat-icon storage"><i className="fas fa-database"></i></div>
                         </div>
                         <div className="stat-value">{stats.storageUsage}</div>
                         <div className="stat-footer">
                             <button className="stat-more" onClick={() => navigate('/school-profile')}>Manage</button>
                         </div>
                     </div>
-
                 </>
             );
         }
@@ -1264,9 +1295,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">My Classes</div>
-                            <div className="stat-icon classes">
-                                <i className="fas fa-chalkboard"></i>
-                            </div>
+                            <div className="stat-icon classes"><i className="fas fa-chalkboard"></i></div>
                         </div>
                         <div className="stat-value">{teacherData?.classes?.length || 0}</div>
                         <div className="stat-footer">
@@ -1281,9 +1310,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">My Exams</div>
-                            <div className="stat-icon exams">
-                                <i className="fas fa-file-alt"></i>
-                            </div>
+                            <div className="stat-icon exams"><i className="fas fa-file-alt"></i></div>
                         </div>
                         <div className="stat-value">{myExams.length}</div>
                         <div className="stat-footer">
@@ -1298,9 +1325,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Pending Submissions</div>
-                            <div className="stat-icon submissions">
-                                <i className="fas fa-tasks"></i>
-                            </div>
+                            <div className="stat-icon submissions"><i className="fas fa-tasks"></i></div>
                         </div>
                         <div className="stat-value">{stats.pendingSubmissions}</div>
                         <div className="stat-footer">
@@ -1315,9 +1340,7 @@ export default function Dashboard() {
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Grading Progress</div>
-                            <div className="stat-icon results">
-                                <i className="fas fa-chart-line"></i>
-                            </div>
+                            <div className="stat-icon results"><i className="fas fa-chart-line"></i></div>
                         </div>
                         <div className="stat-value">{stats.resultsPublished}</div>
                         <div className="stat-footer">
@@ -1328,20 +1351,21 @@ export default function Dashboard() {
                             <button className="stat-more" onClick={() => navigate('/results')}>Details</button>
                         </div>
                     </div>
-
                 </>
             );
         }
 
         if (userRole === 'student') {
+            const att = attendanceStats;
+            const fmtCurrency = (v) => v == null ? '—' : `KSh ${Number(v).toLocaleString()}`;
+
             return (
                 <>
+                    {/* Current class */}
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">My Class</div>
-                            <div className="stat-icon class">
-                                <i className="fas fa-users"></i>
-                            </div>
+                            <div className="stat-icon class"><i className="fas fa-users"></i></div>
                         </div>
                         <div className="stat-value" style={{ fontSize: '20px' }}>
                             {studentData?.class || 'N/A'}
@@ -1354,12 +1378,86 @@ export default function Dashboard() {
                         </div>
                     </div>
 
+                    {/* Attendance */}
+                    <div className="stat-card">
+                        <div className="stat-header">
+                            <div className="stat-title">Attendance</div>
+                            <div className="stat-icon submissions"><i className="fas fa-clipboard-check"></i></div>
+                        </div>
+                        <div className="stat-value" style={{
+                            color: att == null ? 'var(--gray)'
+                                : att.rate >= 90 ? 'var(--success)'
+                                : att.rate >= 75 ? 'var(--warning)'
+                                : 'var(--danger)'
+                        }}>
+                            {attendanceLoading ? '…' : att == null ? '—' : `${att.rate}%`}
+                        </div>
+                        <div className="stat-footer" style={{ flexWrap: 'wrap', gap: 6 }}>
+                            {att ? (
+                                <>
+                                    <span style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }}>P {att.present}</span>
+                                    <span style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 600 }}>A {att.absent}</span>
+                                    <span style={{ fontSize: 11, color: 'var(--warning)', fontWeight: 600 }}>L {att.late}</span>
+                                    <span style={{ fontSize: 11, color: 'var(--info)', fontWeight: 600 }}>E {att.excused}</span>
+                                </>
+                            ) : (
+                                <span style={{ fontSize: 11, color: 'var(--gray)' }}>
+                                    {attendanceLoading ? 'Loading…' : 'No data yet'}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Average score */}
+                    <div className="stat-card">
+                        <div className="stat-header">
+                            <div className="stat-title">Average Score</div>
+                            <div className="stat-icon results"><i className="fas fa-chart-line"></i></div>
+                        </div>
+                        <div className="stat-value" style={{
+                            color: averageScore == null ? 'var(--gray)'
+                                : averageScore >= 75 ? 'var(--success)'
+                                : averageScore >= 50 ? 'var(--warning)'
+                                : 'var(--danger)'
+                        }}>
+                            {averageScore == null ? '—' : `${averageScore}%`}
+                        </div>
+                        <div className="stat-footer">
+                            <div className="status-indicator">
+                                <span className="status-dot status-info"></span>
+                                <span>{averageScoreGrade ? `Grade ${averageScoreGrade.code}` : 'Not scored yet'}</span>
+                            </div>
+                            <button className="stat-more" onClick={() => handleQuickAction('view-results')}>View</button>
+                        </div>
+                    </div>
+
+                    {/* Fee balance */}
+                    <div className="stat-card">
+                        <div className="stat-header">
+                            <div className="stat-title">Fee Balance</div>
+                            <div className="stat-icon exams"><i className="fas fa-file-invoice-dollar"></i></div>
+                        </div>
+                        <div className="stat-value" style={{
+                            fontSize: '20px',
+                            color: feeBalance == null ? 'var(--gray)'
+                                : feeBalance > 0 ? 'var(--danger)'
+                                : 'var(--success)'
+                        }}>
+                            {feeBalanceLoading ? '…' : fmtCurrency(feeBalance)}
+                        </div>
+                        <div className="stat-footer">
+                            <div className="status-indicator">
+                                <span className={`status-dot ${feeBalance == null ? 'status-warning' : feeBalance > 0 ? 'status-warning' : 'status-active'}`}></span>
+                                <span>{feeBalance == null ? 'Unavailable' : feeBalance > 0 ? 'Outstanding' : 'Cleared'}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Upcoming exams */}
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">Upcoming Exams</div>
-                            <div className="stat-icon exams">
-                                <i className="fas fa-calendar-alt"></i>
-                            </div>
+                            <div className="stat-icon exams"><i className="fas fa-calendar-alt"></i></div>
                         </div>
                         <div className="stat-value">{upcomingExams.length}</div>
                         <div className="stat-footer">
@@ -1371,12 +1469,11 @@ export default function Dashboard() {
                         </div>
                     </div>
 
+                    {/* My results */}
                     <div className="stat-card">
                         <div className="stat-header">
                             <div className="stat-title">My Results</div>
-                            <div className="stat-icon results">
-                                <i className="fas fa-chart-line"></i>
-                            </div>
+                            <div className="stat-icon results"><i className="fas fa-award"></i></div>
                         </div>
                         <div className="stat-value">{recentResults.length}</div>
                         <div className="stat-footer">
@@ -1387,7 +1484,6 @@ export default function Dashboard() {
                             <button className="stat-more" onClick={() => handleQuickAction('view-results')}>View</button>
                         </div>
                     </div>
-
                 </>
             );
         }
@@ -1395,43 +1491,33 @@ export default function Dashboard() {
         return null;
     };
 
-    // Render role-specific quick actions
+    // ==================================================
+    // RENDER: QUICK ACTIONS
+    // ==================================================
     const renderQuickActions = () => {
         if (isSchoolAdmin) {
             return (
                 <>
                     <div className="quick-action-card" onClick={() => handleQuickAction('add-student')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-user-plus"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-user-plus"></i></div>
                         <h3 className="quick-action-title">Add Student</h3>
                         <p className="quick-action-desc">Register new student</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('create-exam')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-file-medical"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-file-medical"></i></div>
                         <h3 className="quick-action-title">Create Exam</h3>
                         <p className="quick-action-desc">Schedule new exam</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('generate-report')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-chart-bar"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-chart-bar"></i></div>
                         <h3 className="quick-action-title">Generate Report</h3>
                         <p className="quick-action-desc">Create performance report</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('assign-teacher')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-user-tie"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-user-tie"></i></div>
                         <h3 className="quick-action-title">Assign Teacher</h3>
                         <p className="quick-action-desc">Assign to class/subject</p>
                     </div>
-                    
                 </>
             );
         }
@@ -1440,41 +1526,27 @@ export default function Dashboard() {
             return (
                 <>
                     <div className="quick-action-card" onClick={() => handleQuickAction('view-exams')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-file-alt"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-file-alt"></i></div>
                         <h3 className="quick-action-title">View Exams</h3>
                         <p className="quick-action-desc">See all your exams</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('generate-report')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-chart-bar"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-chart-bar"></i></div>
                         <h3 className="quick-action-title">Generate Report</h3>
                         <p className="quick-action-desc">Create class performance report</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('my-classes')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-chalkboard"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-chalkboard"></i></div>
                         <h3 className="quick-action-title">My Classes</h3>
                         <p className="quick-action-desc">View assigned classes</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => navigate('/students')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-user-graduate"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-user-graduate"></i></div>
                         <h3 className="quick-action-title">My Students</h3>
                         <p className="quick-action-desc">View students in my classes</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('print-records')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-print"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-print"></i></div>
                         <h3 className="quick-action-title">Print Records</h3>
                         <p className="quick-action-desc">Print class records</p>
                     </div>
@@ -1486,41 +1558,27 @@ export default function Dashboard() {
             return (
                 <>
                     <div className="quick-action-card" onClick={() => handleQuickAction('take-exam')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-pencil-alt"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-pencil-alt"></i></div>
                         <h3 className="quick-action-title">Take Exam</h3>
                         <p className="quick-action-desc">Start an online exam</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => handleQuickAction('view-results')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-chart-line"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-chart-line"></i></div>
                         <h3 className="quick-action-title">My Results</h3>
                         <p className="quick-action-desc">View exam results</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => navigate('/scores')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-tasks"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-tasks"></i></div>
                         <h3 className="quick-action-title">My Scores</h3>
                         <p className="quick-action-desc">View all scores</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => navigate('/exams')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-calendar-alt"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-calendar-alt"></i></div>
                         <h3 className="quick-action-title">Exam Schedule</h3>
                         <p className="quick-action-desc">View upcoming exams</p>
                     </div>
-                    
                     <div className="quick-action-card" onClick={() => navigate('/profile')}>
-                        <div className="quick-action-icon">
-                            <i className="fas fa-user"></i>
-                        </div>
+                        <div className="quick-action-icon"><i className="fas fa-user"></i></div>
                         <h3 className="quick-action-title">My Profile</h3>
                         <p className="quick-action-desc">View and update profile</p>
                     </div>
@@ -1531,84 +1589,68 @@ export default function Dashboard() {
         return null;
     };
 
-    // Render role-specific welcome message
+    // ==================================================
+    // RENDER: WELCOME
+    // ==================================================
     const renderWelcomeMessage = () => {
         const firstName = userData?.fullName?.split(' ')[0] || userData?.firstName?.split(' ')[0] || 'User';
-        
-        // Get the appropriate emoji based on time of day
+
         const hour = new Date().getHours();
         let emoji = '';
         if (hour >= 5 && hour < 12) emoji = '';
         else if (hour >= 12 && hour < 17) emoji = '';
         else if (hour >= 17 && hour < 21) emoji = '';
         else emoji = '';
-        
+
         if (isSchoolAdmin) {
             return (
                 <div className="welcome-content">
                     <h1>{emoji} Welcome back, <span>{firstName}</span>!</h1>
-                    <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>
-                        {motivationalMessage}
-                    </p>
-                    <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '8px' }}>
-                        {termStatus}
-                    </p>
+                    <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>{motivationalMessage}</p>
+                    <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '8px' }}>{termStatus}</p>
                 </div>
             );
         }
-        
+
         if (userRole === 'teacher') {
             return (
                 <div className="welcome-content">
                     <h1>{emoji} Welcome back, <span>Mr/Ms {firstName}</span>!</h1>
-                    <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>
-                        {motivationalMessage}
-                    </p>
+                    <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>{motivationalMessage}</p>
                     {teacherData?.classes && teacherData.classes.length > 0 && (
                         <p style={{ fontSize: '14px', opacity: '0.8', marginTop: '8px' }}>
                             Assigned to: {teacherData.classes.join(', ')}
                         </p>
                     )}
-                    <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '4px' }}>
-                        {termStatus}
-                    </p>
+                    <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '4px' }}>{termStatus}</p>
                 </div>
             );
         }
-        
+
         if (userRole === 'student') {
             return (
                 <div className="welcome-content">
                     <h1>{emoji} Welcome back, <span>{firstName}</span>!</h1>
-                    <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>
-                        {motivationalMessage}
-                    </p>
+                    <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>{motivationalMessage}</p>
                     {studentData?.class && (
                         <p style={{ fontSize: '14px', opacity: '0.8', marginTop: '8px' }}>
                             Class: {studentData.class} • {getLevelDisplayName(studentData?.level)}
                         </p>
                     )}
-                    <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '4px' }}>
-                        {termStatus}
-                    </p>
+                    <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '4px' }}>{termStatus}</p>
                 </div>
             );
         }
-        
+
         return (
             <div className="welcome-content">
                 <h1>{emoji} Welcome back, <span>{firstName}</span>!</h1>
-                <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>
-                    {motivationalMessage}
-                </p>
-                <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '8px' }}>
-                    {termStatus}
-                </p>
+                <p style={{ fontSize: '15px', opacity: '0.95', maxWidth: '600px' }}>{motivationalMessage}</p>
+                <p style={{ fontSize: '13px', opacity: '0.8', marginTop: '8px' }}>{termStatus}</p>
             </div>
         );
     };
 
-    // Render role-specific welcome actions
     const renderWelcomeActions = () => {
         if (isSchoolAdmin) {
             return (
@@ -1622,7 +1664,6 @@ export default function Dashboard() {
                 </>
             );
         }
-        
         if (userRole === 'teacher') {
             return (
                 <>
@@ -1635,7 +1676,6 @@ export default function Dashboard() {
                 </>
             );
         }
-        
         if (userRole === 'student') {
             return (
                 <>
@@ -1648,11 +1688,12 @@ export default function Dashboard() {
                 </>
             );
         }
-        
         return null;
     };
 
-    // Render role-specific recent activity section
+    // ==================================================
+    // RENDER: ACTIVITY
+    // ==================================================
     const renderRecentActivity = () => {
         if (isSchoolAdmin) {
             return (
@@ -1660,16 +1701,10 @@ export default function Dashboard() {
                     <div className="section-header">
                         <h2 className="section-title">Recent Activity</h2>
                         <div className="section-actions">
-                            <button 
-                                className="btn btn-outline btn-sm" 
-                                onClick={handleFilterActivities}
-                            >
+                            <button className="btn btn-outline btn-sm" onClick={handleFilterActivities}>
                                 <i className="fas fa-filter"></i> Filter
                             </button>
-                            <button 
-                                className="btn btn-primary btn-sm" 
-                                onClick={handleExportActivities}
-                            >
+                            <button className="btn btn-primary btn-sm" onClick={handleExportActivities}>
                                 <i className="fas fa-download"></i> Export
                             </button>
                         </div>
@@ -1699,7 +1734,6 @@ export default function Dashboard() {
                                     'logout': 'sign-out-alt'
                                 };
                                 const icon = iconMap[activity.type] || 'info-circle';
-                                
                                 return (
                                     <li key={activity.id} className="activity-item">
                                         <div className="activity-icon">
@@ -1718,7 +1752,6 @@ export default function Dashboard() {
             );
         }
 
-        // Teacher and student activity section (simplified)
         return (
             <section className="recent-activity">
                 <div className="section-header">
@@ -1749,13 +1782,14 @@ export default function Dashboard() {
         );
     };
 
-    // Render student-specific content (upcoming exams and recent results)
+    // ==================================================
+    // RENDER: STUDENT CONTENT
+    // ==================================================
     const renderStudentContent = () => {
         if (userRole !== 'student') return null;
 
         return (
             <div className="student-content-grid">
-                {/* Upcoming Exams */}
                 <section className="upcoming-exams" style={{ gridColumn: '1 / 2' }}>
                     <div className="section-header">
                         <h2 className="section-title">Upcoming Exams</h2>
@@ -1798,7 +1832,6 @@ export default function Dashboard() {
                     </div>
                 </section>
 
-                {/* Recent Results */}
                 <section className="recent-results" style={{ gridColumn: '2 / 3' }}>
                     <div className="section-header">
                         <h2 className="section-title">Recent Results</h2>
@@ -1823,7 +1856,7 @@ export default function Dashboard() {
                                 }}>
                                     <div>
                                         <div style={{ fontWeight: '600', color: 'var(--secondary)' }}>
-                                            {result.examTitle || result.examName || 'Exam'}
+                                            {result.examTitle || result.examName || result.subject || 'Exam'}
                                         </div>
                                         <div style={{ fontSize: '12px', color: 'var(--gray)' }}>
                                             Score: <strong>{result.score !== undefined && result.score !== null ? result.score : 'N/A'}</strong>
@@ -1831,13 +1864,15 @@ export default function Dashboard() {
                                             {result.grade && ` • Grade: ${result.grade}`}
                                         </div>
                                     </div>
-                                    <div style={{ 
-                                        fontSize: '14px', 
+                                    <div style={{
+                                        fontSize: '14px',
                                         fontWeight: '700',
-                                        color: result.score && result.score >= 70 ? 'var(--success)' : 
-                                               result.score && result.score >= 50 ? 'var(--warning)' : 'var(--danger)'
+                                        color: result.score && result.score >= 70 ? 'var(--success)' :
+                                            result.score && result.score >= 50 ? 'var(--warning)' : 'var(--danger)'
                                     }}>
-                                        {result.score !== undefined && result.score !== null ? `${Math.round((result.score / (result.maxScore || 100)) * 100)}%` : 'N/A'}
+                                        {result.score !== undefined && result.score !== null
+                                            ? `${Math.round((result.score / (result.maxScore || 100)) * 100)}%`
+                                            : 'N/A'}
                                     </div>
                                 </div>
                             ))
@@ -1848,7 +1883,9 @@ export default function Dashboard() {
         );
     };
 
-    // Render teacher-specific content
+    // ==================================================
+    // RENDER: TEACHER CONTENT
+    // ==================================================
     const renderTeacherContent = () => {
         if (userRole !== 'teacher') return null;
 
@@ -1884,11 +1921,11 @@ export default function Dashboard() {
                                     </div>
                                     <div style={{ textAlign: 'right' }}>
                                         <div style={{ fontSize: '12px', color: 'var(--gray)' }}>
-                                            {exam.status === 'active' ? '🟢 Active' : 
-                                             exam.status === 'pending' ? '🟡 Pending' : '⚪ Completed'}
+                                            {exam.status === 'active' ? '🟢 Active' :
+                                                exam.status === 'pending' ? '🟡 Pending' : '⚪ Completed'}
                                         </div>
-                                        <button 
-                                            className="btn btn-sm btn-primary" 
+                                        <button
+                                            className="btn btn-sm btn-primary"
                                             style={{ marginTop: '4px', padding: '4px 12px', fontSize: '11px' }}
                                             onClick={() => navigate(`/exams/${exam.id}/submissions`)}
                                         >
@@ -1914,22 +1951,14 @@ export default function Dashboard() {
                             {stats.pendingSubmissions || 0}
                         </span>
                     </div>
-                    <div style={{ 
-                        textAlign: 'center', 
-                        padding: '40px 20px',
-                        color: 'var(--gray)'
-                    }}>
+                    <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--gray)' }}>
                         {stats.pendingSubmissions > 0 ? (
                             <>
                                 <i className="fas fa-tasks" style={{ fontSize: '36px', display: 'block', marginBottom: '15px', color: 'var(--warning)' }}></i>
                                 <p style={{ fontSize: '16px', fontWeight: '500', color: 'var(--secondary)' }}>
                                     {stats.pendingSubmissions} submission{stats.pendingSubmissions > 1 ? 's' : ''} pending review
                                 </p>
-                                <button 
-                                    className="btn btn-primary" 
-                                    style={{ marginTop: '15px' }}
-                                    onClick={() => navigate('/exams')}
-                                >
+                                <button className="btn btn-primary" style={{ marginTop: '15px' }} onClick={() => navigate('/exams')}>
                                     Go to Grading
                                 </button>
                             </>
@@ -1945,14 +1974,15 @@ export default function Dashboard() {
         );
     };
 
-    // Render loading state
+    // ==================================================
+    // RENDER
+    // ==================================================
     if (statsLoading) {
         return <LoadingSpinner fullScreen text="Loading dashboard..." />;
     }
-    
+
     return (
         <Layout>
-            {/* Using cached data indicator */}
             {usingCachedData && isOnline && (
                 <div style={{
                     background: '#d1ecf1',
@@ -1970,8 +2000,7 @@ export default function Dashboard() {
                     <span>Showing cached data. Syncing in background...</span>
                 </div>
             )}
-     
-            {/* Welcome Banner */}
+
             <section className="welcome-banner">
                 {renderWelcomeMessage()}
                 <div className="welcome-actions">
@@ -1979,31 +2008,26 @@ export default function Dashboard() {
                 </div>
             </section>
 
-            {/* Stats Grid */}
             <section className="stats-grid" id="statsGrid">
                 {renderStatsGrid()}
             </section>
 
-            {/* Role-specific content sections */}
             {userRole === 'student' && renderStudentContent()}
             {userRole === 'teacher' && renderTeacherContent()}
 
-            {/* Recent Activity */}
             {renderRecentActivity()}
 
-            {/* Quick Actions */}
             <section className="mt-30">
                 <h2 className="section-title mb-20">
                     {isSchoolAdmin ? 'Quick Actions' :
-                     userRole === 'teacher' ? 'Teaching Tools' : 
-                     'Student Tools'}
+                        userRole === 'teacher' ? 'Teaching Tools' :
+                            'Student Tools'}
                 </h2>
                 <div className="quick-actions-grid">
                     {renderQuickActions()}
                 </div>
             </section>
 
-            {/* CSS styles */}
             <style>{`
                 .student-content-grid,
                 .teacher-content-grid {
@@ -2040,13 +2064,8 @@ export default function Dashboard() {
                     font-size: 12px;
                 }
 
-                .mt-30 {
-                    margin-top: 30px;
-                }
-
-                .mb-20 {
-                    margin-bottom: 20px;
-                }
+                .mt-30 { margin-top: 30px; }
+                .mb-20 { margin-bottom: 20px; }
 
                 .quick-actions-grid {
                     display: grid;
