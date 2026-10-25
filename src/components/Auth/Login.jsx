@@ -1,4 +1,4 @@
-// src/components/Auth/Login.jsx  (updated)
+// src/components/Auth/Login.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -8,15 +8,18 @@ import {
     updatePassword,
 } from 'firebase/auth';
 import { db } from '../../firebase';
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
+import {
+    doc, getDoc, setDoc, updateDoc, serverTimestamp,
+    collection, query, where, getDocs, limit,
+} from 'firebase/firestore';
 import { useSync } from '../../context/SyncContext';
 import { AuditLogService } from '../../services/auditService';
 import {
     authenticateWithBiometrics, getBiometricLoginStatus, isDeviceBiometricAvailable,
-    enableBiometricUnlock
+    enableBiometricUnlock,
 } from '../../services/deviceSecurity';
-import { fetchNetlifyFunction } from '../../services/netlifyApi';
 
+// ---- Cloudinary config (from env) ----
 const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET;
 
@@ -42,6 +45,16 @@ async function uploadToCloudinary(file) {
 }
 
 // --------------------------------------------------------------
+// Helper: extract the email domain (everything after the "@").
+// --------------------------------------------------------------
+const getEmailDomain = (email) => {
+    if (!email || typeof email !== 'string') return '';
+    const at = email.lastIndexOf('@');
+    if (at === -1) return '';
+    return email.slice(at + 1).trim().toLowerCase();
+};
+
+// --------------------------------------------------------------
 // Student first-login password change modal
 // --------------------------------------------------------------
 function StudentPasswordChangeModal({ onDone, onCancel }) {
@@ -62,11 +75,15 @@ function StudentPasswordChangeModal({ onDone, onCancel }) {
             const user = getAuth().currentUser;
             if (!user) throw new Error('Session expired. Please sign in again.');
             await updatePassword(user, newPassword);
-            await updateDoc(doc(db, 'students', user.uid), {
-                mustChangePassword: false,
-                passwordChangedAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-            }).catch(() => { /* student doc might not exist yet; ignore */ });
+            // Best-effort: clear the mustChangePassword flag on the student doc.
+            const studentDocId = sessionStorage.getItem('userId');
+            if (studentDocId) {
+                await updateDoc(doc(db, 'students', studentDocId), {
+                    mustChangePassword: false,
+                    passwordChangedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }).catch(() => {});
+            }
             onDone();
         } catch (err) {
             console.error('Password change failed:', err);
@@ -164,20 +181,13 @@ function StudentPasswordChangeModal({ onDone, onCancel }) {
 export default function Login() {
     const navigate = useNavigate();
     const { currentUser, userRole, userCollection, unlockSession } = useAuth();
-    const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
+    const { isOnline, saveToIndexedDB, getFromIndexedDB } = useSync();
+
     const auth = getAuth();
 
-    // ---- form state ----
+    // ---- Login / signup form state ----
     const [loginEmail, setLoginEmail] = useState('');
     const [loginPassword, setLoginPassword] = useState('');
-
-    // ---- student login state ----
-    const [loginMode, setLoginMode] = useState('staff'); // 'staff' | 'student'
-    const [studentEmail, setStudentEmail] = useState('');
-    const [studentAdmissionNumber, setStudentAdmissionNumber] = useState('');
-    const [studentSchoolId, setStudentSchoolId] = useState('');
-
-    // ---- signup ----
     const [signupSchoolName, setSignupSchoolName] = useState('');
     const [signupAdminFullName, setSignupAdminFullName] = useState('');
     const [signupEmail, setSignupEmail] = useState('');
@@ -185,7 +195,8 @@ export default function Login() {
     const [confirmPassword, setConfirmPassword] = useState('');
     const [termsAgreement, setTermsAgreement] = useState(false);
 
-    // ---- ui ----
+    // ---- UI state ----
+    const [loginMode, setLoginMode] = useState('staff'); // 'staff' | 'student'
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState({ text: '', type: '' });
     const [emailValid, setEmailValid] = useState(null);
@@ -198,9 +209,12 @@ export default function Login() {
     const [biometricReady, setBiometricReady] = useState(false);
     const [pendingBiometricRole, setPendingBiometricRole] = useState('');
 
-    // ---- student first-login ----
+    // ---- Student login state ----
+    const [studentEmail, setStudentEmail] = useState('');
+    const [studentAdmissionNumber, setStudentAdmissionNumber] = useState('');
     const [pendingPasswordChange, setPendingPasswordChange] = useState(false);
 
+    // ---- Upload state ----
     const [logoFile, setLogoFile] = useState(null);
     const [profileFile, setProfileFile] = useState(null);
     const [logoPreview, setLogoPreview] = useState(null);
@@ -211,6 +225,7 @@ export default function Login() {
     const timerIntervalRef = useRef(null);
     const biometricAttemptRef = useRef(false);
 
+    // ---- Lifecycle ----
     useEffect(() => {
         if (!isOnline) loadCachedUsers();
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,7 +235,7 @@ export default function Login() {
         let active = true;
         getBiometricLoginStatus()
             .then(({ enabled }) => { if (active) setBiometricReady(enabled); })
-            .catch((err) => console.warn('Biometric status check failed:', err.message));
+            .catch((error) => console.warn('Could not check biometric login status:', error.message));
         return () => { active = false; };
     }, []);
 
@@ -229,56 +244,234 @@ export default function Login() {
         if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
     }, []);
 
+    // ---- Cache ----
     const loadCachedUsers = async () => {
         try {
             const cached = await getFromIndexedDB('cached_users');
             if (cached) setCachedUsers(cached);
-        } catch (e) { console.error(e); }
+        } catch (error) { console.error('Error loading cached users:', error); }
     };
 
     const cacheUserData = async (userData) => {
         try {
             const cached = (await getFromIndexedDB('cached_users')) || [];
-            const i = cached.findIndex((u) => u.uid === userData.uid);
-            if (i >= 0) cached[i] = { ...cached[i], ...userData, cachedAt: new Date().toISOString() };
-            else cached.push({ ...userData, cachedAt: new Date().toISOString() });
+            const existing = cached.findIndex((u) => u.uid === userData.uid);
+            if (existing >= 0) {
+                cached[existing] = { ...cached[existing], ...userData, cachedAt: new Date().toISOString() };
+            } else {
+                cached.push({ ...userData, cachedAt: new Date().toISOString() });
+            }
             await saveToIndexedDB('cached_users', cached);
             setCachedUsers(cached);
-        } catch (e) { console.error(e); }
+        } catch (error) { console.error('Error caching user data:', error); }
     };
 
+    // ---- Validation ----
     const validateEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+    const handleLoginEmailChange = (e) => {
+        const email = e.target.value;
+        setLoginEmail(email);
+        setEmailValid(email === '' ? null : validateEmail(email));
+    };
+
+    const handleSignupEmailChange = (e) => {
+        const email = e.target.value;
+        setSignupEmail(email);
+        setSignupEmailValid(email === '' ? null : validateEmail(email));
+    };
+
+    const handleConfirmPasswordChange = (e) => {
+        const confirm = e.target.value;
+        setConfirmPassword(confirm);
+        setPasswordsMatch(confirm === '' ? null : signupPassword === confirm);
+    };
+
+    // ---- Image picker ----
+    const handleImageUpload = (type) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/jpeg,image/png,image/gif,image/webp';
+        input.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            if (file.size > 2 * 1024 * 1024) {
+                showMessage('Image must be under 2MB', 'error');
+                return;
+            }
+            if (type === 'logo') setLogoFile(file);
+            else setProfileFile(file);
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                if (type === 'logo') setLogoPreview(reader.result);
+                else setProfilePreview(reader.result);
+                showMessage('✅ Image selected', 'success');
+            };
+            reader.readAsDataURL(file);
+        };
+        input.click();
+    };
+
+    // ---- Messages ----
     const showMessage = (text, type = 'info') => setMessage({ text, type });
     const clearMessages = () => setMessage({ text: '', type: '' });
 
+    // ---- Misc ----
     const generateSchoolId = (schoolName) => {
-        const t = Date.now().toString(36);
-        const r = Math.random().toString(36).substring(2, 6);
-        const c = schoolName.substring(0, 3).toUpperCase();
-        return `${c}-${t}-${r}`;
+        const timestamp = Date.now().toString(36);
+        const randomStr = Math.random().toString(36).substring(2, 6);
+        const nameCode = schoolName.substring(0, 3).toUpperCase();
+        return `${nameCode}-${timestamp}-${randomStr}`;
     };
 
+    // ----------------------------------------------------------
+    // Auto-detect school from an email's domain.
+    //
+    // Order of resolution:
+    //   1. schools.emailDomain == domain        (fast, indexed)
+    //   2. schools.schoolDomain == domain       (legacy field)
+    //   3. Fallback: scan students in cached_users (offline-first)
+    //
+    // Returns { schoolId, schoolName, schoolDomain } or null.
+    // ----------------------------------------------------------
+    const findSchoolByEmailDomain = async (email) => {
+        const domain = getEmailDomain(email);
+        if (!domain) return null;
+
+        // 1. Fast path — try direct query on schools collection.
+        if (isOnline) {
+            try {
+                const byDomain = await getDocs(query(
+                    collection(db, 'schools'),
+                    where('emailDomain', '==', domain),
+                    limit(1)
+                ));
+                if (!byDomain.empty) {
+                    const docData = byDomain.docs[0];
+                    const data = docData.data();
+                    return {
+                        schoolId: data.schoolId || docData.id,
+                        schoolName: data.schoolName || data.name || 'School',
+                        schoolDomain: domain,
+                    };
+                }
+            } catch (e) {
+                console.warn('findSchoolByEmailDomain query failed:', e.message);
+            }
+
+            // 2. Legacy field name fallback.
+            try {
+                const byLegacy = await getDocs(query(
+                    collection(db, 'schools'),
+                    where('schoolDomain', '==', domain),
+                    limit(1)
+                ));
+                if (!byLegacy.empty) {
+                    const docData = byLegacy.docs[0];
+                    const data = docData.data();
+                    return {
+                        schoolId: data.schoolId || docData.id,
+                        schoolName: data.schoolName || data.name || 'School',
+                        schoolDomain: domain,
+                    };
+                }
+            } catch (e) {
+                console.warn('findSchoolByEmailDomain legacy query failed:', e.message);
+            }
+        }
+
+        // 3. Offline fallback — scan the cached users list.
+        const hit = cachedUsers.find((u) => {
+            if (!u.email) return false;
+            return getEmailDomain(u.email) === domain && u.schoolId;
+        });
+        if (hit) {
+            return {
+                schoolId: hit.schoolId,
+                schoolName: hit.schoolName || 'School',
+                schoolDomain: domain,
+            };
+        }
+
+        return null;
+    };
+
+    // ----------------------------------------------------------
+    // Find the student's doc by email + (optionally) schoolId.
+    // Matches the login flow used by Attendance/Fees/Dashboard.
+    // ----------------------------------------------------------
+    const findStudentDoc = async ({ email, schoolId }) => {
+        if (!email) return null;
+
+        const buildQuery = (sid) => {
+            const constraints = [where('email', '==', email)];
+            if (sid) constraints.unshift(where('schoolId', '==', sid));
+            return query(collection(db, 'students'), ...constraints, limit(1));
+        };
+
+        if (isOnline) {
+            try {
+                const snap = await getDocs(buildQuery(schoolId));
+                if (!snap.empty) {
+                    const d = snap.docs[0];
+                    return { id: d.id, ...d.data() };
+                }
+                // If schoolId was provided but nothing matched, retry by email only
+                // (helps when schoolId normalization differs between docs).
+                if (schoolId) {
+                    const retry = await getDocs(buildQuery(null));
+                    if (!retry.empty) {
+                        const d = retry.docs[0];
+                        return { id: d.id, ...d.data() };
+                    }
+                }
+            } catch (e) {
+                console.warn('findStudentDoc query failed:', e.message);
+            }
+        }
+        // Offline fallback
+        const hit = cachedUsers.find((u) =>
+            u.email === email && (!schoolId || u.schoolId === schoolId)
+        );
+        return hit || null;
+    };
+
+    // ---- User doc lookup (staff) ----
     const findUserDocument = async (uid, email) => {
         if (isOnline) {
             try {
-                for (const coll of ['users', 'teachers', 'students']) {
-                    const snap = await getDoc(doc(db, coll, uid));
-                    if (snap.exists()) {
-                        const data = snap.data();
-                        await cacheUserData({ uid, ...data, collection: coll });
-                        return { collection: coll, docId: uid, data };
-                    }
+                const userDoc = await getDoc(doc(db, 'users', uid));
+                if (userDoc.exists()) {
+                    const data = userDoc.data();
+                    await cacheUserData({ uid, ...data, collection: 'users' });
+                    return { collection: 'users', docId: uid, data };
                 }
-            } catch (e) { console.error(e); }
+                const teacherDoc = await getDoc(doc(db, 'teachers', uid));
+                if (teacherDoc.exists()) {
+                    const data = teacherDoc.data();
+                    await cacheUserData({ uid, ...data, collection: 'teachers' });
+                    return { collection: 'teachers', docId: uid, data };
+                }
+                const studentDoc = await getDoc(doc(db, 'students', uid));
+                if (studentDoc.exists()) {
+                    const data = studentDoc.data();
+                    await cacheUserData({ uid, ...data, collection: 'students' });
+                    return { collection: 'students', docId: uid, data };
+                }
+            } catch (error) {
+                console.error('Error checking collections:', error);
+            }
         }
-        const cached = cachedUsers.find((u) => u.uid === uid || u.email === email);
-        if (cached) return { collection: cached.collection || 'users', docId: cached.uid, data: cached };
+        const cachedUser = cachedUsers.find((u) => u.uid === uid || u.email === email);
+        if (cachedUser) {
+            return { collection: cachedUser.collection || 'users', docId: cachedUser.uid, data: cachedUser };
+        }
         return null;
     };
 
     const sendVerificationEmail = async (user) => {
         try { await sendEmailVerification(user); return true; }
-        catch (e) { console.error(e); return false; }
+        catch (error) { console.error('Error sending verification email:', error); return false; }
     };
 
     const checkEmailVerification = async () => {
@@ -293,24 +486,45 @@ export default function Login() {
             if (!user.emailVerified) return;
             if (verificationIntervalRef.current) clearInterval(verificationIntervalRef.current);
             if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+
             const userData = await findUserDocument(user.uid, user.email);
             if (userData) {
+                const { collection, docId, data } = userData;
                 if (isOnline) {
-                    await updateDoc(doc(db, userData.collection, userData.docId), {
+                    await updateDoc(doc(db, collection, docId), {
                         emailVerified: true,
                         verifiedAt: serverTimestamp(),
                         updatedAt: serverTimestamp(),
-                    }).catch(() => {});
+                    });
                 }
-                await cacheUserData({ ...userData.data, uid: user.uid, email: user.email, emailVerified: true, collection: userData.collection });
-                sessionStorage.setItem('userRole', userData.collection);
-                sessionStorage.setItem('userId', userData.docId);
-                showMessage('✅ Email verified successfully! Redirecting…', 'success');
-                setTimeout(() => navigateToDashboard(userData.collection), 2000);
+                await cacheUserData({
+                    ...data, uid: user.uid, email: user.email,
+                    emailVerified: true, collection,
+                });
+                showMessage('✅ Email verified successfully! Redirecting to dashboard...', 'success');
+                sessionStorage.setItem('userRole', collection);
+                sessionStorage.setItem('userId', docId);
+                setTimeout(() => navigateToDashboard(collection), 2000);
+            } else {
+                if (isOnline) {
+                    await setDoc(doc(db, 'users', user.uid), {
+                        uid: user.uid, email: user.email, role: 'user',
+                        emailVerified: true,
+                        verifiedAt: serverTimestamp(),
+                        createdAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    });
+                }
+                await cacheUserData({
+                    uid: user.uid, email: user.email, role: 'user',
+                    emailVerified: true, collection: 'users',
+                });
+                showMessage('✅ Email verified successfully! Redirecting to dashboard...', 'success');
+                setTimeout(() => navigateToDashboard('users'), 2000);
             }
-        } catch (e) {
-            console.error(e);
-            showMessage('Error checking verification status.', 'error');
+        } catch (error) {
+            console.error('Error checking email verification:', error);
+            showMessage('Error checking verification status. Please try again.', 'error');
         }
     };
 
@@ -327,183 +541,59 @@ export default function Login() {
         setVerificationEmail(email);
         setShowVerification(true);
         setVerificationTimer(30);
+
         timerIntervalRef.current = setInterval(() => {
-            setVerificationTimer((p) => {
-                if (p <= 1) {
+            setVerificationTimer((prev) => {
+                if (prev <= 1) {
                     clearInterval(timerIntervalRef.current);
                     checkEmailVerification();
                     return 0;
                 }
-                return p - 1;
+                return prev - 1;
             });
         }, 1000);
+
         verificationIntervalRef.current = setInterval(checkEmailVerification, 30000);
     };
 
     const handleResendVerification = async () => {
         const user = auth.currentUser;
-        if (!user) { showMessage('Session expired.', 'error'); setShowVerification(false); return; }
+        if (!user) {
+            showMessage('Session expired. Please login again.', 'error');
+            setShowVerification(false);
+            return;
+        }
         try {
             await sendEmailVerification(user);
-            showMessage('✅ Verification email resent!', 'success');
+            showMessage('✅ Verification email resent! Check your inbox.', 'success');
             setVerificationTimer(30);
-        } catch { showMessage('Failed to resend.', 'error'); }
+        } catch {
+            showMessage('Failed to resend verification email', 'error');
+        }
     };
 
     const toggleRegister = () => {
         setShowRegister(!showRegister);
         clearMessages();
         if (!showRegister) {
-            setSignupSchoolName(''); setSignupAdminFullName('');
-            setSignupEmail(''); setSignupPassword(''); setConfirmPassword('');
+            setSignupSchoolName('');
+            setSignupAdminFullName('');
+            setSignupEmail('');
+            setSignupPassword('');
+            setConfirmPassword('');
             setTermsAgreement(false);
-            setLogoFile(null); setProfileFile(null);
-            setLogoPreview(null); setProfilePreview(null);
-            setSignupEmailValid(null); setPasswordsMatch(null);
+            setLogoFile(null);
+            setProfileFile(null);
+            setLogoPreview(null);
+            setProfilePreview(null);
+            setSignupEmailValid(null);
+            setPasswordsMatch(null);
         }
     };
 
-    // ---------------------------------------------------------------
-    // STUDENT LOGIN
-    // ---------------------------------------------------------------
-    const handleStudentLogin = async (e) => {
-        e.preventDefault();
-        clearMessages();
-
-        if (!isOnline) {
-            showMessage('Connect to the internet for your first sign-in.', 'error');
-            return;
-        }
-        if (!validateEmail(studentEmail)) {
-            showMessage('Please enter a valid email address.', 'error');
-            return;
-        }
-        if (!studentAdmissionNumber.trim()) {
-            showMessage('Please enter your admission number.', 'error');
-            return;
-        }
-        if (!studentSchoolId.trim()) {
-            showMessage('Please enter your school ID.', 'error');
-            return;
-        }
-
-        setLoading(true);
-        try {
-            // 1. Find the student's user record via admission number + school
-            const studentSnap = await getDocs(
-                query(
-                    collection(db, 'students'),
-                    where('schoolId', '==', studentSchoolId.trim()),
-                    where('admissionNumber', '==', studentAdmissionNumber.trim())
-                )
-            );
-
-            if (studentSnap.empty) {
-                showMessage('No student found with that admission number for this school.', 'error');
-                setLoading(false);
-                return;
-            }
-
-            const studentDoc = studentSnap.docs[0];
-            const student = studentDoc.data();
-            const studentUid = student.uid || studentDoc.id;
-
-            // 2. Attempt Firebase sign-in using email + admission number as password
-            //    (Provisional "password" before first change).
-            let credential;
-            try {
-                credential = await signInWithEmailAndPassword(auth, studentEmail.trim(), studentAdmissionNumber.trim());
-            } catch (err) {
-                // If the student already changed their password, retry is impossible here
-                // — instruct them to use the staff login tab with their real password.
-                if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-                    showMessage(
-                        'Your password has already been changed. Sign in with your new password using the "Staff / Admin Login" tab, or reset it from "Forgot Password".',
-                        'error'
-                    );
-                } else if (err.code === 'auth/user-not-found') {
-                    showMessage(
-                        'Your login account has not been provisioned yet. Ask your school administrator to create it.',
-                        'error'
-                    );
-                } else {
-                    showMessage('Sign-in failed: ' + (err.message || err.code), 'error');
-                }
-                setLoading(false);
-                return;
-            }
-
-            const user = credential.user;
-
-            // 3. Persist the session
-            const roleColl = 'students';
-            sessionStorage.setItem('userRole', roleColl);
-            sessionStorage.setItem('userId', user.uid);
-
-            await cacheUserData({
-                uid: user.uid,
-                email: user.email,
-                collection: roleColl,
-                ...student,
-            });
-
-            // Update lastLogin (best-effort)
-            if (isOnline) {
-                try {
-                    await updateDoc(doc(db, 'students', studentDoc.id), {
-                        lastLogin: serverTimestamp(),
-                    });
-                } catch (e) { console.warn('lastLogin update failed:', e.message); }
-            }
-
-            // Audit log
-            const schoolId = student.schoolId;
-            if (isOnline && schoolId) {
-                AuditLogService.logAction(
-                    schoolId,
-                    {
-                        uid: user.uid,
-                        fullName: student.fullName || `${student.firstName || ''} ${student.lastName || ''}`.trim(),
-                        email: user.email,
-                        role: 'student',
-                    },
-                    'LOGIN',
-                    { message: 'Student sign-in' }
-                ).catch((e) => console.warn('Audit log failed:', e.message));
-            }
-
-            unlockSession();
-
-            // 4. Force password change on first login
-            const mustChange = student.mustChangePassword === true
-                || student.passwordChangedAt == null;
-            if (mustChange) {
-                setPendingPasswordChange(true);
-                setLoading(false);
-                return;
-            }
-
-            // 5. Otherwise go straight to the dashboard
-            showMessage('Welcome back! Redirecting…', 'success');
-            setTimeout(() => navigateToDashboard(roleColl), 1200);
-        } catch (err) {
-            console.error('Student login error:', err);
-            showMessage(err.message || 'Student sign-in failed.', 'error');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const completeStudentPasswordChange = () => {
-        setPendingPasswordChange(false);
-        showMessage('Password updated. Redirecting…', 'success');
-        const role = sessionStorage.getItem('userRole') || 'students';
-        setTimeout(() => navigateToDashboard(role), 1200);
-    };
-
-    // ---------------------------------------------------------------
-    // STAFF LOGIN (unchanged except student is not valid here)
-    // ---------------------------------------------------------------
+    // ----------------------------------------------------------
+    // Biometric flows
+    // ----------------------------------------------------------
     const offerBiometricSetup = async (role) => {
         if (biometricReady || !isDeviceBiometricAvailable()) return false;
         try {
@@ -511,8 +601,8 @@ export default function Login() {
             if (!status.available || status.enabled) return false;
             setPendingBiometricRole(role);
             return true;
-        } catch (err) {
-            console.warn('Biometric setup availability check failed:', err.message);
+        } catch (error) {
+            console.warn('Could not check biometric setup availability:', error.message);
             return false;
         }
     };
@@ -526,82 +616,124 @@ export default function Login() {
                 await authenticateWithBiometrics();
                 await enableBiometricUnlock();
                 setBiometricReady(true);
-                showMessage('Biometric unlock enabled.', 'success');
+                showMessage('Biometric unlock is enabled for this device.', 'success');
             }
             unlockSession();
             setPendingBiometricRole('');
             navigateToDashboard(role);
-        } catch (err) {
-            console.warn('Biometric setup failed:', err.message);
-            showMessage(err.message || 'Biometric setup failed.', 'error');
-        } finally { setLoading(false); }
+        } catch (error) {
+            console.warn('Biometric unlock setup failed:', error.message);
+            showMessage(error.message || 'Biometric setup failed. You can continue without it.', 'error');
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleBiometricLogin = async () => {
         if (biometricAttemptRef.current) return;
         biometricAttemptRef.current = true;
-        const bioPromise = authenticateWithBiometrics();
+
+        const biometricPromise = authenticateWithBiometrics();
         setLoading(true);
         try {
-            await bioPromise;
+            await biometricPromise;
             if (!currentUser && !auth.currentUser) {
-                throw new Error('No saved sign-in session. Connect to the internet and sign in first.');
+                throw new Error('No saved sign-in session is available. Connect to the internet and sign in first.');
             }
             unlockSession();
-            const collection = userCollection || (userRole === 'teacher' ? 'teachers' : userRole === 'student' ? 'students' : 'users');
+            const collection = userCollection || (
+                userRole === 'teacher' ? 'teachers'
+                    : userRole === 'student' ? 'students'
+                        : 'users'
+            );
             navigateToDashboard(collection);
-        } catch (err) {
-            showMessage(err.message || 'Unable to sign in with biometrics.', 'error');
+        } catch (error) {
+            console.warn('Biometric sign-in failed:', error.message);
+            showMessage(error.message || 'Unable to sign in with biometrics.', 'error');
         } finally {
             biometricAttemptRef.current = false;
             setLoading(false);
         }
     };
 
-    const handleLogin = async (e, savedCredentials = null) => {
-        e?.preventDefault();
+    // ----------------------------------------------------------
+    // STAFF LOGIN (unchanged)
+    // ----------------------------------------------------------
+    const handleLogin = async (e) => {
+        e.preventDefault();
         clearMessages();
-        const email = savedCredentials?.email || loginEmail;
-        const password = savedCredentials?.password || loginPassword;
-        if (!validateEmail(email)) { showMessage('Please enter a valid email address', 'error'); setLoading(false); return; }
-        if (password.length < 6) { showMessage('Password must be at least 6 characters', 'error'); setLoading(false); return; }
+
+        const email = loginEmail;
+        const password = loginPassword;
+        if (!validateEmail(email)) {
+            showMessage('Please enter a valid email address', 'error');
+            setLoading(false);
+            return;
+        }
+        if (password.length < 6) {
+            showMessage('Password must be at least 6 characters', 'error');
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         try {
             if (!isOnline) {
-                showMessage('Connect to the internet for your first sign-in.', 'error');
+                showMessage(
+                    'Connect to the internet for your first sign-in. After signing in, stay signed in to use the app offline.',
+                    'error'
+                );
+                setLoading(false);
                 return;
             }
-            const credential = await signInWithEmailAndPassword(auth, email, password);
-            const user = credential.user;
+
+            const userCredential = await signInWithEmailAndPassword(auth, email, password);
+            const user = userCredential.user;
 
             if (!user.emailVerified) {
                 showMessage('⚠️ Please verify your email address to access the dashboard.', 'warning');
                 startVerificationCheck(user.email);
                 await sendVerificationEmail(user);
+                setLoading(false);
                 return;
             }
 
             const userData = await findUserDocument(user.uid, email);
             if (userData) {
-                const { collection, docId, data } = userData;
-                const schoolId = data?.schoolId || data?.school_id;
-                if (schoolId) {
-                    AuditLogService.logAction(
+                const { collection, docId } = userData;
+                const schoolId = userData.data?.schoolId || userData.data?.school_id;
+                if (isOnline && schoolId) {
+                    await AuditLogService.logAction(
                         schoolId,
-                        { uid: user.uid, fullName: data?.fullName || user.displayName || email, email, role: data?.role || collection },
+                        {
+                            uid: user.uid,
+                            fullName: userData.data?.fullName || user.displayName || email,
+                            email,
+                            role: userData.data?.role || collection,
+                        },
                         'LOGIN',
                         { message: 'Successful sign-in' }
-                    ).catch(() => {});
+                    );
                 }
-                try { await updateDoc(doc(db, collection, docId), { lastLogin: serverTimestamp() }); }
-                catch (e) { console.warn('lastLogin update failed:', e.code || e.message); }
-                await cacheUserData({ uid: user.uid, email, collection, ...data });
+                if (isOnline) {
+                    try {
+                        await updateDoc(doc(db, collection, docId), { lastLogin: serverTimestamp() });
+                    } catch (error) {
+                        console.warn('Could not update last login timestamp:', error.code || error.message);
+                    }
+                }
+                await cacheUserData({
+                    uid: user.uid, email, collection,
+                    ...userData.data,
+                });
                 sessionStorage.setItem('userRole', collection);
                 sessionStorage.setItem('userId', docId);
                 unlockSession();
-                if (await offerBiometricSetup(collection)) { setLoading(false); return; }
-                showMessage('Welcome! Redirecting…', 'success');
-                setTimeout(() => navigateToDashboard(collection), 1500);
+                if (await offerBiometricSetup(collection)) {
+                    setLoading(false);
+                    return;
+                }
+                showMessage(`Welcome! Redirecting to dashboard...`, 'success');
+                setTimeout(() => navigateToDashboard(collection), 2000);
             } else {
                 if (isOnline) {
                     await setDoc(doc(db, 'users', user.uid), {
@@ -613,117 +745,358 @@ export default function Login() {
                         updatedAt: serverTimestamp(),
                     });
                 }
-                await cacheUserData({ uid: user.uid, email, role: 'user', fullName: user.displayName || 'User', collection: 'users' });
+                await cacheUserData({
+                    uid: user.uid, email, role: 'user',
+                    fullName: user.displayName || 'User', collection: 'users',
+                });
                 sessionStorage.setItem('userRole', 'users');
                 sessionStorage.setItem('userId', user.uid);
                 unlockSession();
-                if (await offerBiometricSetup('users')) { setLoading(false); return; }
-                showMessage('Welcome! Redirecting…', 'success');
-                setTimeout(() => navigateToDashboard('users'), 1500);
+                if (await offerBiometricSetup('users')) {
+                    setLoading(false);
+                    return;
+                }
+                showMessage('Welcome! Redirecting to dashboard...', 'success');
+                setTimeout(() => navigateToDashboard('users'), 2000);
             }
         } catch (error) {
-            const errorMessage =
-                error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password' ? 'Invalid email or password' :
-                error.code === 'auth/user-not-found' ? 'No account found with this email' :
-                error.code === 'auth/too-many-requests' ? 'Too many attempts. Try again later' :
-                error.code === 'auth/network-request-failed' ? 'Network error. Check connection' :
-                'Login failed. Please check your connection and try again';
+            console.error('Login failed:', {
+                code: error.code || 'unknown',
+                message: error.message || 'No error message provided',
+            });
+            let errorMessage = 'Login failed. ';
+            switch (error.code) {
+                case 'auth/invalid-credential':
+                case 'auth/wrong-password': errorMessage = 'Invalid email or password'; break;
+                case 'auth/user-not-found': errorMessage = 'No account found with this email'; break;
+                case 'auth/user-disabled': errorMessage = 'Account disabled. Contact support'; break;
+                case 'auth/too-many-requests': errorMessage = 'Too many attempts. Try again later'; break;
+                case 'auth/network-request-failed': errorMessage = 'Network error. Check connection'; break;
+                case 'auth/operation-not-allowed':
+                    errorMessage = 'Email and password sign-in is not enabled. Contact support';
+                    break;
+                case 'auth/invalid-api-key':
+                case 'auth/api-key-not-valid':
+                    errorMessage = 'Sign-in is temporarily unavailable. Contact support';
+                    break;
+                case 'auth/unauthorized-domain':
+                    errorMessage = 'This app is not authorized to sign in. Contact support';
+                    break;
+                case 'permission-denied':
+                case 'firestore/permission-denied':
+                    errorMessage = 'Your account signed in, but its profile could not be accessed. Contact your school administrator';
+                    break;
+                default: errorMessage = 'Login failed. Please check your connection and try again';
+            }
             showMessage(errorMessage, 'error');
         } finally {
             setLoading(false);
         }
     };
 
-    // ---------------------------------------------------------------
-    // SIGNUP (unchanged) — kept for completeness
-    // ---------------------------------------------------------------
-    const handleSignup = async (e) => {
+    // ----------------------------------------------------------
+    // STUDENT LOGIN — email + admission number (no school code!)
+    //
+    // 1. Auto-detect school from email domain.
+    // 2. Locate the student doc by email + schoolId.
+    // 3. Attempt Firebase sign-in with admissionNumber as password.
+    // 4. Force password change if mustChangePassword is true
+    //    OR if passwordChangedAt is missing.
+    // ----------------------------------------------------------
+    const handleStudentLogin = async (e) => {
         e.preventDefault();
         clearMessages();
-        if (!isOnline) { showMessage('You are offline. Connect to register.', 'error'); return; }
-        if (!signupSchoolName) return showMessage('Please enter school name', 'error');
-        if (!signupAdminFullName) return showMessage('Please enter admin full name', 'error');
-        if (!logoFile) return showMessage('Please upload school logo', 'error');
-        if (!profileFile) return showMessage('Please upload admin profile picture', 'error');
-        if (!validateEmail(signupEmail)) return showMessage('Please enter a valid email', 'error');
-        if (signupPassword.length < 6) return showMessage('Password must be at least 6 characters', 'error');
-        if (signupPassword !== confirmPassword) return showMessage('Passwords do not match', 'error');
-        if (!termsAgreement) return showMessage('Please agree to the terms', 'error');
+
+        if (!isOnline) {
+            showMessage('Connect to the internet for your first sign-in.', 'error');
+            return;
+        }
+        if (!validateEmail(studentEmail)) {
+            showMessage('Please enter a valid email address.', 'error');
+            return;
+        }
+        const admission = String(studentAdmissionNumber || '').trim();
+        if (!admission) {
+            showMessage('Please enter your admission number.', 'error');
+            return;
+        }
 
         setLoading(true);
         try {
-            let logoUrl = '', profileUrl = '';
+            // 1. Detect school from email domain.
+            const school = await findSchoolByEmailDomain(studentEmail);
+            if (!school) {
+                showMessage(
+                    "We couldn't find a school matching your email. " +
+                    'Please double-check your email, or contact your school office if you think this is a mistake.',
+                    'error'
+                );
+                setLoading(false);
+                return;
+            }
+
+            // 2. Locate the student doc.
+            const student = await findStudentDoc({
+                email: studentEmail.trim().toLowerCase(),
+                schoolId: school.schoolId,
+            });
+            if (!student) {
+                showMessage(
+                    'No student record found with that email for ' + school.schoolName + '. ' +
+                    'Please contact your school office.',
+                    'error'
+                );
+                setLoading(false);
+                return;
+            }
+
+            // 3. Attempt Firebase sign-in with the admission number as the password.
+            let credential;
+            try {
+                credential = await signInWithEmailAndPassword(auth, studentEmail.trim(), admission);
+            } catch (err) {
+                if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+                    showMessage(
+                        'Your password has already been changed. ' +
+                        'Sign in with your new password using the "Staff / Admin Login" tab, ' +
+                        'or use "Forgot Password" to reset it.',
+                        'error'
+                    );
+                } else if (err.code === 'auth/user-not-found') {
+                    showMessage(
+                        'Your login account has not been set up yet. Please contact your school office.',
+                        'error'
+                    );
+                } else {
+                    showMessage('Sign-in failed: ' + (err.message || err.code), 'error');
+                }
+                setLoading(false);
+                return;
+            }
+
+            const user = credential.user;
+
+            // 4. Persist session + cache.
+            const roleColl = 'students';
+            sessionStorage.setItem('userRole', roleColl);
+            sessionStorage.setItem('userId', student.id);
+
+            await cacheUserData({
+                uid: user.uid,
+                email: user.email,
+                collection: roleColl,
+                ...student,
+            });
+
+            if (isOnline) {
+                try {
+                    await updateDoc(doc(db, 'students', student.id), {
+                        lastLogin: serverTimestamp(),
+                        uid: user.uid,
+                    });
+                } catch (e) { console.warn('lastLogin update failed:', e.message); }
+
+                AuditLogService.logAction(
+                    school.schoolId,
+                    {
+                        uid: user.uid,
+                        fullName: student.fullName || `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+                        email: user.email,
+                        role: 'student',
+                    },
+                    'LOGIN',
+                    { message: 'Student sign-in (email auto-detected school)' }
+                ).catch((e) => console.warn('Audit log failed:', e.message));
+            }
+
+            unlockSession();
+
+            // 5. Force password change on first login.
+            const mustChange = student.mustChangePassword === true
+                || student.passwordChangedAt == null;
+            if (mustChange) {
+                setPendingPasswordChange(true);
+                setLoading(false);
+                return;
+            }
+
+            showMessage('Welcome back! Redirecting…', 'success');
+            setTimeout(() => navigateToDashboard(roleColl), 1200);
+        } catch (error) {
+            console.error('Student login error:', error);
+            showMessage(error.message || 'Student sign-in failed.', 'error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const completeStudentPasswordChange = () => {
+        setPendingPasswordChange(false);
+        showMessage('Password updated. Redirecting…', 'success');
+        const role = sessionStorage.getItem('userRole') || 'students';
+        setTimeout(() => navigateToDashboard(role), 1200);
+    };
+
+    // ----------------------------------------------------------
+    // SIGNUP (unchanged, but stamps emailDomain for future logins)
+    // ----------------------------------------------------------
+    const handleSignup = async (e) => {
+        e.preventDefault();
+        clearMessages();
+
+        if (!isOnline) {
+            showMessage('You are offline. Please connect to the internet to register.', 'error');
+            return;
+        }
+        if (!signupSchoolName) { showMessage('Please enter school name', 'error'); return; }
+        if (!signupAdminFullName) { showMessage('Please enter admin full name', 'error'); return; }
+        if (!logoFile) { showMessage('Please upload school logo', 'error'); return; }
+        if (!profileFile) { showMessage('Please upload admin profile picture', 'error'); return; }
+        if (!validateEmail(signupEmail)) { showMessage('Please enter a valid email address', 'error'); return; }
+        if (signupPassword.length < 6) { showMessage('Password must be at least 6 characters', 'error'); return; }
+        if (signupPassword !== confirmPassword) { showMessage('Passwords do not match', 'error'); return; }
+        if (!termsAgreement) { showMessage('Please agree to the terms and conditions', 'error'); return; }
+
+        setLoading(true);
+        try {
+            let logoUrl = '';
+            let profileUrl = '';
             try {
                 logoUrl = await uploadToCloudinary(logoFile);
                 profileUrl = await uploadToCloudinary(profileFile);
             } catch (uploadErr) {
+                console.error('Cloudinary upload failed:', uploadErr);
                 showMessage(`Image upload failed: ${uploadErr.message}`, 'error');
+                setLoading(false);
                 return;
             }
-            const credential = await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
-            const user = credential.user;
+
+            const userCredential = await createUserWithEmailAndPassword(auth, signupEmail, signupPassword);
+            const user = userCredential.user;
+
             await updateProfile(user, { displayName: signupAdminFullName });
 
             const schoolId = generateSchoolId(signupSchoolName);
-            await setDoc(doc(db, 'schools', schoolId), {
+
+            // The email domain for this school — derived the SAME way
+            // Students.jsx derives it, so student emails from that page
+            // will resolve back to this exact school on login.
+            const firstWord = signupSchoolName
+                .split(' ')[0]
+                .toLowerCase()
+                .replace(/[^a-z]/g, '');
+            const emailDomain = firstWord ? `${firstWord}school.com` : '';
+
+            const schoolData = {
                 schoolId,
                 schoolName: signupSchoolName,
-                logoUrl, schoolLogo: logoUrl,
+                logoUrl,
+                schoolLogo: logoUrl,
                 adminName: signupAdminFullName,
                 adminImageUrl: profileUrl,
                 adminEmail: signupEmail,
+                // NEW: auto-detection key
+                emailDomain,
+                schoolDomain: emailDomain.replace(/\.com$/, ''), // legacy compat
                 subscriptionStatus: 'inactive',
                 trialStartDate: serverTimestamp(),
                 trialEndDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
                 emailVerified: false,
                 createdAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
-                settings: { theme: 'default', language: 'en', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
-            });
+                settings: {
+                    theme: 'default',
+                    language: 'en',
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                },
+            };
+            await setDoc(doc(db, 'schools', schoolId), schoolData);
 
             const userData = {
-                uid: user.uid, schoolId,
+                uid: user.uid,
+                schoolId,
                 fullName: signupAdminFullName,
-                email: signupEmail, role: 'admin',
+                email: signupEmail,
+                role: 'admin',
                 profileImageUrl: profileUrl,
                 emailVerified: false,
                 lastLogin: serverTimestamp(),
                 createdAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
                 permissions: {
-                    canManageUsers: true, canManageStudents: true, canManageTeachers: true,
-                    canManageClasses: true, canManageFinance: true, canManageSettings: true,
+                    canManageUsers: true,
+                    canManageStudents: true,
+                    canManageTeachers: true,
+                    canManageClasses: true,
+                    canManageFinance: true,
+                    canManageSettings: true,
                 },
             };
             await setDoc(doc(db, 'users', user.uid), userData);
             await cacheUserData({ ...userData, collection: 'users' });
 
             const emailSent = await sendVerificationEmail(user);
-            setSignupSchoolName(''); setSignupAdminFullName(''); setSignupEmail('');
-            setSignupPassword(''); setConfirmPassword('');
-            setLogoFile(null); setProfileFile(null);
-            setLogoPreview(null); setProfilePreview(null);
+
+            setSignupSchoolName('');
+            setSignupAdminFullName('');
+            setSignupEmail('');
+            setSignupPassword('');
+            setConfirmPassword('');
+            setLogoFile(null);
+            setProfileFile(null);
+            setLogoPreview(null);
+            setProfilePreview(null);
             setTermsAgreement(false);
 
-            if (emailSent) showMessage(`✅ School account created! Verification email sent to ${signupEmail}`, 'success');
-            else showMessage('Account created but verification email failed.', 'warning');
+            if (emailSent) {
+                showMessage(`✅ School account created! Verification email sent to ${signupEmail}`, 'success');
+            } else {
+                showMessage('Account created but verification email failed. Please try resending.', 'warning');
+            }
             startVerificationCheck(signupEmail);
         } catch (error) {
-            showMessage(error.message || 'Registration failed.', 'error');
-        } finally { setLoading(false); }
+            let errorMessage = 'Registration failed. ';
+            switch (error.code) {
+                case 'auth/email-already-in-use':
+                    errorMessage = 'Email already registered. Please login instead'; break;
+                case 'auth/invalid-email':
+                    errorMessage = 'Invalid email address'; break;
+                case 'auth/weak-password':
+                    errorMessage = 'Password is too weak. Use at least 6 characters'; break;
+                case 'auth/network-request-failed':
+                    errorMessage = 'Network error. Check your connection'; break;
+                default:
+                    errorMessage += error.message;
+            }
+            showMessage(errorMessage, 'error');
+        } finally {
+            setLoading(false);
+        }
     };
 
+    // ---- Password reset ----
     const handleForgotPassword = async () => {
-        if (!isOnline) { alert('You are offline. Connect to reset your password.'); return; }
+        if (!isOnline) {
+            alert('You are offline. Please connect to the internet to reset your password.');
+            return;
+        }
         const email = prompt('Enter your email address to reset password:');
         if (email && validateEmail(email)) {
             try {
                 await sendPasswordResetEmail(auth, email);
-                alert('✅ Password reset email sent!');
-            } catch (err) {
-                alert(err.code === 'auth/user-not-found' ? 'No account found with this email' : 'Error sending reset email.');
+                alert('✅ Password reset email sent! Check your inbox and spam folder.');
+            } catch (error) {
+                let errorMessage = 'Error sending reset email. ';
+                switch (error.code) {
+                    case 'auth/user-not-found': errorMessage = 'No account found with this email'; break;
+                    case 'auth/invalid-email': errorMessage = 'Invalid email address'; break;
+                    default: errorMessage += error.message;
+                }
+                alert(errorMessage);
             }
-        } else if (email) alert('Please enter a valid email address');
+        } else if (email) {
+            alert('Please enter a valid email address');
+        }
     };
 
     const handleLogout = async () => {
@@ -732,12 +1105,14 @@ export default function Login() {
             setShowVerification(false);
             clearMessages();
             showMessage('Logged out successfully', 'info');
-        } catch (e) { console.error(e); }
+        } catch (error) {
+            console.error('Error logging out:', error);
+        }
     };
 
-    // ---------------------------------------------------------------
+    // ----------------------------------------------------------
     // RENDER
-    // ---------------------------------------------------------------
+    // ----------------------------------------------------------
     return (
         <div className="login-container">
             <div className="split-container">
@@ -771,7 +1146,6 @@ export default function Login() {
                                 <StudentPasswordChangeModal
                                     onDone={completeStudentPasswordChange}
                                     onCancel={() => {
-                                        // Sign them out so they can't skip the mandatory change
                                         auth.signOut().then(() => {
                                             setPendingPasswordChange(false);
                                             showMessage('Password change is required to continue. Sign in again.', 'warning');
@@ -787,12 +1161,13 @@ export default function Login() {
                                         <h3>Verify Your Email Address</h3>
                                         <p>We've sent a verification email to:</p>
                                         <div className="email-display">{verificationEmail}</div>
-                                        <p>Check your inbox and click the verification link.</p>
+                                        <p>Please check your inbox and click the verification link to activate your account.</p>
+                                        <p><strong>Important:</strong> You must verify your email before accessing the system.</p>
                                         <div className="verification-timer">
-                                            <p>Checking automatically in <span className="timer">{verificationTimer}</span> seconds…</p>
+                                            <p>Checking verification status automatically in <span className="timer">{verificationTimer}</span> seconds...</p>
                                         </div>
                                         <div className="resend-link">
-                                            Didn't receive it? <span onClick={handleResendVerification}>Resend Verification Email</span>
+                                            Didn't receive the email? <span onClick={handleResendVerification}>Resend Verification Email</span>
                                         </div>
                                         <button type="button" className="btn warning" onClick={checkEmailVerification}>
                                             <i className="fas fa-sync-alt"></i><span>Check Verification Status</span>
@@ -800,22 +1175,28 @@ export default function Login() {
                                         <button type="button" className="btn danger" onClick={handleLogout} style={{ marginTop: '10px' }}>
                                             <i className="fas fa-sign-out-alt"></i><span>Logout</span>
                                         </button>
+                                        <div className="verification-note">
+                                            <p><i className="fas fa-info-circle"></i> Check your spam folder if you don't see the email.</p>
+                                            <p>After verification, you'll be automatically redirected to your dashboard.</p>
+                                        </div>
                                     </div>
                                 </div>
                             ) : (
                                 <>
                                     <h2 className="form-title">
-                                        {showRegister ? 'Register School' : (loginMode === 'student' ? 'Student Portal' : 'School Portal')}
+                                        {showRegister
+                                            ? 'Register School'
+                                            : (loginMode === 'student' ? 'Student Portal' : 'School Portal')}
                                     </h2>
 
                                     {message.text && (
                                         <div className={`message ${message.type}`} role={message.type === 'error' ? 'alert' : 'status'}>
                                             <span>{message.text}</span>
-                                            <button type="button" aria-label="Dismiss" onClick={clearMessages}>×</button>
+                                            <button type="button" aria-label="Dismiss message" onClick={clearMessages}>×</button>
                                         </div>
                                     )}
 
-                                    {/* --- Mode toggle --- */}
+                                    {/* Mode toggle */}
                                     {!showRegister && (
                                         <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
                                             <button
@@ -837,57 +1218,56 @@ export default function Login() {
                                         </div>
                                     )}
 
-                                    {/* --- Student login form --- */}
+                                    {/* ============ STUDENT LOGIN ============ */}
                                     {!showRegister && loginMode === 'student' && (
                                         <form className="form active" onSubmit={handleStudentLogin}>
                                             <div className="input-group">
                                                 <label htmlFor="studentEmail">Student Email</label>
                                                 <i className="fas fa-envelope"></i>
                                                 <input
-                                                    type="email" id="studentEmail"
+                                                    type="email"
+                                                    id="studentEmail"
                                                     value={studentEmail}
                                                     onChange={(e) => setStudentEmail(e.target.value)}
-                                                    placeholder="your.name@school.com" required
+                                                    placeholder="your.name@school-domain.com"
+                                                    required
+                                                    autoComplete="username"
                                                 />
                                             </div>
                                             <div className="input-group">
                                                 <label htmlFor="studentAdmissionNumber">Admission Number</label>
                                                 <i className="fas fa-id-card"></i>
                                                 <input
-                                                    type="text" id="studentAdmissionNumber"
+                                                    type="text"
+                                                    id="studentAdmissionNumber"
                                                     value={studentAdmissionNumber}
                                                     onChange={(e) => setStudentAdmissionNumber(e.target.value)}
                                                     placeholder="e.g. 00123"
                                                     required
-                                                />
-                                            </div>
-                                            <div className="input-group">
-                                                <label htmlFor="studentSchoolId">School ID</label>
-                                                <i className="fas fa-school"></i>
-                                                <input
-                                                    type="text" id="studentSchoolId"
-                                                    value={studentSchoolId}
-                                                    onChange={(e) => setStudentSchoolId(e.target.value)}
-                                                    placeholder="e.g. TOP-ab12-xyz9"
-                                                    required
+                                                    autoComplete="current-password"
                                                 />
                                                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-                                                    Ask your school office if you don't know your School ID.
+                                                    On your first login, use your admission number as the password.
+                                                    You'll be asked to set a new password immediately after.
                                                 </div>
                                             </div>
                                             <button type="submit" className="btn" disabled={loading}>
-                                                {loading ? (<><div className="loading"></div><span>Signing in…</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Sign In as Student</span></>)}
+                                                {loading
+                                                    ? (<><div className="loading"></div><span>Signing in…</span></>)
+                                                    : (<><i className="fas fa-sign-in-alt"></i><span>Sign In as Student</span></>)}
                                             </button>
-                                            <div style={{ fontSize: 12, color: '#64748b', textAlign: 'center', marginTop: 10, lineHeight: 1.5 }}>
-                                                <i className="fas fa-info-circle"></i>{' '}
-                                                On your first login, use your <strong>admission number</strong> as the password.
-                                                You'll be asked to set a new password.
+                                            <div style={{
+                                                fontSize: 12, color: '#64748b', textAlign: 'center',
+                                                marginTop: 12, lineHeight: 1.5,
+                                            }}>
+                                                <i className="fas fa-wand-magic-sparkles"></i>{' '}
+                                                Your school is detected automatically from your email — no school code needed.
                                             </div>
                                             <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
                                         </form>
                                     )}
 
-                                    {/* --- Staff login form --- */}
+                                    {/* ============ STAFF LOGIN ============ */}
                                     {!showRegister && loginMode === 'staff' && (
                                         <form className="form active" onSubmit={handleLogin}>
                                             <div className="input-group">
@@ -895,14 +1275,16 @@ export default function Login() {
                                                 <i className="fas fa-envelope"></i>
                                                 <input
                                                     type="email" id="loginEmail" value={loginEmail}
-                                                    onChange={(e) => { setLoginEmail(e.target.value); setEmailValid(e.target.value === '' ? null : validateEmail(e.target.value)); }}
+                                                    onChange={handleLoginEmailChange}
                                                     placeholder="Enter your email" required
+                                                    autoComplete="username"
                                                 />
                                                 <div className={`validation-icon ${emailValid === true ? 'valid' : emailValid === false ? 'invalid' : ''}`}>
                                                     {emailValid === true && <i className="fas fa-check-circle"></i>}
                                                     {emailValid === false && <i className="fas fa-exclamation-circle"></i>}
                                                 </div>
                                             </div>
+
                                             <div className="input-group">
                                                 <label htmlFor="loginPassword">Password</label>
                                                 <i className="fas fa-lock"></i>
@@ -910,147 +1292,195 @@ export default function Login() {
                                                     type="password" id="loginPassword" value={loginPassword}
                                                     onChange={(e) => setLoginPassword(e.target.value)}
                                                     placeholder="Enter your password" required
+                                                    autoComplete="current-password"
                                                 />
                                             </div>
+
                                             <button type="submit" className="btn" disabled={loading}>
                                                 {loading ? (<><div className="loading"></div><span>Logging in...</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Login to Dashboard</span></>)}
                                             </button>
                                             {biometricReady && (currentUser || auth.currentUser) && (
                                                 <button
-                                                    type="button" className="btn"
-                                                    onPointerDown={(e) => { if (e.isPrimary && e.button === 0) handleBiometricLogin(); }}
+                                                    type="button"
+                                                    className="btn"
+                                                    onPointerDown={(event) => {
+                                                        if (event.isPrimary && event.button === 0) {
+                                                            handleBiometricLogin();
+                                                        }
+                                                    }}
                                                     onClick={handleBiometricLogin}
                                                     disabled={loading}
                                                 >
-                                                    {loading ? <><div className="loading"></div><span>Verifying…</span></> : <><i className="fas fa-fingerprint"></i><span>Continue with biometrics</span></>}
+                                                    {loading ? <><div className="loading"></div><span>Verify your identity…</span></> : <><i className="fas fa-fingerprint"></i><span>Continue with biometrics</span></>}
                                                 </button>
                                             )}
                                             {pendingBiometricRole && (
-                                                <section role="dialog" aria-modal="true" style={{ marginTop: 18, padding: 18, border: '1px solid #cbd5e1', borderRadius: 12, background: '#f8fafc', color: '#172033' }}>
-                                                    <h3 style={{ margin: '0 0 6px', fontSize: 16 }}>Enable biometric unlock?</h3>
-                                                    <p style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.5 }}>
-                                                        Use your device fingerprint or face to reopen your saved session offline.
-                                                    </p>
-                                                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                                                        <button type="button" className="btn" onClick={() => finishBiometricSetup(true)} disabled={loading} style={{ width: 'auto' }}>
-                                                            Enable securely
+                                                <section
+                                                    role="dialog"
+                                                    aria-modal="true"
+                                                    aria-labelledby="biometricSetupTitle"
+                                                    style={{
+                                                        marginTop: 18,
+                                                        padding: 18,
+                                                        border: '1px solid #cbd5e1',
+                                                        borderRadius: 12,
+                                                        background: '#f8fafc',
+                                                        color: '#172033',
+                                                    }}
+                                                >
+                                                    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                                                        <i className="fas fa-fingerprint" aria-hidden="true" style={{ fontSize: 24, color: '#3156a3' }} />
+                                                        <div>
+                                                            <h3 id="biometricSetupTitle" style={{ margin: '0 0 6px', fontSize: 16 }}>
+                                                                Enable biometric unlock?
+                                                            </h3>
+                                                            <p style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.5 }}>
+                                                                Use your device fingerprint or face recognition to reopen your saved session offline. Your password is not stored.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                                                        <button
+                                                            type="button"
+                                                            className="btn"
+                                                            onClick={() => finishBiometricSetup(true)}
+                                                            disabled={loading}
+                                                        >
+                                                            <i className="fas fa-shield-alt" aria-hidden="true" />
+                                                            <span>Enable securely</span>
                                                         </button>
-                                                        <button type="button" className="btn btn-outline" onClick={() => finishBiometricSetup(false)} disabled={loading} style={{ width: 'auto' }}>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-outline"
+                                                            onClick={() => finishBiometricSetup(false)}
+                                                            disabled={loading}
+                                                        >
                                                             Continue without it
                                                         </button>
                                                     </div>
                                                 </section>
                                             )}
+
                                             <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
                                         </form>
                                     )}
 
+                                    {/* ============ SIGNUP ============ */}
                                     {showRegister && (
                                         <form className="form active" onSubmit={handleSignup}>
                                             <div className="input-group">
                                                 <label htmlFor="schoolName">School Name</label>
                                                 <i className="fas fa-school"></i>
-                                                <input type="text" id="schoolName" value={signupSchoolName}
+                                                <input
+                                                    type="text" id="schoolName" value={signupSchoolName}
                                                     onChange={(e) => setSignupSchoolName(e.target.value)}
-                                                    placeholder="Enter school name" required />
+                                                    placeholder="Enter school name" required
+                                                />
                                             </div>
+
                                             <div className="input-group">
                                                 <label htmlFor="adminFullName">Admin Full Name</label>
                                                 <i className="fas fa-user-tie"></i>
-                                                <input type="text" id="adminFullName" value={signupAdminFullName}
+                                                <input
+                                                    type="text" id="adminFullName" value={signupAdminFullName}
                                                     onChange={(e) => setSignupAdminFullName(e.target.value)}
-                                                    placeholder="Enter admin full name" required />
+                                                    placeholder="Enter admin full name" required
+                                                />
                                             </div>
+
                                             <div className="file-upload-container">
                                                 <label>School Logo</label>
                                                 <div className="upload-preview">
                                                     <div className="logo-preview">
-                                                        {logoPreview ? <img src={logoPreview} alt="School Logo" /> : <i className="fas fa-school fa-2x" style={{ color: '#ccc' }}></i>}
+                                                        {logoPreview ? (<img src={logoPreview} alt="School Logo" />) : (<i className="fas fa-school fa-2x" style={{ color: '#ccc' }}></i>)}
                                                     </div>
                                                     <div className="upload-info">
                                                         <p>Upload your school logo (Max 2MB)</p>
-                                                        <button type="button" className="upload-btn" onClick={() => {
-                                                            const input = document.createElement('input');
-                                                            input.type = 'file';
-                                                            input.accept = 'image/jpeg,image/png,image/gif,image/webp';
-                                                            input.onchange = (ev) => {
-                                                                const file = ev.target.files?.[0];
-                                                                if (!file) return;
-                                                                if (file.size > 2 * 1024 * 1024) return showMessage('Image must be under 2MB', 'error');
-                                                                setLogoFile(file);
-                                                                const r = new FileReader();
-                                                                r.onloadend = () => setLogoPreview(r.result);
-                                                                r.readAsDataURL(file);
-                                                            };
-                                                            input.click();
-                                                        }}>
+                                                        <button type="button" className="upload-btn" onClick={() => handleImageUpload('logo')}>
                                                             <i className="fas fa-upload"></i><span>Upload Logo</span>
                                                         </button>
                                                     </div>
                                                 </div>
                                             </div>
+
                                             <div className="file-upload-container">
                                                 <label>Admin Profile Picture</label>
                                                 <div className="upload-preview">
                                                     <div className="profile-preview">
-                                                        {profilePreview ? <img src={profilePreview} alt="Admin Profile" /> : <i className="fas fa-user fa-2x" style={{ color: '#ccc' }}></i>}
+                                                        {profilePreview ? (<img src={profilePreview} alt="Admin Profile" />) : (<i className="fas fa-user fa-2x" style={{ color: '#ccc' }}></i>)}
                                                     </div>
                                                     <div className="upload-info">
                                                         <p>Upload admin profile picture (Max 2MB)</p>
-                                                        <button type="button" className="upload-btn" onClick={() => {
-                                                            const input = document.createElement('input');
-                                                            input.type = 'file';
-                                                            input.accept = 'image/jpeg,image/png,image/gif,image/webp';
-                                                            input.onchange = (ev) => {
-                                                                const file = ev.target.files?.[0];
-                                                                if (!file) return;
-                                                                if (file.size > 2 * 1024 * 1024) return showMessage('Image must be under 2MB', 'error');
-                                                                setProfileFile(file);
-                                                                const r = new FileReader();
-                                                                r.onloadend = () => setProfilePreview(r.result);
-                                                                r.readAsDataURL(file);
-                                                            };
-                                                            input.click();
-                                                        }}>
+                                                        <button type="button" className="upload-btn" onClick={() => handleImageUpload('profile')}>
                                                             <i className="fas fa-upload"></i><span>Upload Profile</span>
                                                         </button>
                                                     </div>
                                                 </div>
                                             </div>
+
                                             <div className="input-group">
                                                 <label htmlFor="signupEmail">Admin Email Address</label>
                                                 <i className="fas fa-envelope"></i>
-                                                <input type="email" id="signupEmail" value={signupEmail}
-                                                    onChange={(e) => { setSignupEmail(e.target.value); setSignupEmailValid(e.target.value === '' ? null : validateEmail(e.target.value)); }}
-                                                    placeholder="Enter admin email" required />
+                                                <input
+                                                    type="email" id="signupEmail" value={signupEmail}
+                                                    onChange={handleSignupEmailChange}
+                                                    placeholder="Enter admin email" required
+                                                />
+                                                <div className={`validation-icon ${signupEmailValid === true ? 'valid' : signupEmailValid === false ? 'invalid' : ''}`}>
+                                                    {signupEmailValid === true && <i className="fas fa-check-circle"></i>}
+                                                    {signupEmailValid === false && <i className="fas fa-exclamation-circle"></i>}
+                                                </div>
                                             </div>
+
                                             <div className="input-group">
                                                 <label htmlFor="signupPassword">Password</label>
                                                 <i className="fas fa-lock"></i>
-                                                <input type="password" id="signupPassword" value={signupPassword}
+                                                <input
+                                                    type="password" id="signupPassword" value={signupPassword}
                                                     onChange={(e) => setSignupPassword(e.target.value)}
-                                                    placeholder="Create a strong password" required />
+                                                    placeholder="Create a strong password" required
+                                                />
                                             </div>
+
                                             <div className="input-group">
                                                 <label htmlFor="confirmPassword">Confirm Password</label>
                                                 <i className="fas fa-lock"></i>
-                                                <input type="password" id="confirmPassword" value={confirmPassword}
-                                                    onChange={(e) => { setConfirmPassword(e.target.value); setPasswordsMatch(e.target.value === '' ? null : signupPassword === e.target.value); }}
-                                                    placeholder="Confirm your password" required />
+                                                <input
+                                                    type="password" id="confirmPassword" value={confirmPassword}
+                                                    onChange={handleConfirmPasswordChange}
+                                                    placeholder="Confirm your password" required
+                                                />
+                                                <div className={`validation-icon ${passwordsMatch === true ? 'valid' : passwordsMatch === false ? 'invalid' : ''}`}>
+                                                    {passwordsMatch === true && <i className="fas fa-check-circle"></i>}
+                                                    {passwordsMatch === false && <i className="fas fa-exclamation-circle"></i>}
+                                                </div>
                                             </div>
+
+                                            <div className="divider"><span>Terms & Conditions</span></div>
+
                                             <div className="input-group" style={{ marginBottom: '10px' }}>
                                                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                                                    <input type="checkbox" id="termsAgreement" checked={termsAgreement}
+                                                    <input
+                                                        type="checkbox" id="termsAgreement" checked={termsAgreement}
                                                         onChange={(e) => setTermsAgreement(e.target.checked)}
-                                                        style={{ width: 'auto', marginTop: '3px' }} />
+                                                        style={{ width: 'auto', marginTop: '3px' }}
+                                                    />
                                                     <label htmlFor="termsAgreement" style={{ fontSize: '13px', color: '#666', cursor: 'pointer' }}>
-                                                        I agree to the <a href="#" style={{ color: 'var(--primary)' }}>Terms of Service</a> and <a href="#" style={{ color: 'var(--primary)' }}>Privacy Policy</a>.
+                                                        I agree to the <a href="#" style={{ color: 'var(--primary)' }}>Terms of Service</a> and <a href="#" style={{ color: 'var(--primary)' }}>Privacy Policy</a>. I understand that my school account will be in trial mode until subscription is activated.
                                                     </label>
                                                 </div>
                                             </div>
+
+                                            {!isOnline && (
+                                                <div style={{ padding: '10px', marginBottom: '15px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: '8px', fontSize: '13px', color: '#856404' }}>
+                                                    <i className="fas fa-info-circle"></i> You are offline. Registration requires an internet connection.
+                                                </div>
+                                            )}
+
                                             <button type="submit" className="btn warning" disabled={loading || !isOnline}>
-                                                {loading ? (<><div className="loading"></div><span>Creating account…</span></>) : (<><i className="fas fa-school"></i><span>Register School</span></>)}
+                                                {loading ? (<><div className="loading"></div><span>Creating account...</span></>) : (<><i className="fas fa-school"></i><span>Register School</span></>)}
                                             </button>
+
                                             <div className="toggle-link" onClick={toggleRegister}>
                                                 Already have an account? <span>Login</span>
                                             </div>
@@ -1069,7 +1499,8 @@ export default function Login() {
                 </div>
             </div>
 
-             <style>{`
+           
+           <style>{`
                 * {
                     margin: 0;
                     padding: 0;
