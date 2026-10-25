@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
+import { normalizeRole } from '../utils/roles';
 import { db } from '../firebase';
 import { collection, query, where, getDocs, limit } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
@@ -49,8 +50,6 @@ const SAMPLE_STUDENT = {
     },
 };
 
-// Roles that count as "head teacher / principal" at the school level.
-// Keep this list in sync with src/utils/roles.js and SchoolProfile.jsx.
 const HEAD_TEACHER_ROLES = ['headteacher', 'principal'];
 
 const resolveClassList = (level, getLevelClassesFn) => {
@@ -60,10 +59,6 @@ const resolveClassList = (level, getLevelClassesFn) => {
     return LEVEL_CLASSES[level] || [];
 };
 
-// ----------------------------------------------------------------
-// Resolve a user's display name across the various shapes a user
-// document can take.
-// ----------------------------------------------------------------
 function userDisplayName(u) {
     if (!u) return '';
     const direct = `${u.firstName || ''} ${u.lastName || ''}`.trim();
@@ -76,31 +71,167 @@ function userDisplayName(u) {
     return '';
 }
 
+// ------------------------------------------------------------
+// Resolve a student's full data set (identity + scores) for a
+// given term. Used by both the admin flow and the student
+// self-service flow.
+// ------------------------------------------------------------
+async function buildEnrichedStudents({
+    schoolId,
+    level,
+    cls,
+    termName,
+    subjects,
+    studentFilterIds = null, // null = all in class; otherwise array of ids
+}) {
+    const studentsData = (await loadStudentRoster(schoolId))
+        .filter((s) => s.level === level && s.class === cls)
+        .filter((s) => (studentFilterIds ? studentFilterIds.includes(s.id) : true))
+        .sort((a, b) => String(a.firstName || '').localeCompare(String(b.firstName || '')))
+        .slice(0, MAX_STUDENTS);
+
+    if (studentsData.length === 0) return [];
+
+    const scoresSnap = await getDocs(query(
+        collection(db, 'student_scores'),
+        where('schoolId', '==', schoolId),
+        where('level', '==', level),
+        where('class', '==', cls),
+        where('term', '==', termName),
+        limit(MAX_SCORES)
+    ));
+
+    const bucket = new Map();
+    scoresSnap.forEach((d) => {
+        const s = d.data();
+        if (!s.studentId || !s.subject) return;
+        if (!bucket.has(s.studentId)) bucket.set(s.studentId, new Map());
+        const bySubj = bucket.get(s.studentId);
+        if (!bySubj.has(s.subject)) {
+            bySubj.set(s.subject, {
+                assessmentScores: [null, null, null],
+                papers: {},
+            });
+        }
+        const entry = bySubj.get(s.subject);
+        const aType = String(s.assessmentType || '');
+        const match = aType.match(/Assessment\s+(\d+)/i);
+        const idx = match ? parseInt(match[1], 10) - 1 : null;
+        if (idx != null && idx >= 0 && idx < 3) {
+            const val = s.computedPercentage != null ? s.computedPercentage : s.score;
+            entry.assessmentScores[idx] = Number.isFinite(Number(val)) ? Number(val) : null;
+        }
+        if (s.papers && typeof s.papers === 'object') {
+            Object.assign(entry.papers, s.papers);
+        }
+    });
+
+    const enriched = studentsData.map((student) => {
+        const bySubj = bucket.get(student.id) || new Map();
+        const scores = {};
+        const averages = {};
+        const papersBySubject = {};
+        let sumOfAverages = 0;
+        let assessedCount = 0;
+
+        subjects.forEach((subject) => {
+            const entry = bySubj.get(subject);
+            if (!entry) {
+                scores[subject] = [null, null, null];
+                averages[subject] = null;
+                papersBySubject[subject] = {};
+                return;
+            }
+            scores[subject] = entry.assessmentScores;
+            papersBySubject[subject] = entry.papers || {};
+            const valid = entry.assessmentScores.filter((v) => v != null);
+            if (valid.length > 0) {
+                const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
+                averages[subject] = avg;
+                sumOfAverages += avg;
+                assessedCount++;
+            } else {
+                averages[subject] = null;
+            }
+        });
+
+        const meanOfAssessed = assessedCount > 0
+            ? Math.round(sumOfAverages / assessedCount) : 0;
+
+        return {
+            ...student, scores, averages,
+            papersBySubject,
+            assessedCount,
+            totalSubjects: subjects.length,
+            overallAverage: meanOfAssessed,
+        };
+    });
+
+    // Rank within the class (or within the single-student set).
+    const ranked = [...enriched].sort(
+        (a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)
+    );
+    const rankMap = new Map();
+    let lastAvg = null;
+    let lastRank = 0;
+    ranked.forEach((s, idx) => {
+        const avg = s.overallAverage || 0;
+        if (lastAvg !== null && avg === lastAvg) {
+            rankMap.set(s.id, lastRank);
+        } else {
+            lastRank = idx + 1;
+            rankMap.set(s.id, lastRank);
+        }
+        lastAvg = avg;
+    });
+
+    return enriched.map((s) => ({
+        ...s,
+        position: rankMap.get(s.id) || null,
+        classSize: enriched.length,
+    }));
+}
+
 export default function StudentReports() {
-    const { userData } = useAuth();
+    const { userData, userRole } = useAuth();
     const { getLevelClasses, schoolData } = useSchool();
 
+    const isStudent = normalizeRole(userRole || userData?.role) === 'student';
+
+    // ---- Admin picker state ----
     const [selectedLevel, setSelectedLevel] = useState('');
     const [selectedClass, setSelectedClass] = useState('');
     const [selectedTerm, setSelectedTerm] = useState('2');
 
+    // ---- Data ----
     const [students, setStudents] = useState([]);
     const [loading, setLoading] = useState(false);
     const [generating, setGenerating] = useState(false);
     const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
 
+    // ---- Student self-service ----
+    const [studentRecord, setStudentRecord] = useState(null);      // student doc
+    const [studentLoaded, setStudentLoaded] = useState(false);
+    const [studentEnriched, setStudentEnriched] = useState(null);  // enriched single record
+
+    // ---- Preview ----
     const [previewStudent, setPreviewStudent] = useState(null);
     const [previewAssessment, setPreviewAssessment] = useState(0);
 
+    // ---- Branding ----
     const [paperConfigsRaw, setPaperConfigsRaw] = useState({});
     const [classTeacherName, setClassTeacherName] = useState('');
     const [headTeacherName, setHeadTeacherName] = useState('');
 
-    // ------------------------------------------------------------------
-    // ALL HOOKS MUST RUN UNCONDITIONALLY, IN THE SAME ORDER, EVERY RENDER.
-    // No early returns above this point.
-    // ------------------------------------------------------------------
-    const subjects = useMemo(() => LEVEL_SUBJECTS[selectedLevel] || [], [selectedLevel]);
+    // =========================================================
+    // Derived values
+    // =========================================================
+    const subjects = useMemo(() => {
+        if (isStudent) {
+            return LEVEL_SUBJECTS[studentRecord?.level] || [];
+        }
+        return LEVEL_SUBJECTS[selectedLevel] || [];
+    }, [isStudent, studentRecord?.level, selectedLevel]);
 
     const classOptions = useMemo(
         () => resolveClassList(selectedLevel, getLevelClasses),
@@ -116,14 +247,11 @@ export default function StudentReports() {
         schoolEmail: userData?.schoolEmail || schoolData?.email || '',
         website: userData?.website || schoolData?.website || '',
         schoolCode: userData?.schoolCode || schoolData?.schoolCode || '',
-        // Branding used by PDF report forms:
-        // uploaded stamp and principal signature (transparent PNG).
         schoolStamp: userData?.schoolStamp || schoolData?.stampUrl || '',
         principalSignature:
             userData?.principalSignature
             || schoolData?.principalSignatureUrl
             || '',
-        // Kept for legacy callers; also used as a head-teacher fallback.
         principalName: userData?.principalName || schoolData?.principalName || '',
         currentTermStart: schoolData?.termStart || userData?.currentTermStart || '',
         currentTermEnd: schoolData?.currentTermEnd || userData?.currentTermEnd || '',
@@ -136,7 +264,9 @@ export default function StudentReports() {
         [students]
     );
 
-    const ready = students.length > 0;
+    const ready = isStudent
+        ? !!studentEnriched
+        : students.length > 0;
 
     const showNotification = useCallback((message, type = 'info') => {
         showAppNotice(message, type);
@@ -157,38 +287,40 @@ export default function StudentReports() {
         return out;
     }, [paperConfigsRaw]);
 
+    const effectiveTerm = isStudent
+        ? String(userData?.currentTerm || selectedTerm)
+        : selectedTerm;
+
     const buildMeta = useCallback(() => ({
         ...schoolBranding,
-        level: selectedLevel,
-        levelDisplay: LEVEL_DISPLAY_NAMES[selectedLevel] || selectedLevel,
-        cls: selectedClass,
-        term: `Term ${selectedTerm}`,
+        level: isStudent ? studentRecord?.level : selectedLevel,
+        levelDisplay: LEVEL_DISPLAY_NAMES[isStudent ? studentRecord?.level : selectedLevel]
+            || (isStudent ? studentRecord?.level : selectedLevel),
+        cls: isStudent ? studentRecord?.class : selectedClass,
+        term: `Term ${effectiveTerm}`,
         year: new Date().getFullYear(),
-        // Class teacher for the currently selected class.
         classTeacherName: classTeacherName || '',
-        // Head teacher / principal — role-resolved from the users
-        // collection (see useHeadTeacher below), with a fallback to
-        // whatever was stored on the school document.
         headTeacherName: headTeacherName || schoolBranding.principalName || '',
         principalName: headTeacherName || schoolBranding.principalName || '',
-        // Branding URLs consumed by downloadClassReportForms:
         stampUrl: schoolBranding.schoolStamp || '',
         principalSignatureUrl: schoolBranding.principalSignature || '',
-        // Branch rows
         paperConfigBySubject,
     }), [
-        schoolBranding, selectedLevel, selectedClass, selectedTerm,
-        classTeacherName, headTeacherName, paperConfigBySubject,
+        schoolBranding, isStudent, studentRecord, selectedLevel, selectedClass,
+        effectiveTerm, classTeacherName, headTeacherName, paperConfigBySubject,
     ]);
 
-    // ---- Load paper configs for the selected level ----
+    // =========================================================
+    // Load paper configs
+    // =========================================================
     useEffect(() => {
         let cancelled = false;
         const schoolId = userData?.schoolId;
-        if (!schoolId || !selectedLevel) { setPaperConfigsRaw({}); return; }
+        const levelForConfigs = isStudent ? studentRecord?.level : selectedLevel;
+        if (!schoolId || !levelForConfigs) { setPaperConfigsRaw({}); return; }
         (async () => {
             try {
-                const raw = (await getAllPaperConfigsForLevel(schoolId, selectedLevel)) || {};
+                const raw = (await getAllPaperConfigsForLevel(schoolId, levelForConfigs)) || {};
                 const normalised = {};
                 Object.entries(raw).forEach(([subject, val]) => {
                     if (Array.isArray(val)) {
@@ -207,19 +339,21 @@ export default function StudentReports() {
             }
         })();
         return () => { cancelled = true; };
-    }, [userData?.schoolId, selectedLevel]);
+    }, [userData?.schoolId, isStudent, studentRecord?.level, selectedLevel]);
 
-    // ---- Resolve class teacher name for the currently selected class ----
+    // =========================================================
+    // Class teacher name
+    // =========================================================
     useEffect(() => {
         let cancelled = false;
         async function resolve() {
             const schoolId = userData?.schoolId;
-            if (!schoolId || !selectedClass) { setClassTeacherName(''); return; }
+            const cls = isStudent ? studentRecord?.class : selectedClass;
+            if (!schoolId || !cls) { setClassTeacherName(''); return; }
             try {
                 const map = schoolData?.classTeachers || {};
-                const teacherUid = map[selectedClass];
+                const teacherUid = map[cls];
                 if (!teacherUid) { setClassTeacherName(''); return; }
-                // Users documents may key by `uid`, `id`, or `userId`.
                 const snaps = await Promise.all([
                     getDocs(query(collection(db, 'users'), where('uid', '==', teacherUid), limit(1))),
                 ]);
@@ -230,21 +364,18 @@ export default function StudentReports() {
                     if (cancelled) return;
                     doc = alt.docs[0];
                 }
-                if (doc) {
-                    setClassTeacherName(userDisplayName(doc.data()));
-                } else {
-                    setClassTeacherName('');
-                }
+                setClassTeacherName(doc ? userDisplayName(doc.data()) : '');
             } catch (e) {
                 console.warn('Could not resolve class teacher:', e?.message || e);
             }
         }
         resolve();
         return () => { cancelled = true; };
-    }, [selectedClass, schoolData?.classTeachers, userData?.schoolId]);
+    }, [isStudent, studentRecord?.class, selectedClass, schoolData?.classTeachers, userData?.schoolId]);
 
-    // ---- Resolve head teacher / principal for the school ----
-    // Mirrors SchoolProfile.jsx: query users by role ∈ HEAD_TEACHER_ROLES.
+    // =========================================================
+    // Head teacher / principal
+    // =========================================================
     useEffect(() => {
         let cancelled = false;
         async function resolve() {
@@ -261,7 +392,6 @@ export default function StudentReports() {
                 if (!snap.empty) {
                     setHeadTeacherName(userDisplayName(snap.docs[0].data()));
                 } else {
-                    // Fallback: whatever is on the school document.
                     setHeadTeacherName(schoolData?.principalName || '');
                 }
             } catch (e) {
@@ -273,7 +403,76 @@ export default function StudentReports() {
         return () => { cancelled = true; };
     }, [userData?.schoolId, schoolData?.principalName]);
 
-    // ---- Load students ----
+    // =========================================================
+    // STUDENT BOOTSTRAP — auto-load own record
+    // =========================================================
+    useEffect(() => {
+        if (!isStudent) return;
+        const schoolId = userData?.schoolId;
+        const email = userData?.email;
+        if (!schoolId || !email) return;
+
+        let cancelled = false;
+        (async () => {
+            setLoading(true);
+            try {
+                // Find the student's own doc by email (matching login).
+                const snap = await getDocs(query(
+                    collection(db, 'students'),
+                    where('schoolId', '==', schoolId),
+                    where('email', '==', email),
+                    limit(1)
+                ));
+                if (cancelled) return;
+                if (snap.empty) {
+                    showNotification('Your student record was not found. Please contact the school office.', 'error');
+                    return;
+                }
+                const docData = snap.docs[0];
+                const student = { id: docData.id, ...docData.data() };
+                setStudentRecord(student);
+
+                const termName = `Term ${userData?.currentTerm || 2}`;
+                const subjectList = LEVEL_SUBJECTS[student.level] || [];
+                const enriched = await buildEnrichedStudents({
+                    schoolId,
+                    level: student.level,
+                    cls: student.class,
+                    termName,
+                    subjects: subjectList,
+                    studentFilterIds: [student.id],
+                });
+                if (cancelled) return;
+                if (enriched.length > 0) {
+                    setStudentEnriched(enriched[0]);
+                } else {
+                    setStudentEnriched({
+                        ...student,
+                        scores: {},
+                        averages: {},
+                        papersBySubject: {},
+                        assessedCount: 0,
+                        totalSubjects: subjectList.length,
+                        overallAverage: 0,
+                        position: null,
+                        classSize: 1,
+                    });
+                }
+                setStudentLoaded(true);
+            } catch (err) {
+                console.error('Failed to load own student record:', err);
+                showNotification('Failed to load your record: ' + err.message, 'error');
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isStudent, userData?.schoolId, userData?.email]);
+
+    // =========================================================
+    // ADMIN: load students for a class
+    // =========================================================
     const loadStudents = useCallback(async () => {
         if (!selectedLevel || !selectedClass) {
             showNotification('Please select level and class', 'warning');
@@ -287,120 +486,23 @@ export default function StudentReports() {
 
         setLoading(true);
         try {
-            const studentsData = (await loadStudentRoster(schoolId))
-                .filter((student) => student.level === selectedLevel && student.class === selectedClass)
-                .sort((a, b) => String(a.firstName || '').localeCompare(String(b.firstName || '')))
-                .slice(0, MAX_STUDENTS);
-
-            if (studentsData.length === 0) {
+            const termName = `Term ${selectedTerm}`;
+            const result = await buildEnrichedStudents({
+                schoolId,
+                level: selectedLevel,
+                cls: selectedClass,
+                termName,
+                subjects,
+            });
+            if (result.length === 0) {
                 showNotification('No students found for this class', 'warning');
                 setStudents([]);
                 setHasLoadedOnce(true);
                 return;
             }
-
-            const termName = `Term ${selectedTerm}`;
-            const scoresSnap = await getDocs(query(
-                collection(db, 'student_scores'),
-                where('schoolId', '==', schoolId),
-                where('level', '==', selectedLevel),
-                where('class', '==', selectedClass),
-                where('term', '==', termName),
-                limit(MAX_SCORES)
-            ));
-
-            const bucket = new Map();
-            scoresSnap.forEach((d) => {
-                const s = d.data();
-                if (!s.studentId || !s.subject) return;
-                if (!bucket.has(s.studentId)) bucket.set(s.studentId, new Map());
-                const bySubj = bucket.get(s.studentId);
-                if (!bySubj.has(s.subject)) {
-                    bySubj.set(s.subject, {
-                        assessmentScores: [null, null, null],
-                        papers: {},
-                    });
-                }
-                const entry = bySubj.get(s.subject);
-                const aType = String(s.assessmentType || '');
-                const match = aType.match(/Assessment\s+(\d+)/i);
-                const idx = match ? parseInt(match[1], 10) - 1 : null;
-                if (idx != null && idx >= 0 && idx < 3) {
-                    const val = s.computedPercentage != null ? s.computedPercentage : s.score;
-                    entry.assessmentScores[idx] = Number.isFinite(Number(val)) ? Number(val) : null;
-                }
-                if (s.papers && typeof s.papers === 'object') {
-                    Object.assign(entry.papers, s.papers);
-                }
-            });
-
-            const enriched = studentsData.map((student) => {
-                const bySubj = bucket.get(student.id) || new Map();
-                const scores = {};
-                const averages = {};
-                const papersBySubject = {};
-                let sumOfAverages = 0;
-                let assessedCount = 0;
-
-                subjects.forEach((subject) => {
-                    const entry = bySubj.get(subject);
-                    if (!entry) {
-                        scores[subject] = [null, null, null];
-                        averages[subject] = null;
-                        papersBySubject[subject] = {};
-                        return;
-                    }
-                    scores[subject] = entry.assessmentScores;
-                    papersBySubject[subject] = entry.papers || {};
-                    const valid = entry.assessmentScores.filter((v) => v != null);
-                    if (valid.length > 0) {
-                        const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length);
-                        averages[subject] = avg;
-                        sumOfAverages += avg;
-                        assessedCount++;
-                    } else {
-                        averages[subject] = null;
-                    }
-                });
-
-                const meanOfAssessed = assessedCount > 0
-                    ? Math.round(sumOfAverages / assessedCount) : 0;
-
-                return {
-                    ...student, scores, averages,
-                    papersBySubject,
-                    assessedCount,
-                    totalSubjects: subjects.length,
-                    overallAverage: meanOfAssessed,
-                };
-            });
-
-            const ranked = [...enriched].sort(
-                (a, b) => (b.overallAverage || 0) - (a.overallAverage || 0)
-            );
-            const rankMap = new Map();
-            let lastAvg = null;
-            let lastRank = 0;
-            ranked.forEach((s, idx) => {
-                const avg = s.overallAverage || 0;
-                if (lastAvg !== null && avg === lastAvg) {
-                    rankMap.set(s.id, lastRank);
-                } else {
-                    lastRank = idx + 1;
-                    rankMap.set(s.id, lastRank);
-                }
-                lastAvg = avg;
-            });
-
-            const withRank = enriched.map((s) => ({
-                ...s,
-                position: rankMap.get(s.id) || null,
-                classSize: enriched.length,
-            }));
-
-            setStudents(withRank);
+            setStudents(result);
             setHasLoadedOnce(true);
-            showNotification(`Loaded ${withRank.length} students`, 'success');
+            showNotification(`Loaded ${result.length} students`, 'success');
         } catch (err) {
             console.error('loadStudents failed:', err);
             showNotification('Failed to load: ' + err.message, 'error');
@@ -410,7 +512,7 @@ export default function StudentReports() {
     }, [selectedLevel, selectedClass, selectedTerm, subjects, userData?.schoolId, showNotification]);
 
     useEffect(() => {
-        if (hasLoadedOnce && selectedLevel && selectedClass) loadStudents();
+        if (!isStudent && hasLoadedOnce && selectedLevel && selectedClass) loadStudents();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [selectedLevel, selectedClass, selectedTerm]);
 
@@ -421,7 +523,9 @@ export default function StudentReports() {
         setHasLoadedOnce(false);
     };
 
-    // ---- Generators ----
+    // =========================================================
+    // Generators
+    // =========================================================
     const handleDownloadTranscripts = useCallback(async (assessmentIndex) => {
         if (students.length === 0) {
             showNotification('Load students first', 'warning');
@@ -468,7 +572,7 @@ export default function StudentReports() {
         setGenerating(true);
         try {
             await downloadStudentReportForm({
-                student, meta: buildMeta(), subjects, term: `Term ${selectedTerm}`,
+                student, meta: buildMeta(), subjects, term: `Term ${effectiveTerm}`,
             });
             showNotification('Report form downloaded', 'success');
         } catch (err) {
@@ -477,14 +581,14 @@ export default function StudentReports() {
         } finally {
             setGenerating(false);
         }
-    }, [buildMeta, subjects, selectedTerm, showNotification]);
+    }, [buildMeta, subjects, effectiveTerm, showNotification]);
 
     const handleDownloadSingleTranscript = useCallback(async (student, assessmentIndex) => {
         setGenerating(true);
         try {
             await downloadTranscripts({
                 students: [student], meta: buildMeta(), subjects,
-                term: `Term ${selectedTerm}`, assessmentIndex,
+                term: `Term ${effectiveTerm}`, assessmentIndex,
             });
             showNotification('Transcript downloaded', 'success');
         } catch (err) {
@@ -493,7 +597,54 @@ export default function StudentReports() {
         } finally {
             setGenerating(false);
         }
-    }, [buildMeta, subjects, selectedTerm, showNotification]);
+    }, [buildMeta, subjects, effectiveTerm, showNotification]);
+
+    // ---- STUDENT: download own report form ----
+    const handleDownloadMyReport = useCallback(async () => {
+        if (!studentEnriched) {
+            showNotification('Your record is still loading...', 'warning');
+            return;
+        }
+        setGenerating(true);
+        try {
+            await downloadStudentReportForm({
+                student: studentEnriched,
+                meta: buildMeta(),
+                subjects,
+                term: `Term ${effectiveTerm}`,
+            });
+            showNotification('Your report form has been downloaded', 'success');
+        } catch (err) {
+            console.error('own report failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
+        } finally {
+            setGenerating(false);
+        }
+    }, [studentEnriched, buildMeta, subjects, effectiveTerm, showNotification]);
+
+    // ---- STUDENT: download own transcript ----
+    const handleDownloadMyTranscript = useCallback(async (assessmentIndex) => {
+        if (!studentEnriched) {
+            showNotification('Your record is still loading...', 'warning');
+            return;
+        }
+        setGenerating(true);
+        try {
+            await downloadTranscripts({
+                students: [studentEnriched],
+                meta: buildMeta(),
+                subjects,
+                term: `Term ${effectiveTerm}`,
+                assessmentIndex,
+            });
+            showNotification(`Transcript (Assessment ${assessmentIndex + 1}) downloaded`, 'success');
+        } catch (err) {
+            console.error('own transcript failed:', err);
+            showNotification('Failed: ' + err.message, 'error');
+        } finally {
+            setGenerating(false);
+        }
+    }, [studentEnriched, buildMeta, subjects, effectiveTerm, showNotification]);
 
     const handleDownloadTemplate = useCallback(async () => {
         setGenerating(true);
@@ -525,16 +676,189 @@ export default function StudentReports() {
         }
     }, [schoolBranding, showNotification]);
 
-    // ============================================================
-    // Early return — SAFE now that all hooks are above it
-    // ============================================================
-    if (loading && !hasLoadedOnce) {
-        return <LoadingSpinner fullScreen text="Loading students..." />;
+    // =========================================================
+    // Early return
+    // =========================================================
+    if (loading && !hasLoadedOnce && !studentLoaded) {
+        return <LoadingSpinner fullScreen text="Loading..." />;
     }
 
+    // =========================================================
+    // STUDENT VIEW
+    // =========================================================
+    if (isStudent) {
+        const me = studentEnriched;
+        return (
+            <Layout title="My Report Form">
+                {!me ? (
+                    <LoadingSpinner fullScreen text="Loading your results..." />
+                ) : (
+                    <>
+                        {/* Header card */}
+                        <div style={{
+                            background: 'linear-gradient(135deg, #1a237e, #3949ab)',
+                            color: 'white', borderRadius: 16, padding: 24,
+                            marginBottom: 20, display: 'flex', gap: 20,
+                            alignItems: 'center', flexWrap: 'wrap',
+                        }}>
+                            <div style={{
+                                width: 64, height: 64, borderRadius: 16,
+                                background: 'rgba(255,255,255,0.18)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: 24, fontWeight: 700,
+                            }}>
+                                {`${me.firstName?.[0] || ''}${me.lastName?.[0] || ''}`.toUpperCase() || 'S'}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 200 }}>
+                                <div style={{ fontSize: 13, opacity: 0.85, letterSpacing: 0.5, fontWeight: 600 }}>
+                                    MY CBC REPORT FORM
+                                </div>
+                                <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>
+                                    {me.firstName} {me.lastName}
+                                </div>
+                                <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>
+                                    {me.admissionNumber || me.studentId || '—'}
+                                    {' · '}{me.class || '—'}
+                                    {' · '}Term {effectiveTerm}
+                                </div>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                <span style={{
+                                    background: 'rgba(255,255,255,0.18)', padding: '6px 12px',
+                                    borderRadius: 20, fontSize: 12, fontWeight: 700,
+                                }}>
+                                    Avg {me.overallAverage || 0}%
+                                </span>
+                                <span style={{
+                                    background: 'rgba(255,255,255,0.18)', padding: '6px 12px',
+                                    borderRadius: 20, fontSize: 12, fontWeight: 700,
+                                }}>
+                                    CBC {getCBCGrade(me.overallAverage || 0).code}
+                                </span>
+                                {me.position && (
+                                    <span style={{
+                                        background: 'rgba(255,255,255,0.18)', padding: '6px 12px',
+                                        borderRadius: 20, fontSize: 12, fontWeight: 700,
+                                    }}>
+                                        Pos {me.position} / {me.classSize}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Download actions */}
+                        <div style={actionsCardStyle}>
+                            <div>
+                                <h3 style={sectionTitleStyle}>
+                                    <i className="fas fa-file-pdf" style={{ color: PRIMARY }}></i>{' '}
+                                    Download My Documents
+                                </h3>
+                                <p style={sectionHintStyle}>
+                                    Choose the format you want to print or share.
+                                </p>
+                            </div>
+
+                            <div style={actionGridStyle}>
+                                <DocButton
+                                    icon="fa-file-pdf"
+                                    title="My Full Report Form"
+                                    subtitle="Full term report — best for printing"
+                                    disabled={generating}
+                                    onClick={handleDownloadMyReport}
+                                    color="#27ae60"
+                                />
+                                <DocButton
+                                    icon="fa-file-alt"
+                                    title="Assessment 1 Transcript"
+                                    subtitle="Snapshot of A1 results"
+                                    disabled={generating}
+                                    onClick={() => handleDownloadMyTranscript(0)}
+                                    color="#f39c12"
+                                />
+                                <DocButton
+                                    icon="fa-file-alt"
+                                    title="Assessment 2 Transcript"
+                                    subtitle="Snapshot of A2 results"
+                                    disabled={generating}
+                                    onClick={() => handleDownloadMyTranscript(1)}
+                                    color="#e67e22"
+                                />
+                                <DocButton
+                                    icon="fa-file-alt"
+                                    title="Assessment 3 Transcript"
+                                    subtitle="Snapshot of A3 results"
+                                    disabled={generating}
+                                    onClick={() => handleDownloadMyTranscript(2)}
+                                    color="#d35400"
+                                />
+                            </div>
+                        </div>
+
+                        {/* Preview */}
+                        <div style={{ marginTop: 24 }}>
+                            <h3 style={{ ...sectionTitleStyle, marginBottom: 14 }}>
+                                Preview
+                            </h3>
+                            <div style={{ ...cardStyle, cursor: 'default', flexWrap: 'wrap' }}>
+                                <div style={{ flex: 1, minWidth: 240 }}>
+                                    <div style={{ fontWeight: 700, fontSize: 15, color: '#2c3e50' }}>
+                                        Term {effectiveTerm} Summary
+                                    </div>
+                                    <div style={{ fontSize: 12, color: '#95a5a6', marginTop: 2 }}>
+                                        {me.assessedCount} of {me.totalSubjects} subjects assessed
+                                    </div>
+                                    <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                                        <Pill color={PRIMARY}>Avg {me.overallAverage || 0}%</Pill>
+                                        <Pill color={gradeColor(getCBCGrade(me.overallAverage || 0).level)}>
+                                            {getCBCGrade(me.overallAverage || 0).code}
+                                        </Pill>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => { setPreviewStudent(me); setPreviewAssessment(0); }}
+                                    style={primaryBtn}
+                                >
+                                    <i className="fas fa-eye"></i> Open Preview
+                                </button>
+                            </div>
+                        </div>
+                    </>
+                )}
+
+                {previewStudent && (
+                    <PreviewModal
+                        student={previewStudent}
+                        subjects={subjects}
+                        term={`Term ${effectiveTerm}`}
+                        meta={buildMeta()}
+                        assessmentIndex={previewAssessment}
+                        onAssessmentChange={setPreviewAssessment}
+                        onClose={() => setPreviewStudent(null)}
+                        onDownloadForm={() => handleDownloadSingleForm(previewStudent)}
+                        onDownloadTranscript={() => handleDownloadSingleTranscript(previewStudent, previewAssessment)}
+                        generating={generating}
+                    />
+                )}
+
+                {generating && <GeneratingOverlay />}
+
+                <style>{`
+                    @keyframes spin { to { transform: rotate(360deg); } }
+                    .doc-btn:hover:not(:disabled) {
+                        transform: translateY(-2px);
+                        box-shadow: 0 10px 22px rgba(26,35,126,0.15);
+                    }
+                    .doc-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+                `}</style>
+            </Layout>
+        );
+    }
+
+    // =========================================================
+    // ADMIN VIEW (unchanged)
+    // =========================================================
     return (
         <Layout title="Student Report Forms (CBC)">
-            {/* ---------- Filter bar ---------- */}
             <div style={filterBarStyle}>
                 <Field label="Level" required>
                     <select value={selectedLevel} onChange={(e) => {
@@ -580,7 +904,6 @@ export default function StudentReports() {
                 </div>
             </div>
 
-            {/* ---------- Document actions ---------- */}
             <div style={actionsCardStyle}>
                 <div>
                     <h3 style={sectionTitleStyle}>
@@ -618,7 +941,6 @@ export default function StudentReports() {
                         onClick={() => handleDownloadTranscripts(2)}
                         color="#d35400"
                     />
-
                     <DocButton
                         icon="fa-file-alt"
                         title="Report Form — All 3 Assessments"
@@ -627,7 +949,6 @@ export default function StudentReports() {
                         onClick={handleDownloadClassReports}
                         color={PRIMARY}
                     />
-
                     <DocButton
                         icon="fa-file"
                         title="Download Template"
@@ -639,7 +960,6 @@ export default function StudentReports() {
                 </div>
             </div>
 
-            {/* ---------- Students grid ---------- */}
             <div style={{ marginTop: 24 }}>
                 {students.length === 0 ? (
                     <EmptyState />
@@ -661,7 +981,6 @@ export default function StudentReports() {
                 )}
             </div>
 
-            {/* ---------- Preview modal ---------- */}
             {previewStudent && (
                 <PreviewModal
                     student={previewStudent}
@@ -698,7 +1017,7 @@ export default function StudentReports() {
 }
 
 // ============================================================
-// Sub-components
+// Sub-components (unchanged)
 // ============================================================
 function Field({ label, required, children }) {
     return (
@@ -836,9 +1155,6 @@ function GeneratingOverlay() {
     );
 }
 
-// ============================================================
-// Preview modal
-// ============================================================
 function PreviewModal({
     student, subjects, term, meta,
     assessmentIndex, onAssessmentChange,
