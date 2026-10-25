@@ -1,8 +1,8 @@
-const { withCors } = require('./_lib/cors');
 // netlify/functions/get-student-balance.js
+const { withCors } = require('./_lib/cors');
 const { initAdmin } = require('./_lib/firebaseAdmin');
 
-exports.handler = async (event) => {
+exports.handler = withCors(async (event) => {
     if (event.httpMethod !== 'POST') {
         return { statusCode: 405, body: JSON.stringify({ success: false, message: 'Method not allowed' }) };
     }
@@ -27,8 +27,7 @@ exports.handler = async (event) => {
     try {
         const admin = initAdmin();
         const db = admin.firestore();
-        
-        // Find student by admissionNumber
+
         const studentsSnapshot = await db.collection('students')
             .where('schoolId', '==', schoolId)
             .where('admissionNumber', '==', String(admissionNumber))
@@ -42,11 +41,17 @@ exports.handler = async (event) => {
         const studentData = studentsSnapshot.docs[0].data();
         return {
             statusCode: 200,
-            body: JSON.stringify({ success: true, balance: studentData.feeBalance || 0 })
+            body: JSON.stringify({
+                success: true,
+                balance: studentData.feeBalance || 0,
+                // Include these so the dashboard can show more than just balance
+                studentId: studentsSnapshot.docs[0].id,
+                class: studentData.class || '',
+                level: studentData.level || '',
+                admissionNumber: studentData.admissionNumber || '',
+            })
         };
     } catch (error) {
         return { statusCode: 500, body: JSON.stringify({ success: false, message: error.message }) };
     }
-};
-
-exports.handler = withCors(exports.handler);
+});
