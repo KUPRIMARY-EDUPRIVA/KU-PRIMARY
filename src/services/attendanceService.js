@@ -139,12 +139,12 @@ export async function getClassRoster(schoolId, cls, level) {
 }
 
 function compareStudents(a, b) {
-        const aId = a.admissionNumber || a.studentId || '';
-        const bId = b.admissionNumber || b.studentId || '';
-        if (aId && bId) return String(aId).localeCompare(String(bId), undefined, { numeric: true });
-        const aN = `${a.firstName || ''} ${a.lastName || ''}`.toLowerCase();
-        const bN = `${b.firstName || ''} ${b.lastName || ''}`.toLowerCase();
-        return aN.localeCompare(bN);
+    const aId = a.admissionNumber || a.studentId || '';
+    const bId = b.admissionNumber || b.studentId || '';
+    if (aId && bId) return String(aId).localeCompare(String(bId), undefined, { numeric: true });
+    const aN = `${a.firstName || ''} ${a.lastName || ''}`.toLowerCase();
+    const bN = `${b.firstName || ''} ${b.lastName || ''}`.toLowerCase();
+    return aN.localeCompare(bN);
 }
 
 // ------------------------------------------------------------
@@ -199,6 +199,148 @@ export function aggregateAttendance(records = [], roster = []) {
         : 0;
 
     return { totals, perStudent: rosterRows };
+}
+
+// ------------------------------------------------------------
+// STUDENT SELF-SERVICE HELPERS
+// ------------------------------------------------------------
+// These are additive: they operate on the same `attendance`
+// collection using the same schema, so nothing on the admin
+// side changes.
+// ------------------------------------------------------------
+
+/**
+ * Extract one student's personal attendance rows from a list of
+ * class-level attendance records.
+ *
+ * @param {Array}  records           - records returned by listAttendanceRecords
+ * @param {string} studentId         - student.id (the Firestore doc id)
+ * @param {Object} [opts]
+ * @param {string} [opts.session]    - optional filter: 'full' | 'morning' | 'afternoon'
+ * @returns {Array<{
+ *   id: string,
+ *   date: string,
+ *   session: string,
+ *   class: string,
+ *   level: string,
+ *   status: 'present'|'absent'|'late'|'excused',
+ *   note: string,
+ *   takenByName: string,
+ *   takenBy: string
+ * }>}
+ */
+export function extractStudentAttendance(records = [], studentId, opts = {}) {
+    if (!studentId) return [];
+    const { session } = opts;
+    const out = [];
+
+    (records || []).forEach((rec) => {
+        if (session && rec.session !== session) return;
+        const entries = Array.isArray(rec.entries) ? rec.entries : [];
+        const hit = entries.find((e) => e.studentId === studentId);
+        if (!hit) return;
+        out.push({
+            id: rec.id,
+            date: rec.date || '',
+            session: rec.session || 'full',
+            class: rec.class || '',
+            level: rec.level || '',
+            status: hit.status || 'present',
+            note: hit.note || '',
+            takenBy: rec.takenBy || '',
+            takenByName: rec.takenByName || '',
+        });
+    });
+
+    // Newest first, then by session order (full > morning > afternoon)
+    const sessionRank = { full: 0, morning: 1, afternoon: 2 };
+    out.sort((a, b) => {
+        if (a.date !== b.date) return String(b.date).localeCompare(String(a.date));
+        const ra = sessionRank[a.session] ?? 99;
+        const rb = sessionRank[b.session] ?? 99;
+        return ra - rb;
+    });
+
+    return out;
+}
+
+/**
+ * Compute a personal attendance summary from a personal daily log
+ * (the output of `extractStudentAttendance`).
+ *
+ * @param {Array} personalRows
+ * @returns {{
+ *   total: number,
+ *   present: number,
+ *   absent: number,
+ *   late: number,
+ *   excused: number,
+ *   rate: number,     // 0–100
+ *   months: Array<{ key: string, label: string, total: number, present: number, absent: number, late: number, excused: number, rate: number }>
+ * }}
+ */
+export function summarizeStudentAttendance(personalRows = []) {
+    const base = { present: 0, absent: 0, late: 0, excused: 0, total: 0 };
+    const months = new Map();
+
+    (personalRows || []).forEach((r) => {
+        const s = r.status || 'present';
+        if (base[s] !== undefined) base[s]++;
+        base.total++;
+
+        const key = (r.date || '').slice(0, 7); // YYYY-MM
+        if (!key) return;
+        if (!months.has(key)) {
+            months.set(key, {
+                key,
+                label: new Date(key + '-01').toLocaleDateString(undefined, {
+                    month: 'long', year: 'numeric',
+                }),
+                total: 0, present: 0, absent: 0, late: 0, excused: 0,
+            });
+        }
+        const m = months.get(key);
+        m.total++;
+        if (m[s] !== undefined) m[s]++;
+    });
+
+    const rate = base.total
+        ? Math.round(((base.present + base.late) / base.total) * 100)
+        : 0;
+
+    const monthsArr = [...months.values()]
+        .sort((a, b) => b.key.localeCompare(a.key))
+        .map((m) => ({
+            ...m,
+            rate: m.total
+                ? Math.round(((m.present + m.late) / m.total) * 100)
+                : 0,
+        }));
+
+    return { ...base, rate, months: monthsArr };
+}
+
+/**
+ * Convenience: fetch a single student's attendance for a date range.
+ * Internally uses listAttendanceRecords + extractStudentAttendance.
+ *
+ * @param {Object} params
+ * @param {string} params.schoolId
+ * @param {string} params.cls         - the student's class
+ * @param {string} params.studentId
+ * @param {string} params.fromDate    - YYYY-MM-DD
+ * @param {string} params.toDate      - YYYY-MM-DD
+ * @param {number} [params.max=500]
+ * @returns {Promise<Array>}          - personal daily rows
+ */
+export async function getStudentAttendanceInRange({
+    schoolId, cls, studentId, fromDate, toDate, max = 500,
+}) {
+    if (!schoolId || !cls || !studentId) return [];
+    const records = await listAttendanceRecords({
+        schoolId, cls, fromDate, toDate, max,
+    });
+    return extractStudentAttendance(records, studentId);
 }
 
 // ------------------------------------------------------------
