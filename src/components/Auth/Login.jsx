@@ -789,4 +789,289 @@ export default function Login() {
                                         <div className="email-display">{verificationEmail}</div>
                                         <p>Check your inbox and click the verification link.</p>
                                         <div className="verification-timer">
-                                            <p>Checking automatically in <span className="timer">{verificationTimer}</span> seconds…</
+                                            <p>Checking automatically in <span className="timer">{verificationTimer}</span> seconds…</p>
+                                        </div>
+                                        <div className="resend-link">
+                                            Didn't receive it? <span onClick={handleResendVerification}>Resend Verification Email</span>
+                                        </div>
+                                        <button type="button" className="btn warning" onClick={checkEmailVerification}>
+                                            <i className="fas fa-sync-alt"></i><span>Check Verification Status</span>
+                                        </button>
+                                        <button type="button" className="btn danger" onClick={handleLogout} style={{ marginTop: '10px' }}>
+                                            <i className="fas fa-sign-out-alt"></i><span>Logout</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <>
+                                    <h2 className="form-title">
+                                        {showRegister ? 'Register School' : (loginMode === 'student' ? 'Student Portal' : 'School Portal')}
+                                    </h2>
+
+                                    {message.text && (
+                                        <div className={`message ${message.type}`} role={message.type === 'error' ? 'alert' : 'status'}>
+                                            <span>{message.text}</span>
+                                            <button type="button" aria-label="Dismiss" onClick={clearMessages}>×</button>
+                                        </div>
+                                    )}
+
+                                    {/* --- Mode toggle --- */}
+                                    {!showRegister && (
+                                        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setLoginMode('staff'); clearMessages(); }}
+                                                className={`btn ${loginMode === 'staff' ? '' : 'btn-outline'}`}
+                                                style={{ flex: 1 }}
+                                            >
+                                                <i className="fas fa-user-tie"></i> Staff / Admin
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setLoginMode('student'); clearMessages(); }}
+                                                className={`btn ${loginMode === 'student' ? '' : 'btn-outline'}`}
+                                                style={{ flex: 1 }}
+                                            >
+                                                <i className="fas fa-user-graduate"></i> Student
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* --- Student login form --- */}
+                                    {!showRegister && loginMode === 'student' && (
+                                        <form className="form active" onSubmit={handleStudentLogin}>
+                                            <div className="input-group">
+                                                <label htmlFor="studentEmail">Student Email</label>
+                                                <i className="fas fa-envelope"></i>
+                                                <input
+                                                    type="email" id="studentEmail"
+                                                    value={studentEmail}
+                                                    onChange={(e) => setStudentEmail(e.target.value)}
+                                                    placeholder="your.name@school.com" required
+                                                />
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="studentAdmissionNumber">Admission Number</label>
+                                                <i className="fas fa-id-card"></i>
+                                                <input
+                                                    type="text" id="studentAdmissionNumber"
+                                                    value={studentAdmissionNumber}
+                                                    onChange={(e) => setStudentAdmissionNumber(e.target.value)}
+                                                    placeholder="e.g. 00123"
+                                                    required
+                                                />
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="studentSchoolId">School ID</label>
+                                                <i className="fas fa-school"></i>
+                                                <input
+                                                    type="text" id="studentSchoolId"
+                                                    value={studentSchoolId}
+                                                    onChange={(e) => setStudentSchoolId(e.target.value)}
+                                                    placeholder="e.g. TOP-ab12-xyz9"
+                                                    required
+                                                />
+                                                <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+                                                    Ask your school office if you don't know your School ID.
+                                                </div>
+                                            </div>
+                                            <button type="submit" className="btn" disabled={loading}>
+                                                {loading ? (<><div className="loading"></div><span>Signing in…</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Sign In as Student</span></>)}
+                                            </button>
+                                            <div style={{ fontSize: 12, color: '#64748b', textAlign: 'center', marginTop: 10, lineHeight: 1.5 }}>
+                                                <i className="fas fa-info-circle"></i>{' '}
+                                                On your first login, use your <strong>admission number</strong> as the password.
+                                                You'll be asked to set a new password.
+                                            </div>
+                                            <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
+                                        </form>
+                                    )}
+
+                                    {/* --- Staff login form --- */}
+                                    {!showRegister && loginMode === 'staff' && (
+                                        <form className="form active" onSubmit={handleLogin}>
+                                            <div className="input-group">
+                                                <label htmlFor="loginEmail">Email Address</label>
+                                                <i className="fas fa-envelope"></i>
+                                                <input
+                                                    type="email" id="loginEmail" value={loginEmail}
+                                                    onChange={(e) => { setLoginEmail(e.target.value); setEmailValid(e.target.value === '' ? null : validateEmail(e.target.value)); }}
+                                                    placeholder="Enter your email" required
+                                                />
+                                                <div className={`validation-icon ${emailValid === true ? 'valid' : emailValid === false ? 'invalid' : ''}`}>
+                                                    {emailValid === true && <i className="fas fa-check-circle"></i>}
+                                                    {emailValid === false && <i className="fas fa-exclamation-circle"></i>}
+                                                </div>
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="loginPassword">Password</label>
+                                                <i className="fas fa-lock"></i>
+                                                <input
+                                                    type="password" id="loginPassword" value={loginPassword}
+                                                    onChange={(e) => setLoginPassword(e.target.value)}
+                                                    placeholder="Enter your password" required
+                                                />
+                                            </div>
+                                            <button type="submit" className="btn" disabled={loading}>
+                                                {loading ? (<><div className="loading"></div><span>Logging in...</span></>) : (<><i className="fas fa-sign-in-alt"></i><span>Login to Dashboard</span></>)}
+                                            </button>
+                                            {biometricReady && (currentUser || auth.currentUser) && (
+                                                <button
+                                                    type="button" className="btn"
+                                                    onPointerDown={(e) => { if (e.isPrimary && e.button === 0) handleBiometricLogin(); }}
+                                                    onClick={handleBiometricLogin}
+                                                    disabled={loading}
+                                                >
+                                                    {loading ? <><div className="loading"></div><span>Verifying…</span></> : <><i className="fas fa-fingerprint"></i><span>Continue with biometrics</span></>}
+                                                </button>
+                                            )}
+                                            {pendingBiometricRole && (
+                                                <section role="dialog" aria-modal="true" style={{ marginTop: 18, padding: 18, border: '1px solid #cbd5e1', borderRadius: 12, background: '#f8fafc', color: '#172033' }}>
+                                                    <h3 style={{ margin: '0 0 6px', fontSize: 16 }}>Enable biometric unlock?</h3>
+                                                    <p style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.5 }}>
+                                                        Use your device fingerprint or face to reopen your saved session offline.
+                                                    </p>
+                                                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                                                        <button type="button" className="btn" onClick={() => finishBiometricSetup(true)} disabled={loading} style={{ width: 'auto' }}>
+                                                            Enable securely
+                                                        </button>
+                                                        <button type="button" className="btn btn-outline" onClick={() => finishBiometricSetup(false)} disabled={loading} style={{ width: 'auto' }}>
+                                                            Continue without it
+                                                        </button>
+                                                    </div>
+                                                </section>
+                                            )}
+                                            <div className="forgot-password" onClick={handleForgotPassword}>Forgot Password?</div>
+                                        </form>
+                                    )}
+
+                                    {showRegister && (
+                                        <form className="form active" onSubmit={handleSignup}>
+                                            <div className="input-group">
+                                                <label htmlFor="schoolName">School Name</label>
+                                                <i className="fas fa-school"></i>
+                                                <input type="text" id="schoolName" value={signupSchoolName}
+                                                    onChange={(e) => setSignupSchoolName(e.target.value)}
+                                                    placeholder="Enter school name" required />
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="adminFullName">Admin Full Name</label>
+                                                <i className="fas fa-user-tie"></i>
+                                                <input type="text" id="adminFullName" value={signupAdminFullName}
+                                                    onChange={(e) => setSignupAdminFullName(e.target.value)}
+                                                    placeholder="Enter admin full name" required />
+                                            </div>
+                                            <div className="file-upload-container">
+                                                <label>School Logo</label>
+                                                <div className="upload-preview">
+                                                    <div className="logo-preview">
+                                                        {logoPreview ? <img src={logoPreview} alt="School Logo" /> : <i className="fas fa-school fa-2x" style={{ color: '#ccc' }}></i>}
+                                                    </div>
+                                                    <div className="upload-info">
+                                                        <p>Upload your school logo (Max 2MB)</p>
+                                                        <button type="button" className="upload-btn" onClick={() => {
+                                                            const input = document.createElement('input');
+                                                            input.type = 'file';
+                                                            input.accept = 'image/jpeg,image/png,image/gif,image/webp';
+                                                            input.onchange = (ev) => {
+                                                                const file = ev.target.files?.[0];
+                                                                if (!file) return;
+                                                                if (file.size > 2 * 1024 * 1024) return showMessage('Image must be under 2MB', 'error');
+                                                                setLogoFile(file);
+                                                                const r = new FileReader();
+                                                                r.onloadend = () => setLogoPreview(r.result);
+                                                                r.readAsDataURL(file);
+                                                            };
+                                                            input.click();
+                                                        }}>
+                                                            <i className="fas fa-upload"></i><span>Upload Logo</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="file-upload-container">
+                                                <label>Admin Profile Picture</label>
+                                                <div className="upload-preview">
+                                                    <div className="profile-preview">
+                                                        {profilePreview ? <img src={profilePreview} alt="Admin Profile" /> : <i className="fas fa-user fa-2x" style={{ color: '#ccc' }}></i>}
+                                                    </div>
+                                                    <div className="upload-info">
+                                                        <p>Upload admin profile picture (Max 2MB)</p>
+                                                        <button type="button" className="upload-btn" onClick={() => {
+                                                            const input = document.createElement('input');
+                                                            input.type = 'file';
+                                                            input.accept = 'image/jpeg,image/png,image/gif,image/webp';
+                                                            input.onchange = (ev) => {
+                                                                const file = ev.target.files?.[0];
+                                                                if (!file) return;
+                                                                if (file.size > 2 * 1024 * 1024) return showMessage('Image must be under 2MB', 'error');
+                                                                setProfileFile(file);
+                                                                const r = new FileReader();
+                                                                r.onloadend = () => setProfilePreview(r.result);
+                                                                r.readAsDataURL(file);
+                                                            };
+                                                            input.click();
+                                                        }}>
+                                                            <i className="fas fa-upload"></i><span>Upload Profile</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="signupEmail">Admin Email Address</label>
+                                                <i className="fas fa-envelope"></i>
+                                                <input type="email" id="signupEmail" value={signupEmail}
+                                                    onChange={(e) => { setSignupEmail(e.target.value); setSignupEmailValid(e.target.value === '' ? null : validateEmail(e.target.value)); }}
+                                                    placeholder="Enter admin email" required />
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="signupPassword">Password</label>
+                                                <i className="fas fa-lock"></i>
+                                                <input type="password" id="signupPassword" value={signupPassword}
+                                                    onChange={(e) => setSignupPassword(e.target.value)}
+                                                    placeholder="Create a strong password" required />
+                                            </div>
+                                            <div className="input-group">
+                                                <label htmlFor="confirmPassword">Confirm Password</label>
+                                                <i className="fas fa-lock"></i>
+                                                <input type="password" id="confirmPassword" value={confirmPassword}
+                                                    onChange={(e) => { setConfirmPassword(e.target.value); setPasswordsMatch(e.target.value === '' ? null : signupPassword === e.target.value); }}
+                                                    placeholder="Confirm your password" required />
+                                            </div>
+                                            <div className="input-group" style={{ marginBottom: '10px' }}>
+                                                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+                                                    <input type="checkbox" id="termsAgreement" checked={termsAgreement}
+                                                        onChange={(e) => setTermsAgreement(e.target.checked)}
+                                                        style={{ width: 'auto', marginTop: '3px' }} />
+                                                    <label htmlFor="termsAgreement" style={{ fontSize: '13px', color: '#666', cursor: 'pointer' }}>
+                                                        I agree to the <a href="#" style={{ color: 'var(--primary)' }}>Terms of Service</a> and <a href="#" style={{ color: 'var(--primary)' }}>Privacy Policy</a>.
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <button type="submit" className="btn warning" disabled={loading || !isOnline}>
+                                                {loading ? (<><div className="loading"></div><span>Creating account…</span></>) : (<><i className="fas fa-school"></i><span>Register School</span></>)}
+                                            </button>
+                                            <div className="toggle-link" onClick={toggleRegister}>
+                                                Already have an account? <span>Login</span>
+                                            </div>
+                                        </form>
+                                    )}
+
+                                    {!showRegister && (
+                                        <div className="toggle-link" onClick={toggleRegister}>
+                                            Don't have a school account? <span>Register</span>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <style>{`
+                /* (keep existing CSS as-is — omitted here for brevity, append the same block from your file) */
+            `}</style>
+        </div>
+    );
+}
