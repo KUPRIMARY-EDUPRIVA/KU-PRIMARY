@@ -5,8 +5,9 @@ import { useAuth } from '../context/AuthContext';
 import { useSchool } from '../context/SchoolContext';
 import { useSync } from '../context/SyncContext';
 import { useFee } from '../context/FeeContext';
+import { normalizeRole, isSchoolAdminRole } from '../utils/roles';
 import { db } from '../firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import Layout from '../components/Layout/Layout';
 import LoadingSpinner from '../components/Common/LoadingSpinner';
 import ReceiptModal from '../components/Fees/ReceiptModal';
@@ -27,16 +28,27 @@ import { AuditLogService } from '../services/auditService';
 import { fetchNetlifyFunction } from '../services/netlifyApi';
 
 import { showAppNotice } from '../utils/appNotice';
+
 // ---------- Constants ----------
 const MAX_IMPORT_SIZE = 5 * 1024 * 1024;
 const OVERDUE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const LEVEL_ORDER = ['pre-primary', 'lower-primary', 'upper-primary', 'junior-school', 'senior-school'];
 
-// Roster paging guards
 const ROSTER_PAGE_SIZE = 500;
 const ROSTER_MAX_PAGES = 200;
-const ROSTER_CACHE_TTL_MS = 60 * 1000; // 60s — bulk ops reuse within a minute
+const ROSTER_CACHE_TTL_MS = 60 * 1000;
+
+// Normalize a Kenyan number to 2547XXXXXXXX / 2541XXXXXXXX
+const normalizeKenyanPhone = (raw) => {
+    if (!raw) return '';
+    let p = String(raw).replace(/\D/g, '');
+    if (p.startsWith('0')) p = '254' + p.slice(1);
+    else if (p.startsWith('7') || p.startsWith('1')) p = '254' + p;
+    else if (!p.startsWith('254')) p = '254' + p;
+    return p;
+};
+const isValidKenyanPhone = (p) => /^254(7|1)\d{8}$/.test(p);
 
 const generateStatementHash = (data) => {
     const content = JSON.stringify(data.slice(0, 10));
@@ -55,7 +67,6 @@ const escapeCsv = (v) => {
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-// ---------- Static style helpers (pure — safe to hoist) ----------
 const smallBtn = (bg) => ({
     padding: '4px 12px', fontSize: '11px', background: bg, color: 'white',
     border: 'none', borderRadius: '6px', cursor: 'pointer'
@@ -84,6 +95,10 @@ export default function Fees() {
         setStudentsQuery, setBalancesQuery,
         goToNextPage, goToPrevPage, setPageSize
     } = useFee();
+
+    const role = normalizeRole(userRole || userData?.role || '');
+    const isStudent = role === 'student';
+    const isAdmin = isSchoolAdminRole(role) && role !== 'super-admin';
 
     const students = studentsPage.items;
     const paginatedBalances = balancesPage.items;
@@ -118,7 +133,6 @@ export default function Fees() {
     const [liveSearchLoading, setLiveSearchLoading] = useState(false);
     const [liveSearchError, setLiveSearchError] = useState('');
 
-    // ---- School highest level (for filtering level dropdowns) ----
     const [schoolHighestLevel, setSchoolHighestLevel] = useState('senior-school');
 
     // ---- Selected entities ----
@@ -154,64 +168,19 @@ export default function Fees() {
         studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: ''
     });
 
+    // ---- Student self-service state ----
+    const [myStudent, setMyStudent] = useState(null);          // student doc
+    const [myLoading, setMyLoading] = useState(false);
+    const [myInvoices, setMyInvoices] = useState([]);
+
     const fileInputRef = useRef(null);
 
-    // ---- Full-roster cache (for bulk ops that need all students, not just current page) ----
     const allStudentsCacheRef = useRef({ data: null, at: 0, key: '' });
     const [loadingAllStudents, setLoadingAllStudents] = useState(false);
 
-    // ---- Notifications ----
     const showNotification = useCallback((message, type = 'info') => {
         showAppNotice(message, type);
     }, []);
-
-    /* =========================================================
-       Full-roster loader (walks pages)
-       ========================================================= */
-
-    const rosterCacheKey = `${selectedLevel || '*'}|${selectedClass || '*'}`;
-
-    const ensureAllStudents = useCallback(async () => {
-        const now = Date.now();
-        const cached = allStudentsCacheRef.current;
-        if (
-            cached.data
-            && cached.key === rosterCacheKey
-            && (now - cached.at) < ROSTER_CACHE_TTL_MS
-        ) {
-            return cached.data;
-        }
-
-        setLoadingAllStudents(true);
-        try {
-            const schoolId = requireSchoolId(userData);
-            const acc = [];
-            for (let page = 0; page < ROSTER_MAX_PAGES; page++) {
-                // Accept both `{ items, total }` and plain array returns.
-                const res = await fetchStudentsPage({
-                    schoolId,
-                    level: selectedLevel,
-                    cls: selectedClass,
-                    sortField: 'firstName',
-                    sortDirection: 'asc',
-                    pageIndex: page,
-                    pageSize: ROSTER_PAGE_SIZE
-                });
-                const rows = Array.isArray(res) ? res : (res?.items || []);
-                if (!rows.length) break;
-                acc.push(...rows);
-                if (rows.length < ROSTER_PAGE_SIZE) break;
-            }
-            allStudentsCacheRef.current = { data: acc, at: Date.now(), key: rosterCacheKey };
-            return acc;
-        } finally {
-            setLoadingAllStudents(false);
-        }
-    }, [userData, selectedLevel, selectedClass, fetchStudentsPage, rosterCacheKey]);
-
-    const invalidateRosterCache = () => {
-        allStudentsCacheRef.current = { data: null, at: 0, key: '' };
-    };
 
     /* =========================================================
        Bootstrap
@@ -243,23 +212,70 @@ export default function Fees() {
         })();
     }, [userData, getFromIndexedDB]);
 
-    // Prefer context school data if present (avoids an extra fetch)
     useEffect(() => {
         if (schoolCtxData?.highestLevel) setSchoolHighestLevel(schoolCtxData.highestLevel);
     }, [schoolCtxData]);
 
-    // Overdue-check interval — guarded via ref so it isn't torn down each render
     const overdueRef = useRef(checkOverdueInvoices);
     useEffect(() => { overdueRef.current = checkOverdueInvoices; }, [checkOverdueInvoices]);
     useEffect(() => {
         const interval = setInterval(() => {
-            if (isOnline) overdueRef.current?.();
+            if (isOnline && !isStudent) overdueRef.current?.();
         }, OVERDUE_CHECK_INTERVAL_MS);
         return () => clearInterval(interval);
-    }, [isOnline]);
+    }, [isOnline, isStudent]);
 
-    // ---- Server-side filter: level/class change ----
+    /* =========================================================
+       Student bootstrap: resolve own record
+       ========================================================= */
     useEffect(() => {
+        if (!isStudent) return;
+        const schoolId = userData?.schoolId;
+        const email = userData?.email;
+        if (!schoolId || !email) return;
+
+        let cancelled = false;
+        (async () => {
+            setMyLoading(true);
+            try {
+                const snap = await getDocs(query(
+                    collection(db, 'students'),
+                    where('schoolId', '==', schoolId),
+                    where('email', '==', email),
+                    limit(1)
+                ));
+                if (cancelled) return;
+                if (snap.empty) {
+                    showNotification('Your student record was not found. Please contact the school office.', 'error');
+                    return;
+                }
+                const docData = snap.docs[0];
+                setMyStudent({ id: docData.id, ...docData.data() });
+            } catch (e) {
+                console.error('Failed to load own student record:', e);
+                showNotification('Failed to load your fee record: ' + e.message, 'error');
+            } finally {
+                if (!cancelled) setMyLoading(false);
+            }
+        })();
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isStudent, userData?.schoolId, userData?.email]);
+
+    // Populate own invoices once student + context are ready
+    useEffect(() => {
+        if (!isStudent || !myStudent) return;
+        try {
+            const list = getStudentInvoices(myStudent.id) || [];
+            setMyInvoices(list);
+        } catch {
+            setMyInvoices([]);
+        }
+    }, [isStudent, myStudent, getStudentInvoices, feeTransactions]);
+
+    // Student: skip the server-side filter effect (they don't filter)
+    useEffect(() => {
+        if (isStudent) return;
         setStudentsQuery({
             level: selectedLevel,
             cls: selectedClass,
@@ -272,15 +288,64 @@ export default function Fees() {
             term: scope.term,
             year: scope.year
         });
-        // The roster cache is scoped by level/class — drop it when they change.
         allStudentsCacheRef.current = { data: null, at: 0, key: '' };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedLevel, selectedClass]);
+    }, [selectedLevel, selectedClass, isStudent]);
 
+    /* =========================================================
+       Roster loader (admin only)
+       ========================================================= */
+    const rosterCacheKey = `${selectedLevel || '*'}|${selectedClass || '*'}`;
+
+    const ensureAllStudents = useCallback(async () => {
+        const now = Date.now();
+        const cached = allStudentsCacheRef.current;
+        if (
+            cached.data
+            && cached.key === rosterCacheKey
+            && (now - cached.at) < ROSTER_CACHE_TTL_MS
+        ) {
+            return cached.data;
+        }
+
+        setLoadingAllStudents(true);
+        try {
+            const schoolId = requireSchoolId(userData);
+            const acc = [];
+            for (let page = 0; page < ROSTER_MAX_PAGES; page++) {
+                const res = await fetchStudentsPage({
+                    schoolId,
+                    level: selectedLevel,
+                    cls: selectedClass,
+                    sortField: 'firstName',
+                    sortDirection: 'asc',
+                    pageIndex: page,
+                    pageSize: ROSTER_PAGE_SIZE
+                });
+                const rows = Array.isArray(res) ? res : (res?.items || []);
+                if (!rows.length) break;
+                acc.push(...rows);
+                if (rows.length < ROSTER_PAGE_SIZE) break;
+            }
+            allStudentsCacheRef.current = { data: acc, at: Date.now(), key: rosterCacheKey };
+            return acc;
+        } finally {
+            setLoadingAllStudents(false);
+        }
+    }, [userData, selectedLevel, selectedClass, fetchStudentsPage, rosterCacheKey]);
+
+    const invalidateRosterCache = () => {
+        allStudentsCacheRef.current = { data: null, at: 0, key: '' };
+    };
+
+    /* =========================================================
+       Live search (admin only)
+       ========================================================= */
     const liveSearchTerm = searchType === 'admission' ? searchByAdmission.trim() : searchTerm.trim();
     const hasLiveSearch = liveSearchTerm.length >= 2;
 
     useEffect(() => {
+        if (isStudent) return undefined;
         if (!hasLiveSearch) {
             setLiveSearchResults([]);
             setLiveSearchLoading(false);
@@ -329,9 +394,11 @@ export default function Fees() {
             cancelled = true;
             window.clearTimeout(timer);
         };
-    }, [hasLiveSearch, isOnline, liveSearchTerm, selectedLevel, selectedClass, userData?.schoolId, students, searchType]);
+    }, [isStudent, hasLiveSearch, isOnline, liveSearchTerm, selectedLevel, selectedClass, userData?.schoolId, students, searchType]);
 
-    // ---- Unique option helpers ----
+    /* =========================================================
+       Level/class options
+       ========================================================= */
     const schoolLevels = useMemo(() => {
         const idx = LEVEL_ORDER.indexOf(schoolHighestLevel);
         return idx === -1 ? [...LEVEL_ORDER] : LEVEL_ORDER.slice(0, idx + 1);
@@ -339,9 +406,7 @@ export default function Fees() {
 
     const uniqueLevels = useMemo(() => {
         const allowed = new Set(schoolLevels);
-        // Preserve order from LEVEL_ORDER for stability
         const ordered = LEVEL_ORDER.filter(l => allowed.has(l));
-        // Any levels seen on students but not in order — append
         const extras = new Set();
         students.forEach(s => {
             if (s.level && allowed.has(s.level) && !ordered.includes(s.level)) extras.add(s.level);
@@ -384,9 +449,8 @@ export default function Fees() {
     }, [students, bulkFeeForm.level, getClassesForLevel]);
 
     /* =========================================================
-       Receipt helpers
+       Receipts
        ========================================================= */
-
     const generateReceiptNumber = useCallback(() => {
         const prefix = 'RCP';
         const d = new Date();
@@ -400,6 +464,7 @@ export default function Fees() {
     const generateReceipt = useCallback(async (transaction) => {
         try {
             const student = transaction._student
+                || (myStudent && transaction.studentId === myStudent.id ? myStudent : null)
                 || students.find(s => s.id === transaction.studentId);
             if (!student) { console.error('Student not found for receipt'); return; }
             const balance = getStudentBalance(transaction.studentId);
@@ -440,12 +505,11 @@ export default function Fees() {
             console.error('Error generating receipt:', error);
             showNotification('Failed to generate receipt', 'error');
         }
-    }, [students, getStudentBalance, getStudentInvoices, isOnline, showNotification, generateReceiptNumber]);
+    }, [students, myStudent, getStudentBalance, getStudentInvoices, isOnline, showNotification, generateReceiptNumber]);
 
     /* =========================================================
        Form handlers
        ========================================================= */
-
     const handleFeeFormChange = (e) => {
         const { name, value } = e.target;
         setFeeForm(prev => ({ ...prev, [name]: value }));
@@ -491,9 +555,8 @@ export default function Fees() {
     };
 
     /* =========================================================
-       Student reconstruction + modal openers
+       Modal openers
        ========================================================= */
-
     const studentFromBalance = (balance) => {
         if (!balance) return null;
         const fullName = (balance.studentName || '').trim();
@@ -587,9 +650,137 @@ export default function Fees() {
     };
 
     /* =========================================================
-       Fee submit
+       STUDENT: open the M-Pesa modal prefilled with self
        ========================================================= */
+    const openStudentMpesaModal = useCallback(() => {
+        if (!myStudent) {
+            showNotification('Your student record is still loading...', 'warning');
+            return;
+        }
+        const balance = feeBalances[myStudent.id]?.balance
+            ?? getStudentBalance(myStudent.id)?.balance
+            ?? 0;
 
+        setMpesaForm({
+            student: myStudent,
+            studentId: myStudent.id,
+            studentAdmission: myStudent.admissionNumber || myStudent.studentId || '',
+            phoneNumber: myStudent.parentPhone || myStudent.phone || userData?.phoneNumber || '',
+            amount: balance > 0 ? String(Math.min(balance, 100000)) : '',
+            description: `Fee payment — ${myStudent.firstName || ''} ${myStudent.lastName || ''}`.trim(),
+        });
+        setShowMpesaModal(true);
+    }, [myStudent, feeBalances, getStudentBalance, userData?.phoneNumber, showNotification]);
+
+    /* =========================================================
+       M-Pesa submit (shared by admin + student)
+       ========================================================= */
+    const handleMpesaPayment = async (e) => {
+        e.preventDefault();
+        setIsProcessing(true);
+        try {
+            const student = mpesaForm.student;
+            if (!student) {
+                showNotification('Please search and select a student', 'warning');
+                return;
+            }
+
+            const amountNum = parseFloat(mpesaForm.amount);
+            if (!Number.isFinite(amountNum) || amountNum <= 0) {
+                showNotification('Amount must be greater than zero.', 'warning');
+                return;
+            }
+
+            // For students, hard-cap against the outstanding balance to prevent
+            // accidental overpayment via a typo.
+            if (isStudent) {
+                const balance = feeBalances[student.id]?.balance
+                    ?? getStudentBalance(student.id)?.balance
+                    ?? 0;
+                if (balance > 0 && amountNum > balance) {
+                    showNotification(
+                        `Amount exceeds your outstanding balance (KES ${balance.toLocaleString()}).`,
+                        'warning'
+                    );
+                    return;
+                }
+            }
+
+            const phone = normalizeKenyanPhone(mpesaForm.phoneNumber);
+            if (!isValidKenyanPhone(phone)) {
+                showNotification('Enter a valid Kenyan phone number (07XX XXX XXX or 01XX XXX XXX).', 'warning');
+                return;
+            }
+
+            let token = '';
+            try {
+                if (currentUser?.getIdToken) token = await currentUser.getIdToken();
+            } catch (error) {
+                console.error('Could not refresh session token before M-Pesa request:', error);
+            }
+            if (!token) {
+                showNotification('Your login session has expired. Sign in again before sending an M-Pesa request.', 'error');
+                return;
+            }
+
+            const response = await fetchNetlifyFunction('mpesa-stk-push', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    phoneNumber: phone,
+                    amount: amountNum,
+                    studentId: student.id,
+                    studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+                    admissionNumber: student.admissionNumber || student.studentId || '',
+                    description: mpesaForm.description || 'School fees payment',
+                    schoolId: userData?.schoolId,
+                    schoolName: userData?.schoolName || '',
+                    studentClass: student.class || '',
+                    level: student.level || '',
+                    term: feeForm.term || 'Term 1',
+                    year: parseInt(feeForm.year || new Date().getFullYear(), 10),
+                    initiatedByRole: isStudent ? 'student' : role,
+                })
+            });
+
+            const result = await response.json();
+            if (result.success) {
+                showNotification(
+                    result.trackingPersisted === false
+                        ? `${result.message} CheckoutRequestID: ${result.checkoutRequestID}`
+                        : 'M-Pesa STK push sent! Check the phone to complete payment.',
+                    result.trackingPersisted === false ? 'warning' : 'success'
+                );
+                // Best-effort audit log
+                AuditLogService.logAction(
+                    userData?.schoolId,
+                    { uid: currentUser?.uid, fullName: userData?.fullName, email: currentUser?.email, role },
+                    'FEE_MPESA_INITIATED',
+                    {
+                        entityId: student.admissionNumber || student.studentId || '',
+                        amount: amountNum,
+                        initiatedBy: isStudent ? 'student' : role,
+                        checkoutRequestID: result.checkoutRequestID || null,
+                    }
+                ).catch(() => {});
+
+                setShowMpesaModal(false);
+                setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
+            } else {
+                showNotification('Failed to send M-Pesa STK push: ' + (result.message || 'unknown error'), 'error');
+            }
+        } catch (error) {
+            console.error('Error processing M-Pesa payment:', error);
+            showNotification('Failed to process M-Pesa payment', 'error');
+        } finally { setIsProcessing(false); }
+    };
+
+    /* =========================================================
+       Fee submit (admin)
+       ========================================================= */
     const handleFeeSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
@@ -606,7 +797,6 @@ export default function Fees() {
                 return;
             }
 
-            // Warn if payment exceeds outstanding balance
             const stBal = feeBalances[student.id];
             if (stBal && stBal.balance > 0 && amountNum > stBal.balance) {
                 const ok = window.confirm(
@@ -672,9 +862,8 @@ export default function Fees() {
     };
 
     /* =========================================================
-       Invoice submit
+       Invoice submit (admin)
        ========================================================= */
-
     const handleInvoiceSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
@@ -694,7 +883,6 @@ export default function Fees() {
                 const roster = await ensureAllStudents();
                 selectedStudents = roster.filter(s => s.class === invoiceForm.invoiceClass);
             } else {
-                // Explicit selection — resolve any IDs not on the current page.
                 const onPage = new Map(students.map(s => [s.id, s]));
                 const missing = invoiceForm.studentIds.some(id => !onPage.has(id));
                 if (missing) {
@@ -805,9 +993,8 @@ export default function Fees() {
     };
 
     /* =========================================================
-       Bulk fee entry
+       Bulk fee entry (admin)
        ========================================================= */
-
     const handleBulkFeeSubmit = async (e) => {
         e.preventDefault();
         setIsProcessing(true);
@@ -881,85 +1068,8 @@ export default function Fees() {
     };
 
     /* =========================================================
-       M-Pesa submit
+       Statement import + reconciliation (admin only)
        ========================================================= */
-
-    const handleMpesaPayment = async (e) => {
-        e.preventDefault();
-        setIsProcessing(true);
-        try {
-            const student = mpesaForm.student;
-            if (!student) {
-                showNotification('Please search and select a student', 'warning');
-                return;
-            }
-
-            const amountNum = parseFloat(mpesaForm.amount);
-            if (!Number.isFinite(amountNum) || amountNum <= 0) {
-                showNotification('Amount must be greater than zero.', 'warning');
-                return;
-            }
-
-            let phone = mpesaForm.phoneNumber.replace(/\D/g, '');
-            if (phone.startsWith('0')) phone = '254' + phone.substring(1);
-            else if (!phone.startsWith('254')) phone = '254' + phone;
-
-            let token = '';
-            try {
-                if (currentUser?.getIdToken) token = await currentUser.getIdToken();
-            } catch (error) {
-                console.error('Could not refresh session token before M-Pesa request:', error);
-            }
-            if (!token) {
-                showNotification('Your login session has expired. Sign in again before sending an M-Pesa request.', 'error');
-                return;
-            }
-
-            const response = await fetchNetlifyFunction('mpesa-stk-push', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-                },
-                body: JSON.stringify({
-                    phoneNumber: phone,
-                    amount: amountNum,
-                    studentId: student.id,
-                    studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
-                    admissionNumber: student.admissionNumber || student.studentId || '',
-                    description: mpesaForm.description || 'School fees payment',
-                    schoolId: userData?.schoolId,
-                    schoolName: userData?.schoolName || '',
-                    studentClass: student.class || '',
-                    level: student.level || '',
-                    term: feeForm.term || 'Term 1',
-                    year: parseInt(feeForm.year || new Date().getFullYear(), 10)
-                })
-            });
-
-            const result = await response.json();
-            if (result.success) {
-                showNotification(
-                    result.trackingPersisted === false
-                        ? `${result.message} CheckoutRequestID: ${result.checkoutRequestID}`
-                        : 'M-Pesa STK push sent! Check the phone to complete payment.',
-                    result.trackingPersisted === false ? 'warning' : 'success'
-                );
-                setShowMpesaModal(false);
-                setMpesaForm({ student: null, studentId: '', studentAdmission: '', phoneNumber: '', amount: '', description: '' });
-            } else {
-                showNotification('Failed to send M-Pesa STK push: ' + (result.message || 'unknown error'), 'error');
-            }
-        } catch (error) {
-            console.error('Error processing M-Pesa payment:', error);
-            showNotification('Failed to process M-Pesa payment', 'error');
-        } finally { setIsProcessing(false); }
-    };
-
-    /* =========================================================
-       Bank statement import
-       ========================================================= */
-
     const handleFileImport = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -1060,10 +1170,6 @@ export default function Fees() {
         }
     };
 
-    /* =========================================================
-       Reconciliation
-       ========================================================= */
-
     const performReconciliation = async () => {
         setIsProcessing(true);
         setShowReconcileModal(false);
@@ -1072,8 +1178,6 @@ export default function Fees() {
             const unmatched = [];
             const studentMap = {};
 
-            // Walk the FULL roster — critical: bank statements include students
-            // who may not be on the current page.
             const roster = await ensureAllStudents();
 
             roster.forEach(s => {
@@ -1085,7 +1189,6 @@ export default function Fees() {
                 if (/^\d+$/.test(rawAdmission)) studentMap[String(parseInt(rawAdmission, 10))] = s;
                 const noSpaceName = name.replace(/\s/g, '');
                 if (noSpaceName) studentMap[noSpaceName] = s;
-                // Index individual name tokens ≥3 chars
                 name.split(/\s+/).forEach(tok => {
                     if (tok.length >= 3 && !studentMap[tok]) studentMap[tok] = s;
                 });
@@ -1192,7 +1295,6 @@ export default function Fees() {
     /* =========================================================
        Invoice details + reminders
        ========================================================= */
-
     const viewInvoiceDetails = (invoice) => {
         setSelectedInvoice(invoice);
         setShowInvoiceDetailsModal(true);
@@ -1209,10 +1311,6 @@ export default function Fees() {
             showNotification('Failed to send reminder', 'error');
         }
     };
-
-    /* =========================================================
-       Defaulters export (full roster)
-       ========================================================= */
 
     const handleExportDefaulters = async () => {
         try {
@@ -1255,10 +1353,6 @@ export default function Fees() {
         }
     };
 
-    /* =========================================================
-       Bulk reminders (full roster)
-       ========================================================= */
-
     const handleSendBulkReminders = async () => {
         if (!window.confirm('This will send reminders for all unpaid invoices to parents. Proceed?')) return;
         setIsProcessing(true);
@@ -1285,10 +1379,6 @@ export default function Fees() {
             showNotification(`Error sending reminders: ${error.message}`, 'error');
         } finally { setIsProcessing(false); }
     };
-
-    /* =========================================================
-       Receipt handlers
-       ========================================================= */
 
     const handleGenerateReceipt = async (studentId) => {
         const studentTransactions = feeTransactions
@@ -1317,9 +1407,8 @@ export default function Fees() {
     }, [receiptData, schoolData, showNotification]);
 
     /* =========================================================
-       Derived stats
+       Derived stats (admin)
        ========================================================= */
-
     const invoiceStats = useMemo(() => {
         try { return getInvoiceStats(); } catch { return null; }
     }, [getInvoiceStats]);
@@ -1343,7 +1432,6 @@ export default function Fees() {
     const partialPaid = useMemo(() =>
         Object.values(feeBalances).filter(b => b.status === 'partial').length, [feeBalances]);
 
-    // Memoized balance enrichment — avoids calling getStudentInvoices in the render loop.
     const enrichedBalances = useMemo(() => {
         const balancesToShow = hasLiveSearch
             ? liveSearchResults.map((student) => ({
@@ -1384,9 +1472,8 @@ export default function Fees() {
     }, [paginatedBalances, hasLiveSearch, liveSearchResults, feeBalances, getStudentInvoices]);
 
     /* =========================================================
-       Render helpers
+       Render helpers (admin)
        ========================================================= */
-
     const renderBalanceCard = (balance) => {
         const statusColor = balance.status === 'paid' ? '#27ae60' :
             balance.status === 'partial' ? '#f39c12' :
@@ -1505,6 +1592,275 @@ export default function Fees() {
         );
     };
 
+    /* =========================================================
+       STUDENT VIEW
+       ========================================================= */
+    if (isStudent) {
+        if (myLoading && !myStudent) {
+            return <LoadingSpinner fullScreen text="Loading your fee statement..." />;
+        }
+        if (!myStudent) {
+            return (
+                <Layout title="My Fees">
+                    <div style={{
+                        background: 'white', borderRadius: 16, padding: 40,
+                        textAlign: 'center', boxShadow: '0 4px 6px rgba(0,0,0,0.07)',
+                    }}>
+                        <i className="fas fa-user-slash" style={{ fontSize: 56, color: '#e0e6ed', marginBottom: 16 }}></i>
+                        <h2 style={{ color: 'var(--secondary)', marginBottom: 8 }}>Student record not found</h2>
+                        <p style={{ color: 'var(--gray)', maxWidth: 480, margin: '0 auto' }}>
+                            We couldn't locate your student record for this school.
+                            Please contact the school office so they can confirm your account details.
+                        </p>
+                    </div>
+                </Layout>
+            );
+        }
+
+        const myBalance = feeBalances[myStudent.id] || {};
+        const myTotalInvoiced = Number(myBalance.totalInvoiced || 0);
+        const myTotalPaid = Number(myBalance.totalPaid || 0);
+        const myOutstanding = Number(myBalance.balance || 0);
+        const myTransactions = (feeTransactions || [])
+            .filter(t => t.studentId === myStudent.id && t.type === 'payment')
+            .sort((a, b) => new Date(b.paymentDate || 0) - new Date(a.paymentDate || 0));
+
+        const fmtCurrency = (v) => `KES ${Number(v || 0).toLocaleString()}`;
+
+        return (
+            <Layout title="My Fees">
+                <style>{feesStyles}</style>
+
+                <div className="fees-container">
+                    {/* Header card */}
+                    <div style={{
+                        background: 'linear-gradient(135deg, #1a237e, #3949ab)',
+                        color: 'white', borderRadius: 16, padding: 24,
+                        marginBottom: 20, display: 'flex', gap: 20,
+                        alignItems: 'center', flexWrap: 'wrap',
+                    }}>
+                        <div style={{
+                            width: 64, height: 64, borderRadius: 16,
+                            background: 'rgba(255,255,255,0.18)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: 24, fontWeight: 700,
+                        }}>
+                            {`${myStudent.firstName?.[0] || ''}${myStudent.lastName?.[0] || ''}`.toUpperCase() || 'S'}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 200 }}>
+                            <div style={{ fontSize: 13, opacity: 0.85, fontWeight: 600, letterSpacing: 0.5 }}>
+                                MY FEE STATEMENT
+                            </div>
+                            <div style={{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>
+                                {myStudent.firstName} {myStudent.lastName}
+                            </div>
+                            <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>
+                                {myStudent.admissionNumber || myStudent.studentId || '—'}
+                                {' · '}{myStudent.class || '—'}
+                                {' · '}{scope.term || 'Term'} {scope.year || new Date().getFullYear()}
+                            </div>
+                        </div>
+                        <div>
+                            <button
+                                type="button"
+                                className="btn btn-whatsapp"
+                                onClick={openStudentMpesaModal}
+                                style={{ background: '#25D366', color: 'white', padding: '12px 20px', borderRadius: 10, border: 'none', fontWeight: 700, fontSize: 14, display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+                            >
+                                <i className="fas fa-mobile-alt"></i> Pay with M-Pesa
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="fee-stats-grid">
+                        <div className="fee-stat-card">
+                            <div className="stat-label">Invoiced</div>
+                            <div className="stat-value">{fmtCurrency(myTotalInvoiced)}</div>
+                        </div>
+                        <div className="fee-stat-card">
+                            <div className="stat-label">Paid</div>
+                            <div className="stat-value" style={{ color: 'var(--success)' }}>{fmtCurrency(myTotalPaid)}</div>
+                        </div>
+                        <div className="fee-stat-card">
+                            <div className="stat-label">Outstanding Balance</div>
+                            <div className="stat-value" style={{ color: myOutstanding > 0 ? 'var(--danger)' : 'var(--success)' }}>
+                                {fmtCurrency(myOutstanding)}
+                            </div>
+                        </div>
+                        <div className="fee-stat-card">
+                            <div className="stat-label">Payment Status</div>
+                            <div className="stat-value" style={{
+                                fontSize: 18,
+                                color: myOutstanding <= 0 ? 'var(--success)' : myOutstanding < myTotalInvoiced ? 'var(--warning)' : 'var(--danger)'
+                            }}>
+                                {myTotalInvoiced === 0 ? 'No invoice' :
+                                    myOutstanding <= 0 ? 'Cleared' :
+                                    myOutstanding < myTotalInvoiced ? 'Partial' : 'Pending'}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Invoices */}
+                    <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--secondary)', margin: '4px 0 12px' }}>
+                        <i className="fas fa-file-invoice"></i> My Invoices ({myInvoices.length})
+                    </h3>
+                    {myInvoices.length === 0 ? (
+                        <div style={{
+                            background: 'white', borderRadius: 12, padding: 30,
+                            textAlign: 'center', color: 'var(--gray)',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.06)', marginBottom: 20,
+                        }}>
+                            <i className="fas fa-inbox" style={{ fontSize: 32, display: 'block', marginBottom: 10, color: '#e0e6ed' }}></i>
+                            No invoices on file yet.
+                        </div>
+                    ) : (
+                        <div style={{ marginBottom: 20, display: 'grid', gap: 10 }}>
+                            {myInvoices.map((inv) => {
+                                const remaining = Number(inv.remainingBalance ?? inv.total ?? 0);
+                                const badge = inv.status === 'paid' ? 'paid' : inv.status === 'partial' ? 'partial' : inv.status === 'overdue' ? 'overdue' : 'pending';
+                                return (
+                                    <div
+                                        key={inv.id}
+                                        style={{
+                                            background: 'white', borderRadius: 12, padding: 16,
+                                            boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                                            display: 'flex', justifyContent: 'space-between',
+                                            alignItems: 'center', flexWrap: 'wrap', gap: 10,
+                                        }}
+                                    >
+                                        <div style={{ flex: 1, minWidth: 220 }}>
+                                            <div style={{ fontWeight: 700, color: 'var(--secondary)' }}>
+                                                {inv.invoiceNumber || 'Invoice'}
+                                                <span className={`status-badge ${badge}`} style={{ marginLeft: 8 }}>
+                                                    {badge.charAt(0).toUpperCase() + badge.slice(1)}
+                                                </span>
+                                            </div>
+                                            <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 3 }}>
+                                                {inv.term || 'Term'} {inv.academicYear || inv.year || ''} •
+                                                Due {inv.dueDate ? new Date(inv.dueDate).toLocaleDateString() : 'N/A'}
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <div style={{ fontSize: 12, color: 'var(--gray)' }}>Total</div>
+                                            <div style={{ fontWeight: 700 }}>{fmtCurrency(inv.total)}</div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <div style={{ fontSize: 12, color: 'var(--gray)' }}>Remaining</div>
+                                            <div style={{
+                                                fontWeight: 700,
+                                                color: remaining > 0 ? 'var(--danger)' : 'var(--success)'
+                                            }}>{fmtCurrency(remaining)}</div>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => viewInvoiceDetails(inv)}
+                                            style={smallBtn('var(--primary)')}
+                                        >
+                                            <i className="fas fa-eye"></i> View
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* Payment history */}
+                    <h3 style={{ fontSize: 16, fontWeight: 700, color: 'var(--secondary)', margin: '4px 0 12px' }}>
+                        <i className="fas fa-history"></i> Payment History ({myTransactions.length})
+                    </h3>
+                    {myTransactions.length === 0 ? (
+                        <div style={{
+                            background: 'white', borderRadius: 12, padding: 30,
+                            textAlign: 'center', color: 'var(--gray)',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                        }}>
+                            <i className="fas fa-receipt" style={{ fontSize: 32, display: 'block', marginBottom: 10, color: '#e0e6ed' }}></i>
+                            No payments recorded yet.
+                        </div>
+                    ) : (
+                        <div style={{ background: 'white', borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+                            <div style={{ overflowX: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead>
+                                        <tr style={{ background: '#f8f9fb' }}>
+                                            {['Date', 'Description', 'Method', 'Reference', 'Amount'].map(h => (
+                                                <th key={h} style={{
+                                                    textAlign: 'left', padding: '10px 14px',
+                                                    fontSize: 11, textTransform: 'uppercase',
+                                                    color: 'var(--gray)', fontWeight: 700,
+                                                }}>{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {myTransactions.map(t => (
+                                            <tr key={t.id} style={{ borderTop: '1px solid var(--border)' }}>
+                                                <td style={{ padding: '10px 14px', fontSize: 13 }}>
+                                                    {t.paymentDate ? new Date(t.paymentDate).toLocaleDateString() : '—'}
+                                                </td>
+                                                <td style={{ padding: '10px 14px', fontSize: 13 }}>{t.description || 'Fee payment'}</td>
+                                                <td style={{ padding: '10px 14px', fontSize: 13, textTransform: 'capitalize' }}>
+                                                    {t.paymentMethod || 'cash'}
+                                                </td>
+                                                <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--gray)' }}>
+                                                    {t.reference || t.receiptNumber || '—'}
+                                                </td>
+                                                <td style={{ padding: '10px 14px', fontSize: 13, fontWeight: 700, color: 'var(--success)' }}>
+                                                    {fmtCurrency(t.amount)}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* M-Pesa modal (shared with admin) */}
+                {showMpesaModal && (
+                    <Modal
+                        onClose={() => setShowMpesaModal(false)}
+                        title={<><i className="fas fa-mobile-alt" style={{ color: '#25D366' }}></i> Pay Fees via M-Pesa</>}
+                    >
+                        <MpesaPaymentForm
+                            form={mpesaForm}
+                            onChange={handleMpesaFormChange}
+                            onSubmit={handleMpesaPayment}
+                            onCancel={() => setShowMpesaModal(false)}
+                            isProcessing={isProcessing}
+                            isStudent
+                            outstandingBalance={myOutstanding}
+                            studentLabel={`${myStudent.firstName || ''} ${myStudent.lastName || ''}`.trim()}
+                            admissionNumber={myStudent.admissionNumber || myStudent.studentId || ''}
+                        />
+                    </Modal>
+                )}
+
+                {showInvoiceDetailsModal && selectedInvoice && (
+                    <InvoiceDetailsModal
+                        invoice={selectedInvoice}
+                        onClose={() => setShowInvoiceDetailsModal(false)}
+                        onRemind={null /* students can't send reminders */}
+                    />
+                )}
+
+                {showReceiptModal && receiptData && (
+                    <ReceiptModal
+                        receiptData={receiptData}
+                        schoolData={schoolData}
+                        onClose={() => { setShowReceiptModal(false); setReceiptData(null); }}
+                        onDownloadPDF={handleDownloadReceiptPDF}
+                    />
+                )}
+            </Layout>
+        );
+    }
+
+    /* =========================================================
+       ADMIN VIEW
+       ========================================================= */
     if (loading && studentsPage.items.length === 0) return <LoadingSpinner fullScreen text="Loading fee data..." />;
 
     return (
@@ -1512,7 +1868,6 @@ export default function Fees() {
             <style>{feesStyles}</style>
 
             <div className="fees-container">
-                {/* Invoice Stats Summary */}
                 {invoiceStats && invoiceStats.total > 0 && (
                     <div style={{
                         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
@@ -1527,7 +1882,6 @@ export default function Fees() {
                     </div>
                 )}
 
-                {/* Stats */}
                 <div className="fee-stats-grid">
                     <div className="fee-stat-card">
                         <div className="stat-label">Total Students</div>
@@ -1562,7 +1916,6 @@ export default function Fees() {
                     </div>
                 </div>
 
-                {/* Action Buttons */}
                 <div className="fee-actions">
                     <button type="button" className="btn btn-primary" onClick={() => openFeeModal()}><i className="fas fa-plus"></i> Record Payment</button>
                     <button type="button" className="btn btn-success" onClick={() => setShowInvoiceModal(true)}><i className="fas fa-file-invoice"></i> Create Invoice</button>
@@ -1579,7 +1932,6 @@ export default function Fees() {
                     </button>
                 </div>
 
-                {/* Filters */}
                 <div className="filters-section">
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', width: '100%' }}>
                         <div className="search-toggle">
@@ -1639,7 +1991,6 @@ export default function Fees() {
                     </div>
                 )}
 
-                {/* Balance List */}
                 {balancesPage.loading && paginatedBalances.length === 0 ? (
                     <div style={{ padding: '40px', textAlign: 'center', color: 'var(--gray)' }}>
                         <i className="fas fa-spinner fa-spin" style={{ fontSize: '32px' }}></i>
@@ -1661,9 +2012,8 @@ export default function Fees() {
 
                 {!hasLiveSearch && renderPagination()}
 
-                {/* ===================== MODALS ===================== */}
+                {/* ===================== MODALS (admin) ===================== */}
 
-                {/* Fee Modal */}
                 {showFeeModal && (
                     <Modal onClose={() => setShowFeeModal(false)} title="Record Fee Payment">
                         <form onSubmit={handleFeeSubmit}>
@@ -1763,7 +2113,6 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* Invoice Modal */}
                 {showInvoiceModal && (
                     <Modal onClose={() => setShowInvoiceModal(false)} title="Create Invoice">
                         <form onSubmit={handleInvoiceSubmit}>
@@ -1921,7 +2270,6 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* Bulk Fee Modal */}
                 {showBulkFeeModal && (
                     <Modal onClose={() => setShowBulkFeeModal(false)} title="Bulk Fee Entry">
                         <form onSubmit={handleBulkFeeSubmit}>
@@ -1965,12 +2313,15 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* M-Pesa Modal */}
                 {showMpesaModal && (
                     <Modal onClose={() => setShowMpesaModal(false)} title={<><i className="fas fa-mobile-alt" style={{ color: '#25D366' }}></i> M-Pesa STK Push</>}>
-                        <form onSubmit={handleMpesaPayment}>
-                            <div className="form-group">
-                                <label>Student <span className="required">*</span></label>
+                        <MpesaPaymentForm
+                            form={mpesaForm}
+                            onChange={handleMpesaFormChange}
+                            onSubmit={handleMpesaPayment}
+                            onCancel={() => setShowMpesaModal(false)}
+                            isProcessing={isProcessing}
+                            studentSelector={
                                 <StudentPicker
                                     schoolId={userData?.schoolId}
                                     value={mpesaForm.student}
@@ -1985,35 +2336,16 @@ export default function Fees() {
                                     admissionFirst
                                     autoFocus
                                 />
-                                <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
-                                    Searches the saved student roster locally. Refresh the list when student records change.
-                                </div>
-                            </div>
-
-                            <div className="form-group">
-                                <label>Phone Number <span className="required">*</span></label>
-                                <input type="tel" name="phoneNumber" value={mpesaForm.phoneNumber} onChange={handleMpesaFormChange} placeholder="e.g. 0712345678" required />
-                                <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>M-Pesa registered phone number</div>
-                            </div>
-
-                            <div className="form-row">
-                                <div className="form-group"><label>Amount (KES) <span className="required">*</span></label>
-                                    <input type="number" name="amount" value={mpesaForm.amount} onChange={handleMpesaFormChange} min="1" step="1" required /></div>
-                                <div className="form-group"><label>Description</label>
-                                    <input type="text" name="description" value={mpesaForm.description} onChange={handleMpesaFormChange} placeholder="Payment description" /></div>
-                            </div>
-
-                            <div className="modal-footer">
-                                <button type="button" className="btn btn-outline" onClick={() => setShowMpesaModal(false)}>Cancel</button>
-                                <button type="submit" className="btn btn-whatsapp" disabled={isProcessing} style={smallBtn('#25D366')}>
-                                    {isProcessing ? 'Sending...' : <><i className="fas fa-paper-plane"></i> Send STK Push</>}
-                                </button>
-                            </div>
-                        </form>
+                            }
+                            outstandingBalance={
+                                mpesaForm.student
+                                    ? (feeBalances[mpesaForm.student.id]?.balance || 0)
+                                    : null
+                            }
+                        />
                     </Modal>
                 )}
 
-                {/* Reconcile Modal */}
                 {showReconcileModal && (
                     <Modal onClose={() => setShowReconcileModal(false)} title={<><i className="fas fa-credit-card"></i> Reconcile Bank Statement</>}>
                         <div className="file-upload-area" onClick={() => fileInputRef.current?.click()}>
@@ -2043,7 +2375,6 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* Statement Results Modal */}
                 {showStatementModal && reconcileResults && (
                     <Modal onClose={() => setShowStatementModal(false)} title="Reconciliation Results">
                         <div className="reconciliation-summary">
@@ -2104,55 +2435,14 @@ export default function Fees() {
                     </Modal>
                 )}
 
-                {/* Invoice Details Modal */}
                 {showInvoiceDetailsModal && selectedInvoice && (
-                    <Modal onClose={() => setShowInvoiceDetailsModal(false)} title="Invoice Details" maxWidth={600}>
-                        <div style={{ marginBottom: '20px' }}>
-                            <DetailRow label="Invoice Number" value={selectedInvoice.invoiceNumber} />
-                            <DetailRow label="Student" value={selectedInvoice.studentName} />
-                            <DetailRow label="Admission Number" value={selectedInvoice.admissionNumber || 'N/A'} />
-                            <DetailRow label="Class" value={selectedInvoice.studentClass || 'N/A'} />
-                            <DetailRow label="Term" value={selectedInvoice.term} />
-                            <DetailRow label="Due Date" value={selectedInvoice.dueDate ? new Date(selectedInvoice.dueDate).toLocaleDateString() : 'N/A'} />
-                            <DetailRow label="Status" value={
-                                <span className={`status-badge ${selectedInvoice.status}`}>
-                                    {String(selectedInvoice.status || '').charAt(0).toUpperCase() + String(selectedInvoice.status || '').slice(1)}
-                                </span>
-                            } />
-                        </div>
-
-                        <h3 style={{ fontSize: '16px', marginBottom: '10px' }}>Items</h3>
-                        <div style={{ marginBottom: '15px' }}>
-                            {selectedInvoice.items?.map((item, index) => (
-                                <DetailRow key={index} label={item.description} value={`KES ${Number(item.amount || 0).toLocaleString()}`} />
-                            ))}
-                            <DetailRow label="Subtotal" value={`KES ${Number(selectedInvoice.subtotal || 0).toLocaleString()}`} bold />
-                            {Number(selectedInvoice.tax) > 0 && <DetailRow label="Tax" value={`KES ${Number(selectedInvoice.tax).toLocaleString()}`} />}
-                            {Number(selectedInvoice.discount) > 0 && <DetailRow label="Discount" value={`-KES ${Number(selectedInvoice.discount).toLocaleString()}`} />}
-                            <DetailRow label="Total" value={`KES ${Number(selectedInvoice.total || 0).toLocaleString()}`} bold highlight />
-                            <DetailRow label="Paid" value={`KES ${Number(selectedInvoice.paidAmount || 0).toLocaleString()}`} color="var(--success)" />
-                            <DetailRow label="Remaining Balance" value={`KES ${Number(selectedInvoice.remainingBalance || 0).toLocaleString()}`} bold
-                                color={(selectedInvoice.remainingBalance || 0) > 0 ? 'var(--danger)' : 'var(--success)'} />
-                        </div>
-
-                        {selectedInvoice.notes && (
-                            <div style={{ marginBottom: '15px', padding: '10px', background: 'var(--light)', borderRadius: '8px' }}>
-                                <strong>Notes:</strong> {selectedInvoice.notes}
-                            </div>
-                        )}
-
-                        <div className="modal-footer">
-                            {selectedInvoice.status !== 'paid' && (
-                                <button type="button" className="btn btn-warning" onClick={() => handleSendReminder(selectedInvoice)}>
-                                    <i className="fas fa-bell"></i> Send Reminder
-                                </button>
-                            )}
-                            <button type="button" className="btn btn-outline" onClick={() => setShowInvoiceDetailsModal(false)}>Close</button>
-                        </div>
-                    </Modal>
+                    <InvoiceDetailsModal
+                        invoice={selectedInvoice}
+                        onClose={() => setShowInvoiceDetailsModal(false)}
+                        onRemind={() => handleSendReminder(selectedInvoice)}
+                    />
                 )}
 
-                {/* Receipt Modal */}
                 {showReceiptModal && receiptData && (
                     <ReceiptModal
                         receiptData={receiptData}
@@ -2166,7 +2456,8 @@ export default function Fees() {
     );
 }
 
-// ---------- Helper subcomponents ----------
+// ---------- Shared subcomponents ----------
+
 function Modal({ children, onClose, title, maxWidth = 700 }) {
     return (
         <div className="modal-overlay active" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -2178,6 +2469,174 @@ function Modal({ children, onClose, title, maxWidth = 700 }) {
                 {children}
             </div>
         </div>
+    );
+}
+
+function MpesaPaymentForm({
+    form,
+    onChange,
+    onSubmit,
+    onCancel,
+    isProcessing,
+    isStudent = false,
+    outstandingBalance = null,
+    studentLabel = '',
+    admissionNumber = '',
+    studentSelector = null,
+}) {
+    const normalizedPhone = normalizeKenyanPhone(form.phoneNumber);
+    const phoneInvalid = form.phoneNumber.length > 0 && !isValidKenyanPhone(normalizedPhone);
+    const amountNum = parseFloat(form.amount) || 0;
+    const overBalance = isStudent && outstandingBalance != null && amountNum > outstandingBalance;
+
+    return (
+        <form onSubmit={onSubmit}>
+            {isStudent ? (
+                <div style={{
+                    background: '#f0f9ff', border: '1px solid #bae6fd', color: '#075985',
+                    borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 13,
+                }}>
+                    <i className="fas fa-info-circle" style={{ marginRight: 8 }}></i>
+                    Paying for <strong>{studentLabel}</strong>
+                    {admissionNumber && ` (Adm: ${admissionNumber})`}
+                    {outstandingBalance != null && (
+                        <> — outstanding balance: <strong>KES {Number(outstandingBalance).toLocaleString()}</strong></>
+                    )}
+                </div>
+            ) : (
+                <div className="form-group">
+                    <label>Student <span className="required">*</span></label>
+                    {studentSelector}
+                    <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
+                        Searches the saved student roster locally. Refresh the list when student records change.
+                    </div>
+                </div>
+            )}
+
+            <div className="form-group">
+                <label>Phone Number <span className="required">*</span></label>
+                <input
+                    type="tel"
+                    name="phoneNumber"
+                    value={form.phoneNumber}
+                    onChange={onChange}
+                    placeholder="07XX XXX XXX or 01XX XXX XXX"
+                    required
+                    style={phoneInvalid ? { borderColor: 'var(--danger)' } : undefined}
+                />
+                {phoneInvalid ? (
+                    <div style={{ fontSize: '12px', color: 'var(--danger)', marginTop: '5px' }}>
+                        Enter a valid Kenyan phone number (Safaricom or Airtel).
+                    </div>
+                ) : (
+                    <div style={{ fontSize: '12px', color: 'var(--gray)', marginTop: '5px' }}>
+                        M-Pesa registered phone number
+                    </div>
+                )}
+            </div>
+
+            <div className="form-row">
+                <div className="form-group">
+                    <label>Amount (KES) <span className="required">*</span></label>
+                    <input
+                        type="number"
+                        name="amount"
+                        value={form.amount}
+                        onChange={onChange}
+                        min="1"
+                        step="1"
+                        max={isStudent && outstandingBalance ? outstandingBalance : undefined}
+                        required
+                        style={overBalance ? { borderColor: 'var(--danger)' } : undefined}
+                    />
+                    {overBalance && (
+                        <div style={{ fontSize: '12px', color: 'var(--danger)', marginTop: '5px' }}>
+                            Amount exceeds your outstanding balance of KES {Number(outstandingBalance).toLocaleString()}.
+                        </div>
+                    )}
+                </div>
+                <div className="form-group">
+                    <label>Description</label>
+                    <input
+                        type="text"
+                        name="description"
+                        value={form.description}
+                        onChange={onChange}
+                        placeholder="Payment description"
+                    />
+                </div>
+            </div>
+
+            <div style={{
+                fontSize: 12, color: 'var(--gray)', padding: 10, background: 'var(--light)',
+                borderRadius: 8, marginBottom: 8,
+            }}>
+                <i className="fas fa-shield-halved" style={{ marginRight: 6 }}></i>
+                You'll receive an STK push on your phone. Enter your M-Pesa PIN to complete the payment.
+                Do not close this window until you get the confirmation.
+            </div>
+
+            <div className="modal-footer">
+                <button type="button" className="btn btn-outline" onClick={onCancel}>Cancel</button>
+                <button
+                    type="submit"
+                    className="btn btn-whatsapp"
+                    disabled={isProcessing || phoneInvalid || overBalance}
+                    style={{ background: '#25D366', color: '#fff', opacity: (phoneInvalid || overBalance) ? 0.6 : 1 }}
+                >
+                    {isProcessing ? 'Sending...' : <><i className="fas fa-paper-plane"></i> Send STK Push</>}
+                </button>
+            </div>
+        </form>
+    );
+}
+
+function InvoiceDetailsModal({ invoice, onClose, onRemind }) {
+    return (
+        <Modal onClose={onClose} title="Invoice Details" maxWidth={600}>
+            <div style={{ marginBottom: '20px' }}>
+                <DetailRow label="Invoice Number" value={invoice.invoiceNumber} />
+                <DetailRow label="Student" value={invoice.studentName} />
+                <DetailRow label="Admission Number" value={invoice.admissionNumber || 'N/A'} />
+                <DetailRow label="Class" value={invoice.studentClass || 'N/A'} />
+                <DetailRow label="Term" value={invoice.term} />
+                <DetailRow label="Due Date" value={invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString() : 'N/A'} />
+                <DetailRow label="Status" value={
+                    <span className={`status-badge ${invoice.status}`}>
+                        {String(invoice.status || '').charAt(0).toUpperCase() + String(invoice.status || '').slice(1)}
+                    </span>
+                } />
+            </div>
+
+            <h3 style={{ fontSize: '16px', marginBottom: '10px' }}>Items</h3>
+            <div style={{ marginBottom: '15px' }}>
+                {invoice.items?.map((item, index) => (
+                    <DetailRow key={index} label={item.description} value={`KES ${Number(item.amount || 0).toLocaleString()}`} />
+                ))}
+                <DetailRow label="Subtotal" value={`KES ${Number(invoice.subtotal || 0).toLocaleString()}`} bold />
+                {Number(invoice.tax) > 0 && <DetailRow label="Tax" value={`KES ${Number(invoice.tax).toLocaleString()}`} />}
+                {Number(invoice.discount) > 0 && <DetailRow label="Discount" value={`-KES ${Number(invoice.discount).toLocaleString()}`} />}
+                <DetailRow label="Total" value={`KES ${Number(invoice.total || 0).toLocaleString()}`} bold highlight />
+                <DetailRow label="Paid" value={`KES ${Number(invoice.paidAmount || 0).toLocaleString()}`} color="var(--success)" />
+                <DetailRow label="Remaining Balance" value={`KES ${Number(invoice.remainingBalance || 0).toLocaleString()}`} bold
+                    color={(invoice.remainingBalance || 0) > 0 ? 'var(--danger)' : 'var(--success)'} />
+            </div>
+
+            {invoice.notes && (
+                <div style={{ marginBottom: '15px', padding: '10px', background: 'var(--light)', borderRadius: '8px' }}>
+                    <strong>Notes:</strong> {invoice.notes}
+                </div>
+            )}
+
+            <div className="modal-footer">
+                {onRemind && invoice.status !== 'paid' && (
+                    <button type="button" className="btn btn-warning" onClick={onRemind}>
+                        <i className="fas fa-bell"></i> Send Reminder
+                    </button>
+                )}
+                <button type="button" className="btn btn-outline" onClick={onClose}>Close</button>
+            </div>
+        </Modal>
     );
 }
 
