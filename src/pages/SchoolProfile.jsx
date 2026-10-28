@@ -711,6 +711,9 @@ export default function SchoolProfile() {
     const [showResetConfirm, setShowResetConfirm] = useState(false);
     const [isReplacing, setIsReplacing] = useState(false);
 
+    // Admin modal visibility (was DOM-manipulated, now state-driven).
+    const [showAdminModal, setShowAdminModal] = useState(false);
+
     const [darajaForm, setDarajaForm] = useState({
         consumerKey: process.env.REACT_APP_MPESA_CONSUMER_KEY || '',
         consumerSecret: process.env.REACT_APP_MPESA_CONSUMER_SECRET || process.env.REACT_APP_MPESA_SECRET_KEY || '',
@@ -832,6 +835,7 @@ export default function SchoolProfile() {
                 setIsReplacing(false);
                 setDarajaShortcode(cachedSchool.paybillNumber || '');
                 setDarajaEnvironment(cachedSchool.darajaEnvironment || 'sandbox');
+                setDarajaUpdatedAt(cachedSchool.darajaUpdatedAt || null);   // ← FIX: restore cached timestamp
                 setUsingCachedData(true);
                 if (canManageProfile) await loadAdmins(schoolId);
                 setLoading(false);
@@ -1095,13 +1099,14 @@ export default function SchoolProfile() {
             });
 
             setDarajaConfigured(true);
+            setIsReplacing(false);   // ← FIX: return to read-only view after save
             setDarajaShortcode(darajaForm.shortcode.trim());
             setDarajaEnvironment(darajaForm.environment || 'sandbox');
             setDarajaUpdatedAt(new Date().toISOString());
             setDarajaForm({
                 consumerKey: '',
                 consumerSecret: '',
-                shortcode: darajaForm.shortcode.trim(),
+                shortcode: '',       // ← FIX: clear shortcode so "Replace" starts truly fresh
                 passkey: '',
                 initiatorName: '',
                 initiatorPassword: '',
@@ -1118,31 +1123,32 @@ export default function SchoolProfile() {
         }
     };
 
-   const handleResetDarajaForm = () => {
-    setShowResetConfirm(false);
+    const handleResetDarajaForm = () => {
+        setShowResetConfirm(false);
 
-    // Clear the sensitive fields so the user starts fresh, but keep
-    // the shortcode/environment pre-filled so it's less error-prone.
-    setDarajaForm({
-        consumerKey: '',
-        consumerSecret: '',
-        shortcode: darajaShortcode || '',
-        passkey: '',
-        initiatorName: '',
-        initiatorPassword: '',
-        callbackUrl: '',
-        environment: darajaEnvironment || 'sandbox',
-    });
+        // Clear the sensitive fields so the user starts fresh, but keep
+        // the shortcode/environment pre-filled so it's less error-prone.
+        setDarajaForm({
+            consumerKey: '',
+            consumerSecret: '',
+            shortcode: darajaShortcode || '',
+            passkey: '',
+            initiatorName: '',
+            initiatorPassword: '',
+            callbackUrl: '',
+            environment: darajaEnvironment || 'sandbox',
+        });
 
-    // ⚠️ The key change: enter the "replacing" state so the form
-    // fields become editable again and the Save button appears.
-    setIsReplacing(true);
+        // ⚠️ The key change: enter the "replacing" state so the form
+        // fields become editable again and the Save button appears.
+        setIsReplacing(true);
 
-    showNotification(
-        'Enter your new Daraja credentials below. The old ones will stop working as soon as you click Save.',
-        'info'
-    );
-};
+        showNotification(
+            'Enter your new Daraja credentials below. The old ones will stop working as soon as you click Save.',
+            'info'
+        );
+    };
+
     // ============================================================
     // Logo upload (Cloudinary) — unchanged
     // ============================================================
@@ -1277,7 +1283,7 @@ export default function SchoolProfile() {
             });
             await loadAdmins(schoolId);
             form.reset();
-            document.getElementById('adminModal').classList.remove('active');
+            setShowAdminModal(false);   // ← FIX: state-driven close
             showNotification('Administrator added successfully!', 'success');
         } catch (error) {
             console.error('Error adding admin:', error);
@@ -1375,221 +1381,221 @@ export default function SchoolProfile() {
         return counts;
     }, {});
 
-const renderFinanceTab = () => {
-    // "Configured" means: credentials exist in Firestore.
-    // "Read only" means: configured AND the user hasn't clicked Replace.
-    const isConfigured = darajaConfigured;
-    const isReadOnly = isConfigured && !isReplacing;
-    const isEditable = !isReadOnly;
+    const renderFinanceTab = () => {
+        // "Configured" means: credentials exist in Firestore.
+        // "Read only" means: configured AND the user hasn't clicked Replace.
+        const isConfigured = darajaConfigured;
+        const isReadOnly = isConfigured && !isReplacing;
+        const isEditable = !isReadOnly;
 
-    const requiredKeys = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
-    const allRequiredFilled = requiredKeys.every((k) => (darajaForm[k] || '').trim());
+        const requiredKeys = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
+        const allRequiredFilled = requiredKeys.every((k) => (darajaForm[k] || '').trim());
 
-    const handleCancelReplace = () => {
-        setIsReplacing(false);
-        // Clear the form back to blank (or whatever defaults you want)
-        setDarajaForm({
-            consumerKey: '',
-            consumerSecret: '',
-            shortcode: darajaShortcode || '',
-            passkey: '',
-            initiatorName: '',
-            initiatorPassword: '',
-            callbackUrl: '',
-            environment: darajaEnvironment || 'sandbox',
-        });
-    };
+        const handleCancelReplace = () => {
+            setIsReplacing(false);
+            // Clear the form back to blank (or whatever defaults you want)
+            setDarajaForm({
+                consumerKey: '',
+                consumerSecret: '',
+                shortcode: darajaShortcode || '',
+                passkey: '',
+                initiatorName: '',
+                initiatorPassword: '',
+                callbackUrl: '',
+                environment: darajaEnvironment || 'sandbox',
+            });
+        };
 
-    return (
-        <div className="form-section active">
-            <div className="finance-settings-header">
-                <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 10 }}>
-                    <i className="fas fa-key" style={{ color: 'var(--primary)' }}></i> M-Pesa Daraja Credentials
-                </h3>
-                <p style={{ color: 'var(--gray)', fontSize: 14, marginBottom: 20 }}>
-                    Enter the Daraja API credentials from your own Safaricom account.
-                    We store them encrypted-at-rest in a private location that no client can read back —
-                    not even you after saving.
-                </p>
-            </div>
-
-            {isReadOnly && (
-                <div className="fee-info-box" style={{ background: '#e8f5e9', borderLeftColor: '#2e7d32' }}>
-                    <h4 style={{ color: '#1b5e20' }}>
-                        <i className="fas fa-check-circle"></i> Credentials Configured
-                    </h4>
-                    <ul>
-                        <li><i className="fas fa-check-circle"></i> <span><strong>Paybill / Shortcode:</strong> {darajaShortcode}</span></li>
-                        <li><i className="fas fa-check-circle"></i> <span><strong>Environment:</strong> {darajaEnvironment}</span></li>
-                        {darajaUpdatedAt && (
-                            <li>
-                                <i className="fas fa-clock"></i>
-                                <span><strong>Last updated:</strong> {new Date(darajaUpdatedAt).toLocaleString()}</span>
-                            </li>
-                        )}
-                        <li>
-                            <i className="fas fa-lock"></i>
-                            <span>Your keys are stored securely and cannot be viewed again. To rotate them, click <strong>Replace Credentials</strong> below.</span>
-                        </li>
-                    </ul>
+        return (
+            <div className="form-section active">
+                <div className="finance-settings-header">
+                    <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 10 }}>
+                        <i className="fas fa-key" style={{ color: 'var(--primary)' }}></i> M-Pesa Daraja Credentials
+                    </h3>
+                    <p style={{ color: 'var(--gray)', fontSize: 14, marginBottom: 20 }}>
+                        Enter the Daraja API credentials from your own Safaricom account.
+                        We store them encrypted-at-rest in a private location that no client can read back —
+                        not even you after saving.
+                    </p>
                 </div>
-            )}
 
-            {isReplacing && (
-                <div style={{
-                    background: '#fff3cd', color: '#856404',
-                    borderLeft: '4px solid #f39c12',
-                    borderRadius: 8, padding: '12px 16px',
-                    fontSize: 13, marginBottom: 18,
-                }}>
-                    <i className="fas fa-triangle-exclamation"></i>{' '}
-                    <strong>Replacing credentials.</strong> The old keys stay active until you save the new ones.
-                    Nothing is interrupted for parents using M-Pesa right now.
-                </div>
-            )}
-
-            {DARAJA_FIELDS.map((field) => {
-                const value = darajaForm[field.key] ?? '';
-
-                return (
-                    <div className="form-group" key={field.key} style={{ marginBottom: 18 }}>
-                        <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
-                            {field.label}
-                            {requiredKeys.includes(field.key) && (
-                                <span className="required" style={{ color: 'var(--danger)' }}> *</span>
+                {isReadOnly && (
+                    <div className="fee-info-box" style={{ background: '#e8f5e9', borderLeftColor: '#2e7d32' }}>
+                        <h4 style={{ color: '#1b5e20' }}>
+                            <i className="fas fa-check-circle"></i> Credentials Configured
+                        </h4>
+                        <ul>
+                            <li><i className="fas fa-check-circle"></i> <span><strong>Paybill / Shortcode:</strong> {darajaShortcode}</span></li>
+                            <li><i className="fas fa-check-circle"></i> <span><strong>Environment:</strong> {darajaEnvironment}</span></li>
+                            {darajaUpdatedAt && (
+                                <li>
+                                    <i className="fas fa-clock"></i>
+                                    <span><strong>Last updated:</strong> {new Date(darajaUpdatedAt).toLocaleString()}</span>
+                                </li>
                             )}
-                        </label>
-
-                        {field.type === 'select' ? (
-                            <select
-                                id={field.key}
-                                value={value || (field.options[0]?.value || '')}
-                                onChange={handleDarajaChange}
-                                disabled={!isEditable}
-                                style={!isEditable ? disabledFieldStyle : undefined}
-                            >
-                                {field.options.map((opt) => (
-                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                                ))}
-                            </select>
-                        ) : (
-                            <input
-                                type={field.secret ? 'password' : 'text'}
-                                id={field.key}
-                                value={value}
-                                onChange={handleDarajaChange}
-                                placeholder={!isEditable ? '••••••••••••' : field.placeholder}
-                                disabled={!isEditable}
-                                autoComplete="new-password"
-                                style={!isEditable ? disabledFieldStyle : undefined}
-                            />
-                        )}
-
-                        <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 4 }}>
-                            {field.help}
-                        </div>
+                            <li>
+                                <i className="fas fa-lock"></i>
+                                <span>Your keys are stored securely and cannot be viewed again. To rotate them, click <strong>Replace Credentials</strong> below.</span>
+                            </li>
+                        </ul>
                     </div>
-                );
-            })}
-
-            <div style={{
-                display: 'flex', gap: 12, marginTop: 25,
-                paddingTop: 20, borderTop: '1px solid var(--border)',
-                flexWrap: 'wrap'
-            }}>
-                {isEditable && (
-                    <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={handleSaveDaraja}
-                        disabled={savingDaraja || !isOnline || !allRequiredFilled}
-                        title={!allRequiredFilled ? 'Fill in Consumer Key, Consumer Secret, Shortcode and Passkey' : undefined}
-                        style={{
-                            padding: '12px 24px', border: 'none', borderRadius: 8,
-                            fontWeight: 600, cursor: (savingDaraja || !isOnline) ? 'not-allowed' : 'pointer',
-                            background: 'var(--primary)', color: 'white',
-                            display: 'inline-flex', alignItems: 'center', gap: 8,
-                            opacity: (savingDaraja || !isOnline || !allRequiredFilled) ? 0.6 : 1,
-                        }}
-                    >
-                        {savingDaraja ? (
-                            <>
-                                <span className="loading-spinner" style={spinnerStyle}></span>
-                                Saving…
-                            </>
-                        ) : (
-                            <>
-                                <i className="fas fa-save"></i> Save Credentials
-                            </>
-                        )}
-                    </button>
                 )}
 
                 {isReplacing && (
-                    <button
-                        type="button"
-                        className="btn btn-outline"
-                        onClick={handleCancelReplace}
-                        disabled={savingDaraja}
-                        style={{
-                            padding: '12px 24px', borderRadius: 8, fontWeight: 600,
-                            background: 'transparent', color: 'var(--secondary)',
-                            border: '2px solid var(--border)', cursor: 'pointer',
-                        }}
-                    >
-                        Cancel
-                    </button>
+                    <div style={{
+                        background: '#fff3cd', color: '#856404',
+                        borderLeft: '4px solid #f39c12',
+                        borderRadius: 8, padding: '12px 16px',
+                        fontSize: 13, marginBottom: 18,
+                    }}>
+                        <i className="fas fa-triangle-exclamation"></i>{' '}
+                        <strong>Replacing credentials.</strong> The old keys stay active until you save the new ones.
+                        Nothing is interrupted for parents using M-Pesa right now.
+                    </div>
                 )}
 
-                {isReadOnly && (
-                    <button
-                        type="button"
-                        className="btn btn-outline"
-                        onClick={() => setShowResetConfirm(true)}
-                        style={{
-                            padding: '12px 24px', borderRadius: 8, fontWeight: 600,
-                            background: 'transparent', color: 'var(--danger)',
-                            border: '2px solid var(--danger)', cursor: 'pointer',
-                            display: 'inline-flex', alignItems: 'center', gap: 8,
-                        }}
-                    >
-                        <i className="fas fa-rotate"></i> Replace Credentials
-                    </button>
-                )}
-            </div>
+                {DARAJA_FIELDS.map((field) => {
+                    const value = darajaForm[field.key] ?? '';
 
-            {!isOnline && (
-                <div style={{ marginTop: 15, padding: 12, background: '#fff3cd', color: '#856404', borderRadius: 8, fontSize: 13 }}>
-                    <i className="fas fa-wifi-slash"></i> You must be online to save Daraja credentials.
-                </div>
-            )}
+                    return (
+                        <div className="form-group" key={field.key} style={{ marginBottom: 18 }}>
+                            <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
+                                {field.label}
+                                {requiredKeys.includes(field.key) && (
+                                    <span className="required" style={{ color: 'var(--danger)' }}> *</span>
+                                )}
+                            </label>
 
-            {showResetConfirm && (
-                <div className="modal-overlay active" onClick={(e) => e.target === e.currentTarget && setShowResetConfirm(false)}>
-                    <div className="modal" style={{ maxWidth: 460 }}>
-                        <div className="modal-header">
-                            <h2>Replace Daraja Credentials?</h2>
-                            <button className="modal-close" onClick={() => setShowResetConfirm(false)}>
-                                <i className="fas fa-times"></i>
-                            </button>
+                            {field.type === 'select' ? (
+                                <select
+                                    id={field.key}
+                                    value={value || (field.options[0]?.value || '')}
+                                    onChange={handleDarajaChange}
+                                    disabled={!isEditable}
+                                    style={!isEditable ? disabledFieldStyle : undefined}
+                                >
+                                    {field.options.map((opt) => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                </select>
+                            ) : (
+                                <input
+                                    type={field.secret ? 'password' : 'text'}
+                                    id={field.key}
+                                    value={value}
+                                    onChange={handleDarajaChange}
+                                    placeholder={!isEditable ? '••••••••••••' : field.placeholder}
+                                    disabled={!isEditable}
+                                    autoComplete="new-password"
+                                    style={!isEditable ? disabledFieldStyle : undefined}
+                                />
+                            )}
+
+                            <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 4 }}>
+                                {field.help}
+                            </div>
                         </div>
-                        <p style={{ color: 'var(--gray)', fontSize: 14, lineHeight: 1.6 }}>
-                            You will be asked to enter new credentials from scratch.
-                            The previous keys will stay active until you save the new ones.
-                            No interruption to parent payments.
-                        </p>
-                        <div className="modal-footer">
-                            <button className="btn btn-outline" onClick={() => setShowResetConfirm(false)}>Cancel</button>
-                            <button className="btn btn-danger" onClick={handleResetDarajaForm}>
-                                <i className="fas fa-rotate"></i> Replace Now
-                            </button>
+                    );
+                })}
+
+                <div style={{
+                    display: 'flex', gap: 12, marginTop: 25,
+                    paddingTop: 20, borderTop: '1px solid var(--border)',
+                    flexWrap: 'wrap'
+                }}>
+                    {isEditable && (
+                        <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={handleSaveDaraja}
+                            disabled={savingDaraja || !isOnline || !allRequiredFilled}
+                            title={!allRequiredFilled ? 'Fill in Consumer Key, Consumer Secret, Shortcode and Passkey' : undefined}
+                            style={{
+                                padding: '12px 24px', border: 'none', borderRadius: 8,
+                                fontWeight: 600, cursor: (savingDaraja || !isOnline) ? 'not-allowed' : 'pointer',
+                                background: 'var(--primary)', color: 'white',
+                                display: 'inline-flex', alignItems: 'center', gap: 8,
+                                opacity: (savingDaraja || !isOnline || !allRequiredFilled) ? 0.6 : 1,
+                            }}
+                        >
+                            {savingDaraja ? (
+                                <>
+                                    <span className="loading-spinner" style={spinnerStyle}></span>
+                                    Saving…
+                                </>
+                            ) : (
+                                <>
+                                    <i className="fas fa-save"></i> Save Credentials
+                                </>
+                            )}
+                        </button>
+                    )}
+
+                    {isReplacing && (
+                        <button
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={handleCancelReplace}
+                            disabled={savingDaraja}
+                            style={{
+                                padding: '12px 24px', borderRadius: 8, fontWeight: 600,
+                                background: 'transparent', color: 'var(--secondary)',
+                                border: '2px solid var(--border)', cursor: 'pointer',
+                            }}
+                        >
+                            Cancel
+                        </button>
+                    )}
+
+                    {isReadOnly && (
+                        <button
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={() => setShowResetConfirm(true)}
+                            style={{
+                                padding: '12px 24px', borderRadius: 8, fontWeight: 600,
+                                background: 'transparent', color: 'var(--danger)',
+                                border: '2px solid var(--danger)', cursor: 'pointer',
+                                display: 'inline-flex', alignItems: 'center', gap: 8,
+                            }}
+                        >
+                            <i className="fas fa-rotate"></i> Replace Credentials
+                        </button>
+                    )}
+                </div>
+
+                {!isOnline && (
+                    <div style={{ marginTop: 15, padding: 12, background: '#fff3cd', color: '#856404', borderRadius: 8, fontSize: 13 }}>
+                        <i className="fas fa-wifi-slash"></i> You must be online to save Daraja credentials.
+                    </div>
+                )}
+
+                {showResetConfirm && (
+                    <div className="modal-overlay active" onClick={(e) => e.target === e.currentTarget && setShowResetConfirm(false)}>
+                        <div className="modal" style={{ maxWidth: 460 }}>
+                            <div className="modal-header">
+                                <h2>Replace Daraja Credentials?</h2>
+                                <button className="modal-close" onClick={() => setShowResetConfirm(false)}>
+                                    <i className="fas fa-times"></i>
+                                </button>
+                            </div>
+                            <p style={{ color: 'var(--gray)', fontSize: 14, lineHeight: 1.6 }}>
+                                You will be asked to enter new credentials from scratch.
+                                The previous keys will stay active until you save the new ones.
+                                No interruption to parent payments.
+                            </p>
+                            <div className="modal-footer">
+                                <button className="btn btn-outline" onClick={() => setShowResetConfirm(false)}>Cancel</button>
+                                <button className="btn btn-danger" onClick={handleResetDarajaForm}>
+                                    <i className="fas fa-rotate"></i> Replace Now
+                                </button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            )}
-        </div>
-    );
-};
+                )}
+            </div>
+        );
+    };
 
     return (
         <Layout title="School Profile">
@@ -2213,7 +2219,7 @@ const renderFinanceTab = () => {
                     <div className="form-section active">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
                             <h3 style={{ fontSize: 16, color: 'var(--secondary)' }}>School Administrators</h3>
-                            <button className="btn btn-primary" onClick={() => document.getElementById('adminModal').classList.add('active')}>
+                            <button className="btn btn-primary" onClick={() => setShowAdminModal(true)}>
                                 <i className="fas fa-user-plus"></i> Add Admin
                             </button>
                         </div>
@@ -2298,11 +2304,12 @@ const renderFinanceTab = () => {
                 )}
             </div>
 
-            <div className="modal-overlay" id="adminModal">
+            {/* Admin modal — state-driven open/close */}
+            <div className={`modal-overlay ${showAdminModal ? 'active' : ''}`}>
                 <div className="modal">
                     <div className="modal-header">
                         <h2>Add Administrator</h2>
-                        <button className="modal-close" onClick={() => document.getElementById('adminModal').classList.remove('active')}>
+                        <button className="modal-close" onClick={() => setShowAdminModal(false)}>
                             <i className="fas fa-times"></i>
                         </button>
                     </div>
@@ -2343,7 +2350,7 @@ const renderFinanceTab = () => {
                             <input type="tel" name="adminPhone" />
                         </div>
                         <div className="modal-footer">
-                            <button type="button" className="btn btn-outline" onClick={() => document.getElementById('adminModal').classList.remove('active')}>
+                            <button type="button" className="btn btn-outline" onClick={() => setShowAdminModal(false)}>
                                 Cancel
                             </button>
                             <button type="submit" className="btn btn-primary">Add Admin</button>
