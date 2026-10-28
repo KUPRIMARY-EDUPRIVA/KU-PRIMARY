@@ -1357,7 +1357,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
     }
 }];
                 for (let i = 0; i < assessmentCount; i++) branchRow.push('—');
-                branchRow.push(branchScore != null ? String(branchScore) : '—', '', '', 'Branch');
+                branchRow.push(branchScore != null ? String(branchScore) : '—', '', '', '');
                 body.push(branchRow);
             });
 
