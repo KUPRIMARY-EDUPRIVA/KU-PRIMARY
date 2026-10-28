@@ -1350,7 +1350,7 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
                 const p = paperScores[paper.name] || null;
                 const branchScore = p && p.score != null ? Number(p.score) : null;
                 const branchRow = [{
-    content: `   └ ${String(paper.name || '').replace(/^%+/, '').trim()}`,
+   content: `   ${String(paper.name || '').replace(/^[\s%└]+/, '').trim()}`,
     styles: {
         textColor: PDF_COLORS.gray,
         fontStyle: 'italic'
