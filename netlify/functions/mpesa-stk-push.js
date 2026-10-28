@@ -153,13 +153,16 @@ exports.handler = async (event) => {
         const consumerKey = daraja.consumerKey || process.env.MPESA_CONSUMER_KEY;
         const consumerSecret =
             daraja.consumerSecret || process.env.MPESA_CONSUMER_SECRET || process.env.MPESA_SECRET_KEY;
+        // For Paybill:  shortcode == the Paybill number.
+        // For Till:     shortcode == the Store / Head Office number.
         const shortcode = daraja.shortcode || process.env.MPESA_SHORTCODE;
+        // Only used for Till. The number parents actually pay into.
+        const tillNumber = daraja.tillNumber || process.env.MPESA_TILL_NUMBER;
         const passkey = daraja.passkey || process.env.MPESA_PASSKEY;
         const environment = daraja.environment || process.env.MPESA_ENVIRONMENT || 'sandbox';
         const schoolCallbackUrl = daraja.callbackUrl || process.env.MPESA_CALLBACK_URL;
 
-        // Payment type: paybill (default) or till. This drives the
-        // TransactionType Daraja expects.
+        // Payment type drives TransactionType AND which field goes into PartyB.
         const rawPaymentType = String(daraja.paymentType || 'paybill').toLowerCase();
         const paymentType = rawPaymentType === 'till' ? 'till' : 'paybill';
         const transactionType = TRANSACTION_TYPE[paymentType];
@@ -170,6 +173,26 @@ exports.handler = async (event) => {
                 message:
                     'M-Pesa credentials are not configured. Please configure M-Pesa in School Settings or environment variables.',
             });
+        }
+
+        // Guard-rail: a Till school MUST have a tillNumber configured, and it
+        // must differ from the store/head-office number. Otherwise Daraja will
+        // accept the request but the money will not reach the school's till.
+        if (paymentType === 'till') {
+            if (!tillNumber) {
+                return json(400, {
+                    success: false,
+                    message:
+                        'Till Number is not configured for this school. Ask an administrator to add it in School Settings → Finance.',
+                });
+            }
+            if (String(tillNumber) === String(shortcode)) {
+                return json(400, {
+                    success: false,
+                    message:
+                        'Till Number and Store / Head Office Number are identical. For a Till setup, the Store number and Till number must be different. Please update School Settings → Finance.',
+                });
+            }
         }
 
         // ---- 2. Confirm the amount the school will receive (no platform fee) ----
@@ -222,6 +245,9 @@ exports.handler = async (event) => {
             .replace(/[^0-9]/g, '')
             .slice(0, 14);
 
+        // Password is ALWAYS built from the shortcode used in
+        // BusinessShortCode — i.e. Paybill for paybill, Store/HO for till.
+        // The passkey is issued against that same number.
         const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
 
         const callbackUrl =
@@ -238,9 +264,10 @@ exports.handler = async (event) => {
             .substring(0, 12)
             .replace(/[^a-zA-Z0-9-]/g, '');
 
-        // For a till (Buy Goods) transaction Safaricom still expects both
-        // PartyA (customer) and PartyB (BusinessShortCode). The only field
-        // that changes is TransactionType.
+        // Paybill: BusinessShortCode = PartyB = Paybill number.
+        // Till:    BusinessShortCode = Store/HO, PartyB = Till number.
+        const partyB = paymentType === 'till' ? tillNumber : shortcode;
+
         const payload = {
             BusinessShortCode: shortcode,
             Password: password,
@@ -248,7 +275,7 @@ exports.handler = async (event) => {
             TransactionType: transactionType,
             Amount: totalAmount,
             PartyA: formattedPhone,
-            PartyB: shortcode,
+            PartyB: partyB,
             PhoneNumber: formattedPhone,
             CallBackURL: callbackUrl,
             AccountReference: accountRef,
@@ -313,6 +340,9 @@ exports.handler = async (event) => {
             checkoutRequestID: checkoutRequestId,
             merchantRequestID: merchantRequestId || '',
             shortcode,
+            // For till, record which Till the money should land in. Useful for
+            // reconciliation and for the callback handler when matching.
+            tillNumber: paymentType === 'till' ? tillNumber : null,
             environment,
             createdAt: new Date().toISOString(),
             recordedBy: actor.uid,
@@ -375,7 +405,8 @@ exports.handler = async (event) => {
         }
 
         console.log(
-            `STK Push sent [${paymentType}] → ${studentId} (${formattedPhone}) KES ${totalAmount} [${checkoutRequestId}]`
+            `STK Push sent [${paymentType}] → ${studentId} (${formattedPhone}) KES ${totalAmount} ` +
+            `[BCS=${shortcode} PartyB=${partyB}] [${checkoutRequestId}]`
         );
 
         return json(200, {
