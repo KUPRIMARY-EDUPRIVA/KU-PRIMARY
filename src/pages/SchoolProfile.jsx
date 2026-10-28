@@ -16,51 +16,70 @@ import LoadingSpinner from '../components/Common/LoadingSpinner';
 import { showAppNotice } from '../utils/appNotice';
 import { AuditLogService } from '../services/auditService';
 
+// ---------------------------------------------------------------------------
+// Payment types — the shortcode/transaction-type pair depends on this choice.
+// ---------------------------------------------------------------------------
+const PAYMENT_TYPES = [
+    {
+        value: 'paybill',
+        label: 'Paybill',
+        shortcodeLabel: 'Paybill Number',
+        shortcodePlaceholder: 'e.g. 174379',
+        shortcodeHelp: 'The Paybill (Business Short Code) parents pay into. 5–7 digits.',
+        transactionType: 'CustomerPayBillOnline',
+    },
+    {
+        value: 'till',
+        label: 'Till / Buy Goods',
+        shortcodeLabel: 'Till Number',
+        shortcodePlaceholder: 'e.g. 400200',
+        shortcodeHelp: 'The Buy Goods Till Number parents pay into. 5–6 digits.',
+        transactionType: 'CustomerBuyGoodsOnline',
+    },
+];
+
+const getPaymentTypeMeta = (value) =>
+    PAYMENT_TYPES.find((p) => p.value === value) || PAYMENT_TYPES[0];
+
 const DARAJA_FIELDS = [
     {
         key: 'consumerKey',
         label: 'Consumer Key',
         placeholder: 'e.g. 3fA9b...',
-        help: 'From your Daraja app on developer.safaricom.co.ke'
+        help: 'From your Daraja app on developer.safaricom.co.ke',
     },
     {
         key: 'consumerSecret',
         label: 'Consumer Secret',
         placeholder: 'e.g. kQ8zW...',
         help: 'Keep this secret — never share it publicly',
-        secret: true
-    },
-    {
-        key: 'shortcode',
-        label: 'Paybill / Shortcode',
-        placeholder: 'e.g. 174379',
-        help: 'The Paybill number parents will use'
+        secret: true,
     },
     {
         key: 'passkey',
         label: 'Lipa na M-Pesa Passkey',
         placeholder: 'e.g. bfb279f9...',
-        help: 'Provided by Safaricom with your Paybill',
-        secret: true
+        help: 'Provided by Safaricom with your Paybill/Till',
+        secret: true,
     },
     {
         key: 'initiatorName',
         label: 'Initiator Name (optional)',
         placeholder: 'e.g. testapi',
-        help: 'Only required if you plan to use B2C payouts'
+        help: 'Only required if you plan to use B2C payouts',
     },
     {
         key: 'initiatorPassword',
         label: 'Initiator Password (optional)',
         placeholder: '••••••••',
         help: 'Only required if you plan to use B2C payouts',
-        secret: true
+        secret: true,
     },
     {
         key: 'callbackUrl',
         label: 'Callback URL (optional)',
         placeholder: 'https://yourdomain.com/api/mpesa-callback',
-        help: 'Leave blank to use the platform default'
+        help: 'Leave blank to use the platform default',
     },
     {
         key: 'environment',
@@ -70,9 +89,9 @@ const DARAJA_FIELDS = [
         type: 'select',
         options: [
             { value: 'sandbox', label: 'Sandbox (testing)' },
-            { value: 'production', label: 'Production (live)' }
-        ]
-    }
+            { value: 'production', label: 'Production (live)' },
+        ],
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -86,9 +105,9 @@ async function invalidateChatbotCache({ currentUser, schoolId, prefixes = [] }) 
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`
+                Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ prefixes })
+            body: JSON.stringify({ prefixes }),
         });
     } catch (e) {
         console.warn('Chatbot cache invalidation failed:', e);
@@ -143,18 +162,9 @@ function loadImageFromFile(file) {
 
 // ---------------------------------------------------------------------------
 // Canvas-based background removal
-//
-// BFS flood-fill from the image edges: every "edge-connected" pixel that
-// looks like paper (bright, roughly neutral) is made transparent. Then a
-// light 1-pixel feather is applied along the resulting boundary so the
-// edges look clean rather than cut out.
 // ---------------------------------------------------------------------------
 function removeBackgroundFloodFill(canvas, options = {}) {
-    const {
-        threshold = 205,     // min(R,G,B) must be >= this (0..255)
-        tolerance = 48,      // max - min must be < this
-        feather = true,
-    } = options;
+    const { threshold = 205, tolerance = 48, feather = true } = options;
 
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const { width, height } = canvas;
@@ -173,10 +183,10 @@ function removeBackgroundFloodFill(canvas, options = {}) {
         const g = data[o + 1];
         const b = data[o + 2];
         const a = data[o + 3];
-        if (a === 0) return true; // already transparent
+        if (a === 0) return true;
         return (
             Math.min(r, g, b) >= threshold
-            && (Math.max(r, g, b) - Math.min(r, g, b)) <= tolerance
+            && Math.max(r, g, b) - Math.min(r, g, b) <= tolerance
         );
     };
 
@@ -188,7 +198,6 @@ function removeBackgroundFloodFill(canvas, options = {}) {
         queue[tail++] = idx;
     };
 
-    // Seed from all four edges
     for (let x = 0; x < width; x += 1) {
         enqueue(x);
         enqueue((height - 1) * width + x);
@@ -198,7 +207,6 @@ function removeBackgroundFloodFill(canvas, options = {}) {
         enqueue(y * width + (width - 1));
     }
 
-    // BFS
     while (head < tail) {
         const idx = queue[head++];
         const x = idx % width;
@@ -208,13 +216,10 @@ function removeBackgroundFloodFill(canvas, options = {}) {
         if (idx < totalPixels - width) enqueue(idx + width);
     }
 
-    // Make every visited pixel fully transparent
     for (let i = 0; i < totalPixels; i += 1) {
         if (visited[i]) data[i * 4 + 3] = 0;
     }
 
-    // Feather: for each remaining opaque pixel adjacent to a transparent
-    // one, drop alpha to ~50% so the edge blends.
     if (feather) {
         for (let y = 1; y < height - 1; y += 1) {
             for (let x = 1; x < width - 1; x += 1) {
@@ -222,11 +227,10 @@ function removeBackgroundFloodFill(canvas, options = {}) {
                 if (visited[idx]) continue;
                 const o = idx * 4;
                 if (data[o + 3] === 0) continue;
-                const n1 = visited[idx - 1];
-                const n2 = visited[idx + 1];
-                const n3 = visited[idx - width];
-                const n4 = visited[idx + width];
-                if (n1 || n2 || n3 || n4) {
+                if (
+                    visited[idx - 1] || visited[idx + 1] ||
+                    visited[idx - width] || visited[idx + width]
+                ) {
                     data[o + 3] = Math.round(data[o + 3] * 0.55);
                 }
             }
@@ -236,7 +240,6 @@ function removeBackgroundFloodFill(canvas, options = {}) {
     ctx.putImageData(imageData, 0, 0);
 }
 
-// Fit the source image into a working canvas no larger than maxEdge px.
 function makeWorkingCanvas(image, maxEdge = 1400) {
     const ratio = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
     const w = Math.max(1, Math.round(image.naturalWidth * ratio));
@@ -249,7 +252,6 @@ function makeWorkingCanvas(image, maxEdge = 1400) {
     return canvas;
 }
 
-// Crop the working canvas into a rectangle (in working-canvas coords).
 function cropCanvas(sourceCanvas, rect) {
     const { x, y, w, h } = rect;
     const out = document.createElement('canvas');
@@ -262,11 +264,15 @@ function cropCanvas(sourceCanvas, rect) {
 
 function canvasToFile(canvas, baseName, mimeType = 'image/png') {
     return new Promise((resolve, reject) => {
-        canvas.toBlob((blob) => {
-            if (!blob) return reject(new Error('Canvas encoding failed.'));
-            const ext = mimeType === 'image/png' ? 'png' : 'jpg';
-            resolve(new File([blob], `${baseName}.${ext}`, { type: mimeType }));
-        }, mimeType, 0.92);
+        canvas.toBlob(
+            (blob) => {
+                if (!blob) return reject(new Error('Canvas encoding failed.'));
+                const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+                resolve(new File([blob], `${baseName}.${ext}`, { type: mimeType }));
+            },
+            mimeType,
+            0.92
+        );
     });
 }
 
@@ -288,39 +294,33 @@ async function manageSchoolAdmins(currentUser, action, details = {}) {
 }
 
 // ===========================================================================
-// Branding image modal: background removal + crop + zoom, then upload.
+// Branding image modal (unchanged)
 // ===========================================================================
 function BrandingImageModal({
     open,
-    kind,                   // 'stamp' | 'signature'
-    file,                   // File to process
+    kind,
+    file,
     onCancel,
-    onUpload,               // (processedFile) => Promise
+    onUpload,
     showNotification,
 }) {
     const [processing, setProcessing] = useState(false);
     const [uploading, setUploading] = useState(false);
     const [error, setError] = useState('');
 
-    // Controls
     const [removeBg, setRemoveBg] = useState(true);
     const [threshold, setThreshold] = useState(205);
     const [tolerance, setTolerance] = useState(48);
 
-    // Source & preview canvases
-    const originalCanvasRef = useRef(null);      // working-size, no transparency
-    const cleanedCanvasRef = useRef(null);       // working-size, transparent bg
-    const previewCanvasRef = useRef(null);       // visible canvas in the modal
+    const originalCanvasRef = useRef(null);
+    const cleanedCanvasRef = useRef(null);
+    const previewCanvasRef = useRef(null);
 
-    // Crop rect in *cleaned canvas* coords
     const [cropRect, setCropRect] = useState(null);
-    // Display zoom for the preview viewport
     const [zoom, setZoom] = useState(1);
 
-    // Drag state
     const dragRef = useRef({ active: false, startX: 0, startY: 0, startCrop: null });
 
-    // ---- Load + process image when modal opens or file changes ----
     useEffect(() => {
         if (!open || !file) return;
         let cancelled = false;
@@ -329,14 +329,15 @@ function BrandingImageModal({
         (async () => {
             try {
                 const { image, objectUrl } = await loadImageFromFile(file);
-                if (cancelled) { URL.revokeObjectURL(objectUrl); return; }
+                if (cancelled) {
+                    URL.revokeObjectURL(objectUrl);
+                    return;
+                }
                 const working = makeWorkingCanvas(image, 1400);
                 URL.revokeObjectURL(objectUrl);
                 originalCanvasRef.current = working;
-                // Start with the full-image crop rect
                 setCropRect({ x: 0, y: 0, w: working.width, h: working.height });
                 setZoom(1);
-                // Initial processing runs via the effect below.
                 setProcessing(false);
             } catch (e) {
                 if (!cancelled) {
@@ -345,15 +346,15 @@ function BrandingImageModal({
                 }
             }
         })();
-        return () => { cancelled = true; };
+        return () => {
+            cancelled = true;
+        };
     }, [open, file]);
 
-    // ---- Recompute cleaned canvas when threshold / removeBg change ----
     useEffect(() => {
         if (!open) return;
         if (!originalCanvasRef.current) return;
         const src = originalCanvasRef.current;
-        // Clone into a fresh canvas so removal can be re-run cleanly
         const working = document.createElement('canvas');
         working.width = src.width;
         working.height = src.height;
@@ -366,7 +367,6 @@ function BrandingImageModal({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, removeBg, threshold, tolerance]);
 
-    // ---- Draw the preview ----
     const drawPreview = useCallback(() => {
         const canvas = previewCanvasRef.current;
         const cleaned = cleanedCanvasRef.current;
@@ -382,7 +382,6 @@ function BrandingImageModal({
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, cssW, cssH);
 
-        // Checker background so transparency is obvious
         const tile = 8;
         for (let y = 0; y < cssH; y += tile) {
             for (let x = 0; x < cssW; x += tile) {
@@ -392,7 +391,6 @@ function BrandingImageModal({
             }
         }
 
-        // Fit the cleaned image into the viewport at current zoom
         const fitScale = Math.min(cssW / cleaned.width, cssH / cleaned.height) * zoom;
         const drawW = cleaned.width * fitScale;
         const drawH = cleaned.height * fitScale;
@@ -400,7 +398,6 @@ function BrandingImageModal({
         const offY = (cssH - drawH) / 2;
         ctx.drawImage(cleaned, offX, offY, drawW, drawH);
 
-        // Darkened overlay outside the crop
         if (cropRect) {
             const cx = offX + cropRect.x * fitScale;
             const cy = offY + cropRect.y * fitScale;
@@ -417,7 +414,6 @@ function BrandingImageModal({
             ctx.lineWidth = 2;
             ctx.strokeRect(cx, cy, cw, ch);
 
-            // Corner handles
             const hs = 8;
             ctx.fillStyle = '#4f8ef7';
             [[cx, cy], [cx + cw, cy], [cx, cy + ch], [cx + cw, cy + ch]].forEach(([hx, hy]) => {
@@ -426,15 +422,15 @@ function BrandingImageModal({
         }
     }, [cropRect, zoom]);
 
-    // Redraw on crop/zoom/size changes
-    useEffect(() => { drawPreview(); }, [drawPreview]);
+    useEffect(() => {
+        drawPreview();
+    }, [drawPreview]);
     useEffect(() => {
         const onResize = () => drawPreview();
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
     }, [drawPreview]);
 
-    // ---- Drag the crop rectangle ----
     const toCanvasCoords = (e) => {
         const canvas = previewCanvasRef.current;
         if (!canvas) return { x: 0, y: 0, scale: 1, offX: 0, offY: 0 };
@@ -484,7 +480,9 @@ function BrandingImageModal({
         setCropRect({ x: nx, y: ny, w: sc.w, h: sc.h });
     };
 
-    const onPointerUp = () => { dragRef.current.active = false; };
+    const onPointerUp = () => {
+        dragRef.current.active = false;
+    };
 
     const resetCrop = () => {
         const c = cleanedCanvasRef.current;
@@ -505,7 +503,6 @@ function BrandingImageModal({
         });
     };
 
-    // ---- Apply & upload ----
     const handleUpload = async () => {
         if (!cleanedCanvasRef.current || !cropRect) return;
         setUploading(true);
@@ -513,7 +510,6 @@ function BrandingImageModal({
         try {
             const cropped = cropCanvas(cleanedCanvasRef.current, cropRect);
             const baseName = `${kind || 'branding'}-${Date.now()}`;
-            // Always upload as PNG so transparency is preserved
             const outFile = await canvasToFile(cropped, baseName, 'image/png');
             await onUpload(outFile);
         } catch (e) {
@@ -529,15 +525,20 @@ function BrandingImageModal({
     const title = kind === 'stamp' ? 'Prepare School Stamp' : 'Prepare Principal Signature';
 
     return (
-        <div className="modal-overlay active" onClick={(e) => {
-            if (e.target === e.currentTarget && !uploading) onCancel();
-        }}>
+        <div
+            className="modal-overlay active"
+            onClick={(e) => {
+                if (e.target === e.currentTarget && !uploading) onCancel();
+            }}
+        >
             <div className="modal" style={{ maxWidth: 920, width: '94vw' }}>
                 <div className="modal-header">
                     <h2>{title}</h2>
                     <button
                         className="modal-close"
-                        onClick={() => { if (!uploading) onCancel(); }}
+                        onClick={() => {
+                            if (!uploading) onCancel();
+                        }}
                     >
                         <i className="fas fa-times"></i>
                     </button>
@@ -548,14 +549,18 @@ function BrandingImageModal({
                     The transparent PNG is what will be saved.
                 </p>
 
-                {/* Controls row */}
-                <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-                    gap: 12, padding: 12, marginBottom: 12,
-                    background: '#f8fafc', borderRadius: 10,
-                    border: '1px solid var(--border)',
-                }}>
+                <div
+                    style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                        gap: 12,
+                        padding: 12,
+                        marginBottom: 12,
+                        background: '#f8fafc',
+                        borderRadius: 10,
+                        border: '1px solid var(--border)',
+                    }}
+                >
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}>
                         <input
                             type="checkbox"
@@ -570,7 +575,10 @@ function BrandingImageModal({
                             Lightness threshold ({threshold})
                         </div>
                         <input
-                            type="range" min="120" max="245" step="1"
+                            type="range"
+                            min="120"
+                            max="245"
+                            step="1"
                             value={threshold}
                             disabled={!removeBg}
                             onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
@@ -583,7 +591,10 @@ function BrandingImageModal({
                             Neutrality tolerance ({tolerance})
                         </div>
                         <input
-                            type="range" min="4" max="120" step="1"
+                            type="range"
+                            min="4"
+                            max="120"
+                            step="1"
                             value={tolerance}
                             disabled={!removeBg}
                             onChange={(e) => setTolerance(parseInt(e.target.value, 10))}
@@ -596,7 +607,10 @@ function BrandingImageModal({
                             Zoom ({zoom.toFixed(2)}×)
                         </div>
                         <input
-                            type="range" min="1" max="4" step="0.05"
+                            type="range"
+                            min="1"
+                            max="4"
+                            step="0.05"
                             value={zoom}
                             onChange={(e) => setZoom(parseFloat(e.target.value))}
                             style={{ width: '100%' }}
@@ -604,13 +618,14 @@ function BrandingImageModal({
                     </div>
                 </div>
 
-                {/* Preview */}
-                <div style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 10,
-                    overflow: 'hidden',
-                    position: 'relative',
-                }}>
+                <div
+                    style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: 10,
+                        overflow: 'hidden',
+                        position: 'relative',
+                    }}
+                >
                     <canvas
                         ref={previewCanvasRef}
                         style={{
@@ -626,22 +641,34 @@ function BrandingImageModal({
                         onPointerCancel={onPointerUp}
                     />
                     {processing && (
-                        <div style={{
-                            position: 'absolute', inset: 0,
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            background: 'rgba(255,255,255,0.7)',
-                            fontWeight: 600, color: 'var(--secondary)',
-                        }}>
+                        <div
+                            style={{
+                                position: 'absolute',
+                                inset: 0,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: 'rgba(255,255,255,0.7)',
+                                fontWeight: 600,
+                                color: 'var(--secondary)',
+                            }}
+                        >
                             Processing…
                         </div>
                     )}
                 </div>
 
                 {error && (
-                    <div style={{
-                        marginTop: 10, padding: 10, borderRadius: 8,
-                        background: '#fee', color: '#a11', fontSize: 13,
-                    }}>
+                    <div
+                        style={{
+                            marginTop: 10,
+                            padding: 10,
+                            borderRadius: 8,
+                            background: '#fee',
+                            color: '#a11',
+                            fontSize: 13,
+                        }}
+                    >
                         {error}
                     </div>
                 )}
@@ -658,7 +685,9 @@ function BrandingImageModal({
                 <div className="modal-footer">
                     <button
                         className="btn btn-outline"
-                        onClick={() => { if (!uploading) onCancel(); }}
+                        onClick={() => {
+                            if (!uploading) onCancel();
+                        }}
                         disabled={uploading}
                     >
                         Cancel
@@ -688,12 +717,7 @@ function BrandingImageModal({
 export default function SchoolProfile() {
     const { currentUser, userData, userRole } = useAuth();
     const canManageProfile = isSchoolAdminRole(userRole || userData?.role);
-    const {
-        isOnline,
-        saveToIndexedDB,
-        getFromIndexedDB,
-        addToSyncQueue
-    } = useSync();
+    const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
 
     const [schoolData, setSchoolData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -707,22 +731,27 @@ export default function SchoolProfile() {
     const [darajaConfigured, setDarajaConfigured] = useState(false);
     const [darajaShortcode, setDarajaShortcode] = useState('');
     const [darajaEnvironment, setDarajaEnvironment] = useState('sandbox');
+    // NEW: what kind of short code the school is using.
+    const [darajaPaymentType, setDarajaPaymentType] = useState('paybill');
     const [darajaUpdatedAt, setDarajaUpdatedAt] = useState(null);
     const [showResetConfirm, setShowResetConfirm] = useState(false);
     const [isReplacing, setIsReplacing] = useState(false);
 
-    // Admin modal visibility (was DOM-manipulated, now state-driven).
     const [showAdminModal, setShowAdminModal] = useState(false);
 
     const [darajaForm, setDarajaForm] = useState({
         consumerKey: process.env.REACT_APP_MPESA_CONSUMER_KEY || '',
-        consumerSecret: process.env.REACT_APP_MPESA_CONSUMER_SECRET || process.env.REACT_APP_MPESA_SECRET_KEY || '',
+        consumerSecret:
+            process.env.REACT_APP_MPESA_CONSUMER_SECRET ||
+            process.env.REACT_APP_MPESA_SECRET_KEY ||
+            '',
+        paymentType: 'paybill',
         shortcode: process.env.REACT_APP_MPESA_SHORTCODE || '',
         passkey: process.env.REACT_APP_MPESA_PASSKEY || '',
         initiatorName: process.env.REACT_APP_MPESA_INITIATOR_NAME || '',
         initiatorPassword: '',
         callbackUrl: '',
-        environment: process.env.REACT_APP_MPESA_ENVIRONMENT || 'sandbox'
+        environment: process.env.REACT_APP_MPESA_ENVIRONMENT || 'sandbox',
     });
 
     const [formData, setFormData] = useState({
@@ -756,7 +785,7 @@ export default function SchoolProfile() {
         timeFormat: '12h',
         enableNotifications: true,
         enableSMS: true,
-        enableBackup: true
+        enableBackup: true,
     });
 
     const [useCustomClasses, setUseCustomClasses] = useState(false);
@@ -776,10 +805,9 @@ export default function SchoolProfile() {
     const stampCameraInputRef = useRef(null);
     const principalSignatureCameraInputRef = useRef(null);
 
-    // Branding image modal state
     const [brandingModal, setBrandingModal] = useState({
         open: false,
-        kind: null,          // 'stamp' | 'signature'
+        kind: null,
         file: null,
     });
 
@@ -788,7 +816,7 @@ export default function SchoolProfile() {
         { value: 'lower-primary', label: 'Lower Primary' },
         { value: 'upper-primary', label: 'Upper Primary' },
         { value: 'junior-school', label: 'Junior School' },
-        { value: 'senior-school', label: 'Senior School' }
+        { value: 'senior-school', label: 'Senior School' },
     ];
 
     const resolveClassesForDisplay = () => {
@@ -797,7 +825,7 @@ export default function SchoolProfile() {
                 className: c.className,
                 level: c.level,
                 levelDisplay: LEVEL_DISPLAY_NAMES[c.level] || c.level,
-                isCustom: true
+                isCustom: true,
             }));
         }
         const rows = [];
@@ -807,7 +835,7 @@ export default function SchoolProfile() {
                     className,
                     level,
                     levelDisplay: LEVEL_DISPLAY_NAMES[level] || level,
-                    isCustom: false
+                    isCustom: false,
                 });
             });
         });
@@ -834,8 +862,9 @@ export default function SchoolProfile() {
                 setDarajaConfigured(!!cachedSchool.darajaConfigured);
                 setIsReplacing(false);
                 setDarajaShortcode(cachedSchool.paybillNumber || '');
+                setDarajaPaymentType(cachedSchool.darajaPaymentType || 'paybill');
                 setDarajaEnvironment(cachedSchool.darajaEnvironment || 'sandbox');
-                setDarajaUpdatedAt(cachedSchool.darajaUpdatedAt || null);   // ← FIX: restore cached timestamp
+                setDarajaUpdatedAt(cachedSchool.darajaUpdatedAt || null);
                 setUsingCachedData(true);
                 if (canManageProfile) await loadAdmins(schoolId);
                 setLoading(false);
@@ -850,6 +879,7 @@ export default function SchoolProfile() {
                     setDarajaConfigured(!!data.darajaConfigured);
                     setIsReplacing(false);
                     setDarajaShortcode(data.paybillNumber || '');
+                    setDarajaPaymentType(data.darajaPaymentType || 'paybill');
                     setDarajaEnvironment(data.darajaEnvironment || 'sandbox');
                     setDarajaUpdatedAt(data.darajaUpdatedAt || null);
                     setUsingCachedData(false);
@@ -899,7 +929,7 @@ export default function SchoolProfile() {
             timeFormat: data.timeFormat || '12h',
             enableNotifications: data.enableNotifications !== false,
             enableSMS: data.enableSMS !== false,
-            enableBackup: data.enableBackup !== false
+            enableBackup: data.enableBackup !== false,
         });
         setUseCustomClasses(!!data.useCustomClasses);
         setCustomClasses(data.customClasses || []);
@@ -918,16 +948,23 @@ export default function SchoolProfile() {
                 }
             }
             const [adminSnapshot, teacherSnapshot] = await Promise.all([
-                getDocs(query(
-                    collection(db, 'users'),
-                    where('schoolId', '==', schoolId),
-                    where('role', 'in', ['admin', 'user', 'school_admin', 'principal', 'super-admin', 'headteacher', 'deputy-headteacher', 'accountant', 'finance', 'staff'])
-                )),
-                getDocs(query(
-                    collection(db, 'users'),
-                    where('schoolId', '==', schoolId),
-                    where('role', '==', 'teacher')
-                )),
+                getDocs(
+                    query(
+                        collection(db, 'users'),
+                        where('schoolId', '==', schoolId),
+                        where('role', 'in', [
+                            'admin', 'user', 'school_admin', 'principal', 'super-admin',
+                            'headteacher', 'deputy-headteacher', 'accountant', 'finance', 'staff',
+                        ])
+                    )
+                ),
+                getDocs(
+                    query(
+                        collection(db, 'users'),
+                        where('schoolId', '==', schoolId),
+                        where('role', '==', 'teacher')
+                    )
+                ),
             ]);
             const adminList = [];
             adminSnapshot.forEach((d) => adminList.push({ id: d.id, ...d.data() }));
@@ -942,8 +979,9 @@ export default function SchoolProfile() {
             if (cachedAdmins) {
                 setAdmins(cachedAdmins.filter((person) => person.role !== 'teacher'));
                 setTeachers(cachedAdmins.filter((person) => person.role === 'teacher'));
+            } else {
+                showNotification('Failed to load administrators', 'error');
             }
-            else showNotification('Failed to load administrators', 'error');
         }
     };
 
@@ -951,7 +989,7 @@ export default function SchoolProfile() {
         const { id, value, type, checked } = e.target;
         setFormData((prev) => ({
             ...prev,
-            [id]: type === 'checkbox' ? checked : value
+            [id]: type === 'checkbox' ? checked : value,
         }));
     };
 
@@ -1001,14 +1039,15 @@ export default function SchoolProfile() {
                 customClasses,
                 useCustomSubjects,
                 customSubjects,
-                updatedAt: new Date().toISOString()
+                updatedAt: new Date().toISOString(),
             };
 
             if (isOnline) {
                 await updateDoc(doc(db, 'schools', schoolId), updatedData);
-                const changedFields = Object.keys(updatedData).filter((key) =>
-                    key !== 'updatedAt'
-                    && JSON.stringify(schoolData?.[key]) !== JSON.stringify(updatedData[key])
+                const changedFields = Object.keys(updatedData).filter(
+                    (key) =>
+                        key !== 'updatedAt' &&
+                        JSON.stringify(schoolData?.[key]) !== JSON.stringify(updatedData[key])
                 );
                 if (changedFields.length) {
                     await AuditLogService.logAction(
@@ -1027,7 +1066,7 @@ export default function SchoolProfile() {
                 invalidateChatbotCache({
                     currentUser,
                     schoolId,
-                    prefixes: [`school_info:${schoolId}:`]
+                    prefixes: [`school_info:${schoolId}:`],
                 });
 
                 showNotification('School profile saved successfully!', 'success');
@@ -1057,6 +1096,16 @@ export default function SchoolProfile() {
             }
         }
 
+        // Shortcode sanity check per payment type
+        const trimmedShortcode = darajaForm.shortcode.trim();
+        if (!/^\d{5,7}$/.test(trimmedShortcode)) {
+            showNotification(
+                'Shortcode must be 5–7 digits. Double-check the Paybill/Till number.',
+                'warning'
+            );
+            return;
+        }
+
         if (!isOnline) {
             showNotification('You must be online to save Daraja credentials', 'warning');
             return;
@@ -1067,51 +1116,57 @@ export default function SchoolProfile() {
             const schoolId = userData?.schoolId;
             if (!schoolId) throw new Error('No school found');
 
+            const paymentType = darajaForm.paymentType === 'till' ? 'till' : 'paybill';
+
             await setDoc(
                 doc(db, 'schools', schoolId, 'private', 'daraja'),
                 {
                     consumerKey: darajaForm.consumerKey.trim(),
                     consumerSecret: darajaForm.consumerSecret.trim(),
-                    shortcode: darajaForm.shortcode.trim(),
+                    paymentType,
+                    shortcode: trimmedShortcode,
                     passkey: darajaForm.passkey.trim(),
                     initiatorName: darajaForm.initiatorName?.trim() || '',
                     initiatorPassword: darajaForm.initiatorPassword?.trim() || '',
                     callbackUrl: darajaForm.callbackUrl?.trim() || '',
                     environment: darajaForm.environment || 'sandbox',
                     updatedAt: serverTimestamp(),
-                    updatedBy: currentUser?.uid || ''
+                    updatedBy: currentUser?.uid || '',
                 },
                 { merge: true }
             );
 
             await updateDoc(doc(db, 'schools', schoolId), {
                 darajaConfigured: true,
+                darajaPaymentType: paymentType,
                 darajaEnvironment: darajaForm.environment || 'sandbox',
-                paybillNumber: darajaForm.shortcode.trim(),
+                paybillNumber: trimmedShortcode,
                 darajaUpdatedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
+                updatedAt: new Date().toISOString(),
             });
 
             invalidateChatbotCache({
                 currentUser,
                 schoolId,
-                prefixes: [`school_info:${schoolId}:`]
+                prefixes: [`school_info:${schoolId}:`],
             });
 
             setDarajaConfigured(true);
-            setIsReplacing(false);   // ← FIX: return to read-only view after save
-            setDarajaShortcode(darajaForm.shortcode.trim());
+            setIsReplacing(false);
+            setDarajaPaymentType(paymentType);
+            setDarajaShortcode(trimmedShortcode);
             setDarajaEnvironment(darajaForm.environment || 'sandbox');
             setDarajaUpdatedAt(new Date().toISOString());
             setDarajaForm({
                 consumerKey: '',
                 consumerSecret: '',
-                shortcode: '',       // ← FIX: clear shortcode so "Replace" starts truly fresh
+                paymentType,
+                shortcode: '',
                 passkey: '',
                 initiatorName: '',
                 initiatorPassword: '',
                 callbackUrl: '',
-                environment: darajaForm.environment || 'sandbox'
+                environment: darajaForm.environment || 'sandbox',
             });
 
             showNotification('Daraja credentials saved securely', 'success');
@@ -1126,11 +1181,10 @@ export default function SchoolProfile() {
     const handleResetDarajaForm = () => {
         setShowResetConfirm(false);
 
-        // Clear the sensitive fields so the user starts fresh, but keep
-        // the shortcode/environment pre-filled so it's less error-prone.
         setDarajaForm({
             consumerKey: '',
             consumerSecret: '',
+            paymentType: darajaPaymentType || 'paybill',
             shortcode: darajaShortcode || '',
             passkey: '',
             initiatorName: '',
@@ -1139,8 +1193,6 @@ export default function SchoolProfile() {
             environment: darajaEnvironment || 'sandbox',
         });
 
-        // ⚠️ The key change: enter the "replacing" state so the form
-        // fields become editable again and the Save button appears.
         setIsReplacing(true);
 
         showNotification(
@@ -1150,7 +1202,7 @@ export default function SchoolProfile() {
     };
 
     // ============================================================
-    // Logo upload (Cloudinary) — unchanged
+    // Logo upload (unchanged)
     // ============================================================
     const handleLogoUpload = () => {
         if (!isOnline) {
@@ -1175,7 +1227,7 @@ export default function SchoolProfile() {
             const secureUrl = await uploadToCloudinary(file, `schools/${schoolId}/branding`);
             await updateDoc(doc(db, 'schools', schoolId), {
                 logoUrl: secureUrl,
-                updatedAt: new Date().toISOString()
+                updatedAt: new Date().toISOString(),
             });
             setSchoolData((prev) => ({ ...prev, logoUrl: secureUrl }));
             showNotification('Logo uploaded successfully!', 'success');
@@ -1189,8 +1241,7 @@ export default function SchoolProfile() {
     };
 
     // ============================================================
-    // Stamp + signature — now open the branding modal, do not upload
-    // immediately.
+    // Stamp + signature (unchanged)
     // ============================================================
     const handleStampUpload = (inputRef = stampInputRef) => {
         if (!isOnline) {
@@ -1234,11 +1285,13 @@ export default function SchoolProfile() {
             const field = kind === 'stamp' ? 'stampUrl' : 'principalSignatureUrl';
             await updateDoc(doc(db, 'schools', schoolId), {
                 [field]: secureUrl,
-                updatedAt: new Date().toISOString()
+                updatedAt: new Date().toISOString(),
             });
             setSchoolData((prev) => ({ ...prev, [field]: secureUrl }));
             showNotification(
-                kind === 'stamp' ? 'Stamp uploaded successfully!' : 'Principal signature uploaded successfully!',
+                kind === 'stamp'
+                    ? 'Stamp uploaded successfully!'
+                    : 'Principal signature uploaded successfully!',
                 'success'
             );
             closeBrandingModal();
@@ -1251,7 +1304,7 @@ export default function SchoolProfile() {
         }
     };
 
-    // ---- Admins ----
+    // ---- Admins (unchanged) ----
     const handleAddAdmin = async (e) => {
         e.preventDefault();
         const form = e.target;
@@ -1283,7 +1336,7 @@ export default function SchoolProfile() {
             });
             await loadAdmins(schoolId);
             form.reset();
-            setShowAdminModal(false);   // ← FIX: state-driven close
+            setShowAdminModal(false);
             showNotification('Administrator added successfully!', 'success');
         } catch (error) {
             console.error('Error adding admin:', error);
@@ -1294,7 +1347,12 @@ export default function SchoolProfile() {
     };
 
     const handleRemoveAdmin = async (targetUid) => {
-        if (!window.confirm('A deletion request will be sent to this account. Its owner must approve before the account and sign-in credentials are deleted. Continue?')) return;
+        if (
+            !window.confirm(
+                'A deletion request will be sent to this account. Its owner must approve before the account and sign-in credentials are deleted. Continue?'
+            )
+        )
+            return;
         const schoolId = userData?.schoolId;
         if (!schoolId) return;
         setSaving(true);
@@ -1305,7 +1363,10 @@ export default function SchoolProfile() {
                 return;
             }
             await manageSchoolAdmins(currentUser, 'request-deletion', { targetUid });
-            showNotification('Deletion request sent. The account owner must approve it before removal.', 'info');
+            showNotification(
+                'Deletion request sent. The account owner must approve it before removal.',
+                'info'
+            );
         } catch (error) {
             console.error('Error removing admin:', error);
             showNotification('Failed to remove administrator: ' + error.message, 'error');
@@ -1324,7 +1385,10 @@ export default function SchoolProfile() {
         return (
             <Layout title="School Profile">
                 <div className="profile-card" style={{ padding: 24 }}>
-                    <p>Only an Admin or HeadTeacher can edit the school profile and manage administrator accounts.</p>
+                    <p>
+                        Only an Admin or HeadTeacher can edit the school profile and manage
+                        administrator accounts.
+                    </p>
                 </div>
             </Layout>
         );
@@ -1333,8 +1397,24 @@ export default function SchoolProfile() {
     const renderAdmins = () => {
         if (admins.length === 0) {
             return (
-                <div className="empty-state" style={{ textAlign: 'center', padding: 40, color: 'var(--gray)', gridColumn: '1 / -1' }}>
-                    <i className="fas fa-users" style={{ fontSize: 48, display: 'block', marginBottom: 15, color: 'var(--border)' }}></i>
+                <div
+                    className="empty-state"
+                    style={{
+                        textAlign: 'center',
+                        padding: 40,
+                        color: 'var(--gray)',
+                        gridColumn: '1 / -1',
+                    }}
+                >
+                    <i
+                        className="fas fa-users"
+                        style={{
+                            fontSize: 48,
+                            display: 'block',
+                            marginBottom: 15,
+                            color: 'var(--border)',
+                        }}
+                    ></i>
                     <h3 style={{ color: 'var(--secondary)' }}>No Administrators Found</h3>
                     <p>Add administrators to help manage the school.</p>
                 </div>
@@ -1343,27 +1423,40 @@ export default function SchoolProfile() {
         return admins.map((admin) => (
             <div key={admin.id} className="admin-card">
                 <div className="admin-avatar">
-                    {admin.firstName?.[0] || 'A'}{admin.lastName?.[0] || ''}
+                    {admin.firstName?.[0] || 'A'}
+                    {admin.lastName?.[0] || ''}
                 </div>
                 <div className="admin-info">
-                    <div className="admin-name">{admin.firstName || ''} {admin.lastName || ''}</div>
-                    <div className="admin-role">{admin.role ? admin.role.replace('-', ' ').toUpperCase() : 'Staff'}</div>
+                    <div className="admin-name">
+                        {admin.firstName || ''} {admin.lastName || ''}
+                    </div>
+                    <div className="admin-role">
+                        {admin.role ? admin.role.replace('-', ' ').toUpperCase() : 'Staff'}
+                    </div>
                     <div className="admin-email">{admin.email || ''}</div>
                 </div>
                 <div className="admin-actions">
-                    {(admin.uid || admin.id) !== currentUser?.uid && (
-                        ['admin', 'user', 'school-admin', 'principal', 'headteacher', 'deputy-headteacher', 'accountant', 'finance']
-                            .includes(normalizeRole(admin.role)) ? (
-                        <>
-                            <button className="edit-admin" onClick={() => showNotification('Edit admin functionality coming soon.', 'info')}>
-                                <i className="fas fa-edit"></i>
-                            </button>
-                            <button className="remove-admin" onClick={() => handleRemoveAdmin(admin.uid || admin.id)}>
-                                <i className="fas fa-trash"></i>
-                            </button>
-                        </>
-                        ) : null
-                    )}
+                    {(admin.uid || admin.id) !== currentUser?.uid &&
+                        (['admin', 'user', 'school-admin', 'principal', 'headteacher', 'deputy-headteacher', 'accountant', 'finance'].includes(
+                            normalizeRole(admin.role)
+                        ) ? (
+                            <>
+                                <button
+                                    className="edit-admin"
+                                    onClick={() =>
+                                        showNotification('Edit admin functionality coming soon.', 'info')
+                                    }
+                                >
+                                    <i className="fas fa-edit"></i>
+                                </button>
+                                <button
+                                    className="remove-admin"
+                                    onClick={() => handleRemoveAdmin(admin.uid || admin.id)}
+                                >
+                                    <i className="fas fa-trash"></i>
+                                </button>
+                            </>
+                        ) : null)}
                     {(admin.uid || admin.id) === currentUser?.uid && (
                         <span style={{ fontSize: 11, color: 'var(--gray)' }}>(You)</span>
                     )}
@@ -1376,14 +1469,17 @@ export default function SchoolProfile() {
         const role = normalizeRole(person.role);
         const category = ['user', 'school-admin', 'principal'].includes(role)
             ? 'admin'
-            : (role === 'finance' ? 'accountant' : role);
+            : role === 'finance'
+            ? 'accountant'
+            : role;
         counts[category] = (counts[category] || 0) + 1;
         return counts;
     }, {});
 
+    // -------------------------------------------------------------------------
+    // Finance tab
+    // -------------------------------------------------------------------------
     const renderFinanceTab = () => {
-        // "Configured" means: credentials exist in Firestore.
-        // "Read only" means: configured AND the user hasn't clicked Replace.
         const isConfigured = darajaConfigured;
         const isReadOnly = isConfigured && !isReplacing;
         const isEditable = !isReadOnly;
@@ -1391,12 +1487,14 @@ export default function SchoolProfile() {
         const requiredKeys = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
         const allRequiredFilled = requiredKeys.every((k) => (darajaForm[k] || '').trim());
 
+        const paymentTypeMeta = getPaymentTypeMeta(darajaForm.paymentType);
+
         const handleCancelReplace = () => {
             setIsReplacing(false);
-            // Clear the form back to blank (or whatever defaults you want)
             setDarajaForm({
                 consumerKey: '',
                 consumerSecret: '',
+                paymentType: darajaPaymentType || 'paybill',
                 shortcode: darajaShortcode || '',
                 passkey: '',
                 initiatorName: '',
@@ -1410,50 +1508,175 @@ export default function SchoolProfile() {
             <div className="form-section active">
                 <div className="finance-settings-header">
                     <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 10 }}>
-                        <i className="fas fa-key" style={{ color: 'var(--primary)' }}></i> M-Pesa Daraja Credentials
+                        <i className="fas fa-key" style={{ color: 'var(--primary)' }}></i>{' '}
+                        M-Pesa Daraja Credentials
                     </h3>
                     <p style={{ color: 'var(--gray)', fontSize: 14, marginBottom: 20 }}>
                         Enter the Daraja API credentials from your own Safaricom account.
-                        We store them encrypted-at-rest in a private location that no client can read back —
-                        not even you after saving.
+                        We store them encrypted-at-rest in a private location that no client can
+                        read back — not even you after saving.
                     </p>
                 </div>
 
                 {isReadOnly && (
-                    <div className="fee-info-box" style={{ background: '#e8f5e9', borderLeftColor: '#2e7d32' }}>
+                    <div
+                        className="fee-info-box"
+                        style={{ background: '#e8f5e9', borderLeftColor: '#2e7d32' }}
+                    >
                         <h4 style={{ color: '#1b5e20' }}>
                             <i className="fas fa-check-circle"></i> Credentials Configured
                         </h4>
                         <ul>
-                            <li><i className="fas fa-check-circle"></i> <span><strong>Paybill / Shortcode:</strong> {darajaShortcode}</span></li>
-                            <li><i className="fas fa-check-circle"></i> <span><strong>Environment:</strong> {darajaEnvironment}</span></li>
+                            <li>
+                                <i className="fas fa-check-circle"></i>{' '}
+                                <span>
+                                    <strong>Payment Type:</strong>{' '}
+                                    {darajaPaymentType === 'till' ? 'Till / Buy Goods' : 'Paybill'}
+                                </span>
+                            </li>
+                            <li>
+                                <i className="fas fa-check-circle"></i>{' '}
+                                <span>
+                                    <strong>
+                                        {darajaPaymentType === 'till' ? 'Till Number' : 'Paybill Number'}:
+                                    </strong>{' '}
+                                    {darajaShortcode}
+                                </span>
+                            </li>
+                            <li>
+                                <i className="fas fa-check-circle"></i>{' '}
+                                <span>
+                                    <strong>Environment:</strong> {darajaEnvironment}
+                                </span>
+                            </li>
                             {darajaUpdatedAt && (
                                 <li>
                                     <i className="fas fa-clock"></i>
-                                    <span><strong>Last updated:</strong> {new Date(darajaUpdatedAt).toLocaleString()}</span>
+                                    <span>
+                                        <strong>Last updated:</strong>{' '}
+                                        {new Date(darajaUpdatedAt).toLocaleString()}
+                                    </span>
                                 </li>
                             )}
                             <li>
                                 <i className="fas fa-lock"></i>
-                                <span>Your keys are stored securely and cannot be viewed again. To rotate them, click <strong>Replace Credentials</strong> below.</span>
+                                <span>
+                                    Your keys are stored securely and cannot be viewed again. To
+                                    rotate them, click <strong>Replace Credentials</strong> below.
+                                </span>
                             </li>
                         </ul>
                     </div>
                 )}
 
                 {isReplacing && (
-                    <div style={{
-                        background: '#fff3cd', color: '#856404',
-                        borderLeft: '4px solid #f39c12',
-                        borderRadius: 8, padding: '12px 16px',
-                        fontSize: 13, marginBottom: 18,
-                    }}>
+                    <div
+                        style={{
+                            background: '#fff3cd',
+                            color: '#856404',
+                            borderLeft: '4px solid #f39c12',
+                            borderRadius: 8,
+                            padding: '12px 16px',
+                            fontSize: 13,
+                            marginBottom: 18,
+                        }}
+                    >
                         <i className="fas fa-triangle-exclamation"></i>{' '}
-                        <strong>Replacing credentials.</strong> The old keys stay active until you save the new ones.
-                        Nothing is interrupted for parents using M-Pesa right now.
+                        <strong>Replacing credentials.</strong> The old keys stay active until you
+                        save the new ones. Nothing is interrupted for parents using M-Pesa right
+                        now.
                     </div>
                 )}
 
+                {/* ---- Payment Type selector (NEW) ---- */}
+                <div className="form-group" style={{ marginBottom: 18 }}>
+                    <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
+                        Payment Type <span className="required" style={{ color: 'var(--danger)' }}> *</span>
+                    </label>
+
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        {PAYMENT_TYPES.map((pt) => {
+                            const selected = (darajaForm.paymentType || 'paybill') === pt.value;
+                            return (
+                                <button
+                                    key={pt.value}
+                                    type="button"
+                                    disabled={!isEditable}
+                                    onClick={() =>
+                                        setDarajaForm((prev) => ({ ...prev, paymentType: pt.value }))
+                                    }
+                                    style={{
+                                        flex: '1 1 180px',
+                                        padding: '14px 16px',
+                                        borderRadius: 10,
+                                        border: selected
+                                            ? '2px solid var(--primary)'
+                                            : '2px solid var(--border)',
+                                        background: selected ? '#eef2ff' : 'white',
+                                        color: selected ? 'var(--primary)' : 'var(--secondary)',
+                                        cursor: isEditable ? 'pointer' : 'not-allowed',
+                                        opacity: isEditable ? 1 : 0.6,
+                                        textAlign: 'left',
+                                        fontWeight: 600,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 4,
+                                    }}
+                                >
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <i
+                                            className={
+                                                pt.value === 'paybill'
+                                                    ? 'fas fa-file-invoice-dollar'
+                                                    : 'fas fa-cash-register'
+                                            }
+                                        ></i>
+                                        {pt.label}
+                                    </span>
+                                    <span
+                                        style={{
+                                            fontSize: 11,
+                                            fontWeight: 400,
+                                            color: 'var(--gray)',
+                                        }}
+                                    >
+                                        {pt.value === 'paybill'
+                                            ? 'Parents pay via the school\'s Paybill number'
+                                            : 'Parents pay at the school\'s Buy Goods Till'}
+                                    </span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 6 }}>
+                        Choose <strong>Paybill</strong> if parents key in a Paybill number, or{' '}
+                        <strong>Till / Buy Goods</strong> if they pay at the school's till.
+                    </div>
+                </div>
+
+                {/* ---- Shortcode (label changes with payment type) ---- */}
+                <div className="form-group" style={{ marginBottom: 18 }}>
+                    <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
+                        {paymentTypeMeta.shortcodeLabel}{' '}
+                        <span className="required" style={{ color: 'var(--danger)' }}> *</span>
+                    </label>
+                    <input
+                        type="text"
+                        id="shortcode"
+                        inputMode="numeric"
+                        value={darajaForm.shortcode}
+                        onChange={handleDarajaChange}
+                        placeholder={!isEditable ? '••••••••••••' : paymentTypeMeta.shortcodePlaceholder}
+                        disabled={!isEditable}
+                        autoComplete="new-password"
+                        style={!isEditable ? disabledFieldStyle : undefined}
+                    />
+                    <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 4 }}>
+                        {paymentTypeMeta.shortcodeHelp}
+                    </div>
+                </div>
+
+                {/* ---- All other fields ---- */}
                 {DARAJA_FIELDS.map((field) => {
                     const value = darajaForm[field.key] ?? '';
 
@@ -1462,20 +1685,25 @@ export default function SchoolProfile() {
                             <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
                                 {field.label}
                                 {requiredKeys.includes(field.key) && (
-                                    <span className="required" style={{ color: 'var(--danger)' }}> *</span>
+                                    <span className="required" style={{ color: 'var(--danger)' }}>
+                                        {' '}
+                                        *
+                                    </span>
                                 )}
                             </label>
 
                             {field.type === 'select' ? (
                                 <select
                                     id={field.key}
-                                    value={value || (field.options[0]?.value || '')}
+                                    value={value || field.options[0]?.value || ''}
                                     onChange={handleDarajaChange}
                                     disabled={!isEditable}
                                     style={!isEditable ? disabledFieldStyle : undefined}
                                 >
                                     {field.options.map((opt) => (
-                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                        <option key={opt.value} value={opt.value}>
+                                            {opt.label}
+                                        </option>
                                     ))}
                                 </select>
                             ) : (
@@ -1498,24 +1726,40 @@ export default function SchoolProfile() {
                     );
                 })}
 
-                <div style={{
-                    display: 'flex', gap: 12, marginTop: 25,
-                    paddingTop: 20, borderTop: '1px solid var(--border)',
-                    flexWrap: 'wrap'
-                }}>
+                <div
+                    style={{
+                        display: 'flex',
+                        gap: 12,
+                        marginTop: 25,
+                        paddingTop: 20,
+                        borderTop: '1px solid var(--border)',
+                        flexWrap: 'wrap',
+                    }}
+                >
                     {isEditable && (
                         <button
                             type="button"
                             className="btn btn-primary"
                             onClick={handleSaveDaraja}
                             disabled={savingDaraja || !isOnline || !allRequiredFilled}
-                            title={!allRequiredFilled ? 'Fill in Consumer Key, Consumer Secret, Shortcode and Passkey' : undefined}
+                            title={
+                                !allRequiredFilled
+                                    ? 'Fill in Consumer Key, Consumer Secret, Shortcode and Passkey'
+                                    : undefined
+                            }
                             style={{
-                                padding: '12px 24px', border: 'none', borderRadius: 8,
-                                fontWeight: 600, cursor: (savingDaraja || !isOnline) ? 'not-allowed' : 'pointer',
-                                background: 'var(--primary)', color: 'white',
-                                display: 'inline-flex', alignItems: 'center', gap: 8,
-                                opacity: (savingDaraja || !isOnline || !allRequiredFilled) ? 0.6 : 1,
+                                padding: '12px 24px',
+                                border: 'none',
+                                borderRadius: 8,
+                                fontWeight: 600,
+                                cursor: savingDaraja || !isOnline ? 'not-allowed' : 'pointer',
+                                background: 'var(--primary)',
+                                color: 'white',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 8,
+                                opacity:
+                                    savingDaraja || !isOnline || !allRequiredFilled ? 0.6 : 1,
                             }}
                         >
                             {savingDaraja ? (
@@ -1538,9 +1782,13 @@ export default function SchoolProfile() {
                             onClick={handleCancelReplace}
                             disabled={savingDaraja}
                             style={{
-                                padding: '12px 24px', borderRadius: 8, fontWeight: 600,
-                                background: 'transparent', color: 'var(--secondary)',
-                                border: '2px solid var(--border)', cursor: 'pointer',
+                                padding: '12px 24px',
+                                borderRadius: 8,
+                                fontWeight: 600,
+                                background: 'transparent',
+                                color: 'var(--secondary)',
+                                border: '2px solid var(--border)',
+                                cursor: 'pointer',
                             }}
                         >
                             Cancel
@@ -1553,10 +1801,16 @@ export default function SchoolProfile() {
                             className="btn btn-outline"
                             onClick={() => setShowResetConfirm(true)}
                             style={{
-                                padding: '12px 24px', borderRadius: 8, fontWeight: 600,
-                                background: 'transparent', color: 'var(--danger)',
-                                border: '2px solid var(--danger)', cursor: 'pointer',
-                                display: 'inline-flex', alignItems: 'center', gap: 8,
+                                padding: '12px 24px',
+                                borderRadius: 8,
+                                fontWeight: 600,
+                                background: 'transparent',
+                                color: 'var(--danger)',
+                                border: '2px solid var(--danger)',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 8,
                             }}
                         >
                             <i className="fas fa-rotate"></i> Replace Credentials
@@ -1565,27 +1819,48 @@ export default function SchoolProfile() {
                 </div>
 
                 {!isOnline && (
-                    <div style={{ marginTop: 15, padding: 12, background: '#fff3cd', color: '#856404', borderRadius: 8, fontSize: 13 }}>
-                        <i className="fas fa-wifi-slash"></i> You must be online to save Daraja credentials.
+                    <div
+                        style={{
+                            marginTop: 15,
+                            padding: 12,
+                            background: '#fff3cd',
+                            color: '#856404',
+                            borderRadius: 8,
+                            fontSize: 13,
+                        }}
+                    >
+                        <i className="fas fa-wifi-slash"></i> You must be online to save Daraja
+                        credentials.
                     </div>
                 )}
 
                 {showResetConfirm && (
-                    <div className="modal-overlay active" onClick={(e) => e.target === e.currentTarget && setShowResetConfirm(false)}>
+                    <div
+                        className="modal-overlay active"
+                        onClick={(e) => e.target === e.currentTarget && setShowResetConfirm(false)}
+                    >
                         <div className="modal" style={{ maxWidth: 460 }}>
                             <div className="modal-header">
                                 <h2>Replace Daraja Credentials?</h2>
-                                <button className="modal-close" onClick={() => setShowResetConfirm(false)}>
+                                <button
+                                    className="modal-close"
+                                    onClick={() => setShowResetConfirm(false)}
+                                >
                                     <i className="fas fa-times"></i>
                                 </button>
                             </div>
                             <p style={{ color: 'var(--gray)', fontSize: 14, lineHeight: 1.6 }}>
-                                You will be asked to enter new credentials from scratch.
-                                The previous keys will stay active until you save the new ones.
-                                No interruption to parent payments.
+                                You will be asked to enter new credentials from scratch. The previous
+                                keys will stay active until you save the new ones. No interruption to
+                                parent payments.
                             </p>
                             <div className="modal-footer">
-                                <button className="btn btn-outline" onClick={() => setShowResetConfirm(false)}>Cancel</button>
+                                <button
+                                    className="btn btn-outline"
+                                    onClick={() => setShowResetConfirm(false)}
+                                >
+                                    Cancel
+                                </button>
                                 <button className="btn btn-danger" onClick={handleResetDarajaForm}>
                                     <i className="fas fa-rotate"></i> Replace Now
                                 </button>
@@ -1659,7 +1934,10 @@ export default function SchoolProfile() {
                 <div className="profile-header">
                     <div className="profile-avatar">
                         <img
-                            src={schoolData?.logoUrl || 'https://ui-avatars.com/api/?name=School&background=1a237e&color=fff&size=120'}
+                            src={
+                                schoolData?.logoUrl ||
+                                'https://ui-avatars.com/api/?name=School&background=1a237e&color=fff&size=120'
+                            }
                             alt="School Logo"
                         />
                         <button className="upload-btn" onClick={handleLogoUpload} title="Upload Logo">
@@ -1668,10 +1946,15 @@ export default function SchoolProfile() {
                     </div>
                     <div className="profile-info">
                         <h2>{schoolData?.schoolName || schoolData?.name || 'Unnamed School'}</h2>
-                        <div className="school-id">School ID: {schoolData?.schoolId || schoolData?.id || 'N/A'}</div>
-                        <span className={`school-status ${schoolData?.subscriptionStatus || 'pending'}`}>
+                        <div className="school-id">
+                            School ID: {schoolData?.schoolId || schoolData?.id || 'N/A'}
+                        </div>
+                        <span
+                            className={`school-status ${schoolData?.subscriptionStatus || 'pending'}`}
+                        >
                             {schoolData?.subscriptionStatus
-                                ? schoolData.subscriptionStatus.charAt(0).toUpperCase() + schoolData.subscriptionStatus.slice(1)
+                                ? schoolData.subscriptionStatus.charAt(0).toUpperCase() +
+                                  schoolData.subscriptionStatus.slice(1)
                                 : 'Pending'}
                         </span>
                     </div>
@@ -1685,7 +1968,7 @@ export default function SchoolProfile() {
                         { key: 'class-teachers', icon: 'fa-chalkboard-user', label: 'Class Teachers' },
                         { key: 'finance', icon: 'fa-key', label: 'Finance' },
                         { key: 'admins', icon: 'fa-users-cog', label: 'Admins' },
-                        { key: 'settings', icon: 'fa-cog', label: 'Settings' }
+                        { key: 'settings', icon: 'fa-cog', label: 'Settings' },
                     ].map((tab) => (
                         <button
                             key={tab.key}
@@ -1701,8 +1984,16 @@ export default function SchoolProfile() {
                     <div className="form-section active">
                         <div className="form-row">
                             <div className="form-group">
-                                <label>School Name <span className="required">*</span></label>
-                                <input type="text" id="name" value={formData.name} readOnly aria-readonly="true" />
+                                <label>
+                                    School Name <span className="required">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    id="name"
+                                    value={formData.name}
+                                    readOnly
+                                    aria-readonly="true"
+                                />
                             </div>
                             <div className="form-group">
                                 <label>School Type</label>
@@ -1728,40 +2019,73 @@ export default function SchoolProfile() {
                             </div>
                             <div className="form-group">
                                 <label>Highest School Level</label>
-                                <select id="highestLevel" value={formData.highestLevel} onChange={handleInputChange}>
+                                <select
+                                    id="highestLevel"
+                                    value={formData.highestLevel}
+                                    onChange={handleInputChange}
+                                >
                                     {availableLevels.map((l) => (
-                                        <option key={l.value} value={l.value}>{l.label}</option>
+                                        <option key={l.value} value={l.value}>
+                                            {l.label}
+                                        </option>
                                     ))}
                                 </select>
                             </div>
                         </div>
                         <div className="form-group">
                             <label>School Motto</label>
-                            <input type="text" id="motto" value={formData.motto} onChange={handleInputChange} placeholder="Enter school motto" />
+                            <input
+                                type="text"
+                                id="motto"
+                                value={formData.motto}
+                                onChange={handleInputChange}
+                                placeholder="Enter school motto"
+                            />
                         </div>
                         <div className="form-group">
                             <label>About School</label>
-                            <textarea id="about" rows="3" value={formData.about} onChange={handleInputChange} placeholder="Describe your school…" />
+                            <textarea
+                                id="about"
+                                rows="3"
+                                value={formData.about}
+                                onChange={handleInputChange}
+                                placeholder="Describe your school…"
+                            />
                         </div>
 
                         <div className="form-row">
                             <div className="form-group">
                                 <label>Official School Stamp</label>
                                 <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                                    <div style={{
-                                        width: 90, height: 90, border: '2px dashed var(--border)',
-                                        borderRadius: 12, display: 'flex', alignItems: 'center',
-                                        justifyContent: 'center', overflow: 'hidden', background: '#fafbfc',
-                                        flexShrink: 0,
-                                    }}>
+                                    <div
+                                        style={{
+                                            width: 90,
+                                            height: 90,
+                                            border: '2px dashed var(--border)',
+                                            borderRadius: 12,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            overflow: 'hidden',
+                                            background: '#fafbfc',
+                                            flexShrink: 0,
+                                        }}
+                                    >
                                         {schoolData?.stampUrl ? (
                                             <img
                                                 src={schoolData.stampUrl}
                                                 alt="Stamp"
-                                                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                                style={{
+                                                    maxWidth: '100%',
+                                                    maxHeight: '100%',
+                                                    objectFit: 'contain',
+                                                }}
                                             />
                                         ) : (
-                                            <i className="fas fa-stamp" style={{ fontSize: 32, color: '#ccc' }} />
+                                            <i
+                                                className="fas fa-stamp"
+                                                style={{ fontSize: 32, color: '#ccc' }}
+                                            />
                                         )}
                                     </div>
                                     <div>
@@ -1785,8 +2109,16 @@ export default function SchoolProfile() {
                                                 <i className="fas fa-camera"></i> Take Photo
                                             </button>
                                         </div>
-                                        <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
-                                            You&apos;ll be able to remove the background, crop, and zoom before saving.
+                                        <p
+                                            style={{
+                                                fontSize: 11,
+                                                color: 'var(--gray)',
+                                                marginTop: 6,
+                                                maxWidth: 240,
+                                            }}
+                                        >
+                                            You&apos;ll be able to remove the background, crop, and zoom
+                                            before saving.
                                         </p>
                                     </div>
                                 </div>
@@ -1795,20 +2127,35 @@ export default function SchoolProfile() {
                             <div className="form-group">
                                 <label>Principal&apos;s Signature</label>
                                 <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                                    <div style={{
-                                        width: 140, height: 90, border: '2px dashed var(--border)',
-                                        borderRadius: 12, display: 'flex', alignItems: 'center',
-                                        justifyContent: 'center', overflow: 'hidden', background: '#fafbfc',
-                                        flexShrink: 0,
-                                    }}>
+                                    <div
+                                        style={{
+                                            width: 140,
+                                            height: 90,
+                                            border: '2px dashed var(--border)',
+                                            borderRadius: 12,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            overflow: 'hidden',
+                                            background: '#fafbfc',
+                                            flexShrink: 0,
+                                        }}
+                                    >
                                         {schoolData?.principalSignatureUrl ? (
                                             <img
                                                 src={schoolData.principalSignatureUrl}
                                                 alt="Signature"
-                                                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                                style={{
+                                                    maxWidth: '100%',
+                                                    maxHeight: '100%',
+                                                    objectFit: 'contain',
+                                                }}
                                             />
                                         ) : (
-                                            <i className="fas fa-signature" style={{ fontSize: 32, color: '#ccc' }} />
+                                            <i
+                                                className="fas fa-signature"
+                                                style={{ fontSize: 32, color: '#ccc' }}
+                                            />
                                         )}
                                     </div>
                                     <div>
@@ -1825,15 +2172,27 @@ export default function SchoolProfile() {
                                             <button
                                                 type="button"
                                                 className="btn btn-outline"
-                                                onClick={() => handlePrincipalSignatureUpload(principalSignatureCameraInputRef)}
+                                                onClick={() =>
+                                                    handlePrincipalSignatureUpload(
+                                                        principalSignatureCameraInputRef
+                                                    )
+                                                }
                                                 disabled={saving || !isOnline}
                                                 style={{ padding: '8px 12px', fontSize: 13 }}
                                             >
                                                 <i className="fas fa-camera"></i> Take Photo
                                             </button>
                                         </div>
-                                        <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 6, maxWidth: 240 }}>
-                                            You&apos;ll be able to remove the background, crop, and zoom before saving.
+                                        <p
+                                            style={{
+                                                fontSize: 11,
+                                                color: 'var(--gray)',
+                                                marginTop: 6,
+                                                maxWidth: 240,
+                                            }}
+                                        >
+                                            You&apos;ll be able to remove the background, crop, and zoom
+                                            before saving.
                                         </p>
                                     </div>
                                 </div>
@@ -1845,33 +2204,92 @@ export default function SchoolProfile() {
                 {activeTab === 'address' && (
                     <div className="form-section active">
                         <div className="form-row">
-                            <div className="form-group"><label>Country</label>
-                                <input type="text" id="country" value={formData.country} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>City/Town</label>
-                                <input type="text" id="city" value={formData.city} onChange={handleInputChange} /></div>
+                            <div className="form-group">
+                                <label>Country</label>
+                                <input
+                                    type="text"
+                                    id="country"
+                                    value={formData.country}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>City/Town</label>
+                                <input
+                                    type="text"
+                                    id="city"
+                                    value={formData.city}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
                         </div>
                         <div className="form-row">
-                            <div className="form-group"><label>State/Province</label>
-                                <input type="text" id="state" value={formData.state} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>Postal Code</label>
-                                <input type="text" id="postalCode" value={formData.postalCode} onChange={handleInputChange} /></div>
+                            <div className="form-group">
+                                <label>State/Province</label>
+                                <input
+                                    type="text"
+                                    id="state"
+                                    value={formData.state}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Postal Code</label>
+                                <input
+                                    type="text"
+                                    id="postalCode"
+                                    value={formData.postalCode}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
                         </div>
-                        <div className="form-group"><label>Address</label>
-                            <textarea id="address" rows="2" value={formData.address} onChange={handleInputChange} /></div>
+                        <div className="form-group">
+                            <label>Address</label>
+                            <textarea
+                                id="address"
+                                rows="2"
+                                value={formData.address}
+                                onChange={handleInputChange}
+                            />
+                        </div>
                         <div className="form-row-3">
-                            <div className="form-group"><label>Phone Number</label>
-                                <input type="tel" id="phone" value={formData.phone} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>Email</label>
-                                <input type="email" id="email" value={formData.email} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>Website</label>
-                                <input type="url" id="website" value={formData.website} onChange={handleInputChange} placeholder="https://example.com" /></div>
+                            <div className="form-group">
+                                <label>Phone Number</label>
+                                <input
+                                    type="tel"
+                                    id="phone"
+                                    value={formData.phone}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Email</label>
+                                <input
+                                    type="email"
+                                    id="email"
+                                    value={formData.email}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Website</label>
+                                <input
+                                    type="url"
+                                    id="website"
+                                    value={formData.website}
+                                    onChange={handleInputChange}
+                                    placeholder="https://example.com"
+                                />
+                            </div>
                         </div>
                     </div>
                 )}
 
                 {activeTab === 'class-teachers' && (
                     <div className="form-section active">
-                        <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 20 }}>Assign Class Teachers</h3>
+                        <h3 style={{ fontSize: 18, color: 'var(--secondary)', marginBottom: 20 }}>
+                            Assign Class Teachers
+                        </h3>
                         <p style={{ fontSize: 13, color: 'var(--gray)', marginBottom: 20 }}>
                             {useCustomClasses && customClasses.length > 0
                                 ? 'Showing your customised classes. Assign a teacher to each.'
@@ -1881,56 +2299,108 @@ export default function SchoolProfile() {
                             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                                 <thead>
                                     <tr>
-                                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid var(--border)' }}>Class</th>
-                                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid var(--border)' }}>Level</th>
-                                        <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid var(--border)' }}>Assigned Teacher</th>
+                                        <th
+                                            style={{
+                                                padding: '12px',
+                                                textAlign: 'left',
+                                                borderBottom: '2px solid var(--border)',
+                                            }}
+                                        >
+                                            Class
+                                        </th>
+                                        <th
+                                            style={{
+                                                padding: '12px',
+                                                textAlign: 'left',
+                                                borderBottom: '2px solid var(--border)',
+                                            }}
+                                        >
+                                            Level
+                                        </th>
+                                        <th
+                                            style={{
+                                                padding: '12px',
+                                                textAlign: 'left',
+                                                borderBottom: '2px solid var(--border)',
+                                            }}
+                                        >
+                                            Assigned Teacher
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {resolveClassesForDisplay().map(({ className, levelDisplay, isCustom }) => {
-                                        const assignment = schoolData?.classTeachers?.[className];
-                                        return (
-                                            <tr key={className} style={{ borderBottom: '1px solid var(--border)' }}>
-                                                <td style={{ padding: '12px' }}>
-                                                    {className}
-                                                    {isCustom && (
-                                                        <span style={{
-                                                            marginLeft: 8, fontSize: 10, fontWeight: 600,
-                                                            padding: '2px 8px', borderRadius: 8,
-                                                            background: '#eef2ff', color: 'var(--primary)'
-                                                        }}>
-                                                            Custom
-                                                        </span>
-                                                    )}
-                                                </td>
-                                                <td style={{ padding: '12px', fontSize: 13, color: 'var(--gray)' }}>
-                                                    {levelDisplay}
-                                                </td>
-                                                <td style={{ padding: '12px' }}>
-                                                    <select
-                                                        onChange={async (e) => {
-                                                            const newTeacherId = e.target.value;
-                                                            const newClassTeachers = {
-                                                                ...(schoolData.classTeachers || {}),
-                                                                [className]: newTeacherId
-                                                            };
-                                                            await updateDoc(doc(db, 'schools', schoolData.id), {
-                                                                classTeachers: newClassTeachers
-                                                            });
-                                                            setSchoolData(prev => ({ ...prev, classTeachers: newClassTeachers }));
-                                                            showNotification('Class teacher updated', 'success');
+                                    {resolveClassesForDisplay().map(
+                                        ({ className, levelDisplay, isCustom }) => {
+                                            const assignment = schoolData?.classTeachers?.[className];
+                                            return (
+                                                <tr
+                                                    key={className}
+                                                    style={{ borderBottom: '1px solid var(--border)' }}
+                                                >
+                                                    <td style={{ padding: '12px' }}>
+                                                        {className}
+                                                        {isCustom && (
+                                                            <span
+                                                                style={{
+                                                                    marginLeft: 8,
+                                                                    fontSize: 10,
+                                                                    fontWeight: 600,
+                                                                    padding: '2px 8px',
+                                                                    borderRadius: 8,
+                                                                    background: '#eef2ff',
+                                                                    color: 'var(--primary)',
+                                                                }}
+                                                            >
+                                                                Custom
+                                                            </span>
+                                                        )}
+                                                    </td>
+                                                    <td
+                                                        style={{
+                                                            padding: '12px',
+                                                            fontSize: 13,
+                                                            color: 'var(--gray)',
                                                         }}
-                                                        value={assignment || ''}
                                                     >
-                                                        <option value="">Unassigned</option>
-                                                        {teachers.map(t => (
-                                                            <option key={t.id} value={t.id}>{t.firstName} {t.lastName}</option>
-                                                        ))}
-                                                    </select>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
+                                                        {levelDisplay}
+                                                    </td>
+                                                    <td style={{ padding: '12px' }}>
+                                                        <select
+                                                            onChange={async (e) => {
+                                                                const newTeacherId = e.target.value;
+                                                                const newClassTeachers = {
+                                                                    ...(schoolData.classTeachers || {}),
+                                                                    [className]: newTeacherId,
+                                                                };
+                                                                await updateDoc(
+                                                                    doc(db, 'schools', schoolData.id),
+                                                                    {
+                                                                        classTeachers: newClassTeachers,
+                                                                    }
+                                                                );
+                                                                setSchoolData((prev) => ({
+                                                                    ...prev,
+                                                                    classTeachers: newClassTeachers,
+                                                                }));
+                                                                showNotification(
+                                                                    'Class teacher updated',
+                                                                    'success'
+                                                                );
+                                                            }}
+                                                            value={assignment || ''}
+                                                        >
+                                                            <option value="">Unassigned</option>
+                                                            {teachers.map((t) => (
+                                                                <option key={t.id} value={t.id}>
+                                                                    {t.firstName} {t.lastName}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        }
+                                    )}
                                 </tbody>
                             </table>
                         </div>
@@ -1940,68 +2410,173 @@ export default function SchoolProfile() {
                 {activeTab === 'academic' && (
                     <div className="form-section active">
                         <div className="form-row">
-                            <div className="form-group"><label>Academic Year Start</label>
-                                <input type="date" id="academicStart" value={formData.academicStart} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>Academic Year End</label>
-                                <input type="date" id="academicEnd" value={formData.academicEnd} onChange={handleInputChange} /></div>
+                            <div className="form-group">
+                                <label>Academic Year Start</label>
+                                <input
+                                    type="date"
+                                    id="academicStart"
+                                    value={formData.academicStart}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Academic Year End</label>
+                                <input
+                                    type="date"
+                                    id="academicEnd"
+                                    value={formData.academicEnd}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
                         </div>
                         <div className="form-row-3">
-                            <div className="form-group"><label>Number of Terms</label>
-                                <select id="numTerms" value={formData.numTerms} onChange={handleInputChange}>
+                            <div className="form-group">
+                                <label>Number of Terms</label>
+                                <select
+                                    id="numTerms"
+                                    value={formData.numTerms}
+                                    onChange={handleInputChange}
+                                >
                                     <option value="2">2 Terms</option>
                                     <option value="3">3 Terms</option>
                                     <option value="4">4 Terms</option>
-                                </select></div>
-                            <div className="form-group"><label>Current Term</label>
-                                <select id="currentTerm" value={formData.currentTerm} onChange={handleInputChange}>
+                                </select>
+                            </div>
+                            <div className="form-group">
+                                <label>Current Term</label>
+                                <select
+                                    id="currentTerm"
+                                    value={formData.currentTerm}
+                                    onChange={handleInputChange}
+                                >
                                     <option value="1">Term 1</option>
                                     <option value="2">Term 2</option>
                                     <option value="3">Term 3</option>
-                                </select></div>
-                            <div className="form-group"><label>Grading System</label>
-                                <select id="gradingSystem" value={formData.gradingSystem} onChange={handleInputChange}>
+                                </select>
+                            </div>
+                            <div className="form-group">
+                                <label>Grading System</label>
+                                <select
+                                    id="gradingSystem"
+                                    value={formData.gradingSystem}
+                                    onChange={handleInputChange}
+                                >
                                     <option value="competency">Competency-Based</option>
                                     <option value="percentage">Percentage</option>
                                     <option value="letter">Letter Grade</option>
                                     <option value="gpa">GPA</option>
-                                </select></div>
+                                </select>
+                            </div>
                         </div>
                         <div className="form-row-3">
-                            <div className="form-group"><label>Term Start</label>
-                                <input type="date" id="termStart" value={formData.termStart} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>Current Term End</label>
-                                <input type="date" id="currentTermEnd" value={formData.currentTermEnd} onChange={handleInputChange} /></div>
-                            <div className="form-group"><label>Next Term Start</label>
-                                <input type="date" id="nextTermStart" value={formData.nextTermStart} onChange={handleInputChange} /></div>
+                            <div className="form-group">
+                                <label>Term Start</label>
+                                <input
+                                    type="date"
+                                    id="termStart"
+                                    value={formData.termStart}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Current Term End</label>
+                                <input
+                                    type="date"
+                                    id="currentTermEnd"
+                                    value={formData.currentTermEnd}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
+                            <div className="form-group">
+                                <label>Next Term Start</label>
+                                <input
+                                    type="date"
+                                    id="nextTermStart"
+                                    value={formData.nextTermStart}
+                                    onChange={handleInputChange}
+                                />
+                            </div>
                         </div>
-                        <div className="form-group"><label>Core Subjects</label>
-                            <input type="text" id="coreSubjects" value={formData.coreSubjects} onChange={handleInputChange} placeholder="Separate with commas" /></div>
-                        <div className="form-group"><label>Optional Subjects</label>
-                            <input type="text" id="optionalSubjects" value={formData.optionalSubjects} onChange={handleInputChange} placeholder="Separate with commas" /></div>
+                        <div className="form-group">
+                            <label>Core Subjects</label>
+                            <input
+                                type="text"
+                                id="coreSubjects"
+                                value={formData.coreSubjects}
+                                onChange={handleInputChange}
+                                placeholder="Separate with commas"
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label>Optional Subjects</label>
+                            <input
+                                type="text"
+                                id="optionalSubjects"
+                                value={formData.optionalSubjects}
+                                onChange={handleInputChange}
+                                placeholder="Separate with commas"
+                            />
+                        </div>
 
-                        <div style={{ marginTop: '25px', padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border)' }}>
-                            <h4 style={{ marginBottom: '10px', color: 'var(--secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div
+                            style={{
+                                marginTop: '25px',
+                                padding: '20px',
+                                background: '#f8fafc',
+                                borderRadius: '12px',
+                                border: '1px solid var(--border)',
+                            }}
+                        >
+                            <h4
+                                style={{
+                                    marginBottom: '10px',
+                                    color: 'var(--secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                }}
+                            >
                                 <i className="fas fa-layer-group"></i> Class Structure & Customised Classes
                             </h4>
                             <p style={{ fontSize: '13px', color: 'var(--gray)', marginBottom: '15px' }}>
-                                Toggle to use customised class names (e.g. Grade 3 Hope, Grade 3 East) in place of default system classes across all pages.
+                                Toggle to use customised class names (e.g. Grade 3 Hope, Grade 3 East)
+                                in place of default system classes across all pages.
                             </p>
 
                             <div className="form-group" style={{ marginBottom: '20px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '600' }}>
+                                <label
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '10px',
+                                        cursor: 'pointer',
+                                        fontWeight: '600',
+                                    }}
+                                >
                                     <input
                                         type="checkbox"
                                         checked={useCustomClasses}
                                         onChange={(e) => setUseCustomClasses(e.target.checked)}
-                                        style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }}
+                                        style={{
+                                            width: '18px',
+                                            height: '18px',
+                                            accentColor: 'var(--primary)',
+                                        }}
                                     />
                                     Enable Customised Classes
                                 </label>
                             </div>
 
                             {useCustomClasses && (
-                                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '15px' }}>
-                                    <h5 style={{ marginBottom: '10px', color: 'var(--secondary)' }}>Add Custom Class</h5>
+                                <div
+                                    style={{
+                                        borderTop: '1px solid var(--border)',
+                                        paddingTop: '15px',
+                                    }}
+                                >
+                                    <h5 style={{ marginBottom: '10px', color: 'var(--secondary)' }}>
+                                        Add Custom Class
+                                    </h5>
                                     <div className="form-row-3" style={{ marginBottom: '15px' }}>
                                         <div className="form-group">
                                             <label>Select Level</label>
@@ -2013,10 +2588,17 @@ export default function SchoolProfile() {
                                                     const baseList = LEVEL_CLASSES[lvl] || [];
                                                     setNewClassBase(baseList[0] || '');
                                                 }}
-                                                style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'white' }}
+                                                style={{
+                                                    padding: '8px 12px',
+                                                    borderRadius: '8px',
+                                                    border: '1px solid var(--border)',
+                                                    background: 'white',
+                                                }}
                                             >
-                                                {availableLevels.map(l => (
-                                                    <option key={l.value} value={l.value}>{l.label}</option>
+                                                {availableLevels.map((l) => (
+                                                    <option key={l.value} value={l.value}>
+                                                        {l.label}
+                                                    </option>
                                                 ))}
                                             </select>
                                         </div>
@@ -2025,10 +2607,17 @@ export default function SchoolProfile() {
                                             <select
                                                 value={newClassBase}
                                                 onChange={(e) => setNewClassBase(e.target.value)}
-                                                style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'white' }}
+                                                style={{
+                                                    padding: '8px 12px',
+                                                    borderRadius: '8px',
+                                                    border: '1px solid var(--border)',
+                                                    background: 'white',
+                                                }}
                                             >
-                                                {(LEVEL_CLASSES[newClassLevel] || []).map(cls => (
-                                                    <option key={cls} value={cls}>{cls}</option>
+                                                {(LEVEL_CLASSES[newClassLevel] || []).map((cls) => (
+                                                    <option key={cls} value={cls}>
+                                                        {cls}
+                                                    </option>
                                                 ))}
                                             </select>
                                         </div>
@@ -2040,16 +2629,32 @@ export default function SchoolProfile() {
                                                     value={newClassLabel}
                                                     onChange={(e) => setNewClassLabel(e.target.value)}
                                                     placeholder="e.g. Hope"
-                                                    style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', flex: 1 }}
+                                                    style={{
+                                                        padding: '8px 12px',
+                                                        borderRadius: '8px',
+                                                        border: '1px solid var(--border)',
+                                                        flex: 1,
+                                                    }}
                                                 />
                                                 <button
                                                     type="button"
                                                     onClick={() => {
                                                         if (!newClassBase) return;
                                                         const labelTrim = newClassLabel.trim();
-                                                        const className = labelTrim ? `${newClassBase} ${labelTrim}` : newClassBase;
-                                                        if (customClasses.some(c => c.level === newClassLevel && c.className === className)) {
-                                                            showNotification('Class already exists for this level', 'warning');
+                                                        const className = labelTrim
+                                                            ? `${newClassBase} ${labelTrim}`
+                                                            : newClassBase;
+                                                        if (
+                                                            customClasses.some(
+                                                                (c) =>
+                                                                    c.level === newClassLevel &&
+                                                                    c.className === className
+                                                            )
+                                                        ) {
+                                                            showNotification(
+                                                                'Class already exists for this level',
+                                                                'warning'
+                                                            );
                                                             return;
                                                         }
                                                         const newEntry = {
@@ -2057,11 +2662,14 @@ export default function SchoolProfile() {
                                                             level: newClassLevel,
                                                             baseClass: newClassBase,
                                                             label: labelTrim,
-                                                            className
+                                                            className,
                                                         };
-                                                        setCustomClasses(prev => [...prev, newEntry]);
+                                                        setCustomClasses((prev) => [...prev, newEntry]);
                                                         setNewClassLabel('');
-                                                        showNotification(`Added class: ${className}`, 'success');
+                                                        showNotification(
+                                                            `Added class: ${className}`,
+                                                            'success'
+                                                        );
                                                     }}
                                                     className="btn btn-primary"
                                                     style={{ padding: '8px 16px', whiteSpace: 'nowrap' }}
@@ -2074,20 +2682,51 @@ export default function SchoolProfile() {
 
                                     {customClasses.length > 0 ? (
                                         <div style={{ marginTop: '15px' }}>
-                                            <h6 style={{ marginBottom: '8px', color: 'var(--secondary)' }}>Configured Custom Classes:</h6>
+                                            <h6 style={{ marginBottom: '8px', color: 'var(--secondary)' }}>
+                                                Configured Custom Classes:
+                                            </h6>
                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                                                 {customClasses.map((cls) => (
-                                                    <div key={cls.id} style={{
-                                                        display: 'inline-flex', alignItems: 'center', gap: '8px',
-                                                        background: 'white', padding: '6px 12px', borderRadius: '8px',
-                                                        border: '1px solid var(--border)', fontSize: '13px'
-                                                    }}>
-                                                        <span style={{ fontWeight: '600', color: 'var(--primary)' }}>{cls.className}</span>
-                                                        <span style={{ fontSize: '11px', color: 'var(--gray)' }}>({LEVEL_DISPLAY_NAMES[cls.level] || cls.level})</span>
+                                                    <div
+                                                        key={cls.id}
+                                                        style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: '8px',
+                                                            background: 'white',
+                                                            padding: '6px 12px',
+                                                            borderRadius: '8px',
+                                                            border: '1px solid var(--border)',
+                                                            fontSize: '13px',
+                                                        }}
+                                                    >
+                                                        <span
+                                                            style={{
+                                                                fontWeight: '600',
+                                                                color: 'var(--primary)',
+                                                            }}
+                                                        >
+                                                            {cls.className}
+                                                        </span>
+                                                        <span
+                                                            style={{ fontSize: '11px', color: 'var(--gray)' }}
+                                                        >
+                                                            ({LEVEL_DISPLAY_NAMES[cls.level] || cls.level})
+                                                        </span>
                                                         <button
                                                             type="button"
-                                                            onClick={() => setCustomClasses(prev => prev.filter(c => c.id !== cls.id))}
-                                                            style={{ border: 'none', background: 'transparent', color: '#e74c3c', cursor: 'pointer', padding: '0 4px' }}
+                                                            onClick={() =>
+                                                                setCustomClasses((prev) =>
+                                                                    prev.filter((c) => c.id !== cls.id)
+                                                                )
+                                                            }
+                                                            style={{
+                                                                border: 'none',
+                                                                background: 'transparent',
+                                                                color: '#e74c3c',
+                                                                cursor: 'pointer',
+                                                                padding: '0 4px',
+                                                            }}
                                                             title="Remove Class"
                                                         >
                                                             <i className="fas fa-times"></i>
@@ -2097,47 +2736,99 @@ export default function SchoolProfile() {
                                             </div>
                                         </div>
                                     ) : (
-                                        <p style={{ fontSize: '13px', color: 'var(--gray)', fontStyle: 'italic', margin: 0 }}>
-                                            No custom classes added yet. Add classes above to override defaults.
+                                        <p
+                                            style={{
+                                                fontSize: '13px',
+                                                color: 'var(--gray)',
+                                                fontStyle: 'italic',
+                                                margin: 0,
+                                            }}
+                                        >
+                                            No custom classes added yet. Add classes above to override
+                                            defaults.
                                         </p>
                                     )}
                                 </div>
                             )}
                         </div>
 
-                        <div style={{ marginTop: '25px', padding: '20px', background: '#f8fafc', borderRadius: '12px', border: '1px solid var(--border)' }}>
-                            <h4 style={{ marginBottom: '10px', color: 'var(--secondary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <i className="fas fa-book-open"></i> Subject Structure & Customised Subjects
+                        <div
+                            style={{
+                                marginTop: '25px',
+                                padding: '20px',
+                                background: '#f8fafc',
+                                borderRadius: '12px',
+                                border: '1px solid var(--border)',
+                            }}
+                        >
+                            <h4
+                                style={{
+                                    marginBottom: '10px',
+                                    color: 'var(--secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '8px',
+                                }}
+                            >
+                                <i className="fas fa-book-open"></i> Subject Structure & Customised
+                                Subjects
                             </h4>
                             <p style={{ fontSize: '13px', color: 'var(--gray)', marginBottom: '15px' }}>
-                                Toggle to add customised or elective subjects per level in addition to standard KICD subjects.
+                                Toggle to add customised or elective subjects per level in addition to
+                                standard KICD subjects.
                             </p>
 
                             <div className="form-group" style={{ marginBottom: '20px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', fontWeight: '600' }}>
+                                <label
+                                    style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '10px',
+                                        cursor: 'pointer',
+                                        fontWeight: '600',
+                                    }}
+                                >
                                     <input
                                         type="checkbox"
                                         checked={useCustomSubjects}
                                         onChange={(e) => setUseCustomSubjects(e.target.checked)}
-                                        style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }}
+                                        style={{
+                                            width: '18px',
+                                            height: '18px',
+                                            accentColor: 'var(--primary)',
+                                        }}
                                     />
                                     Enable Customised Subjects
                                 </label>
                             </div>
 
                             {useCustomSubjects && (
-                                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '15px' }}>
-                                    <h5 style={{ marginBottom: '10px', color: 'var(--secondary)' }}>Add Custom Subject</h5>
+                                <div
+                                    style={{
+                                        borderTop: '1px solid var(--border)',
+                                        paddingTop: '15px',
+                                    }}
+                                >
+                                    <h5 style={{ marginBottom: '10px', color: 'var(--secondary)' }}>
+                                        Add Custom Subject
+                                    </h5>
                                     <div className="form-row" style={{ marginBottom: '15px' }}>
                                         <div className="form-group">
                                             <label>Select Level</label>
                                             <select
                                                 value={newSubjectLevel}
                                                 onChange={(e) => setNewSubjectLevel(e.target.value)}
-                                                style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', background: 'white' }}
+                                                style={{
+                                                    padding: '8px 12px',
+                                                    borderRadius: '8px',
+                                                    border: '1px solid var(--border)',
+                                                    background: 'white',
+                                                }}
                                             >
-                                                {availableLevels.map(l => (
-                                                    <option key={l.value} value={l.value}>{l.label}</option>
+                                                {availableLevels.map((l) => (
+                                                    <option key={l.value} value={l.value}>
+                                                        {l.label}
+                                                    </option>
                                                 ))}
                                             </select>
                                         </div>
@@ -2149,25 +2840,43 @@ export default function SchoolProfile() {
                                                     value={newSubjectName}
                                                     onChange={(e) => setNewSubjectName(e.target.value)}
                                                     placeholder="e.g. Mandarin, Coding & Robotics"
-                                                    style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border)', flex: 1 }}
+                                                    style={{
+                                                        padding: '8px 12px',
+                                                        borderRadius: '8px',
+                                                        border: '1px solid var(--border)',
+                                                        flex: 1,
+                                                    }}
                                                 />
                                                 <button
                                                     type="button"
                                                     onClick={() => {
                                                         const subName = newSubjectName.trim();
                                                         if (!subName) return;
-                                                        if (customSubjects.some(s => s.level === newSubjectLevel && s.name.toLowerCase() === subName.toLowerCase())) {
-                                                            showNotification('Subject already exists for this level', 'warning');
+                                                        if (
+                                                            customSubjects.some(
+                                                                (s) =>
+                                                                    s.level === newSubjectLevel &&
+                                                                    s.name.toLowerCase() ===
+                                                                        subName.toLowerCase()
+                                                            )
+                                                        ) {
+                                                            showNotification(
+                                                                'Subject already exists for this level',
+                                                                'warning'
+                                                            );
                                                             return;
                                                         }
                                                         const newEntry = {
                                                             id: Date.now().toString(),
                                                             level: newSubjectLevel,
-                                                            name: subName
+                                                            name: subName,
                                                         };
-                                                        setCustomSubjects(prev => [...prev, newEntry]);
+                                                        setCustomSubjects((prev) => [...prev, newEntry]);
                                                         setNewSubjectName('');
-                                                        showNotification(`Added custom subject: ${subName}`, 'success');
+                                                        showNotification(
+                                                            `Added custom subject: ${subName}`,
+                                                            'success'
+                                                        );
                                                     }}
                                                     className="btn btn-primary"
                                                     style={{ padding: '8px 16px', whiteSpace: 'nowrap' }}
@@ -2180,20 +2889,51 @@ export default function SchoolProfile() {
 
                                     {customSubjects.length > 0 ? (
                                         <div style={{ marginTop: '15px' }}>
-                                            <h6 style={{ marginBottom: '8px', color: 'var(--secondary)' }}>Configured Custom Subjects:</h6>
+                                            <h6 style={{ marginBottom: '8px', color: 'var(--secondary)' }}>
+                                                Configured Custom Subjects:
+                                            </h6>
                                             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                                                 {customSubjects.map((sub) => (
-                                                    <div key={sub.id} style={{
-                                                        display: 'inline-flex', alignItems: 'center', gap: '8px',
-                                                        background: 'white', padding: '6px 12px', borderRadius: '8px',
-                                                        border: '1px solid var(--border)', fontSize: '13px'
-                                                    }}>
-                                                        <span style={{ fontWeight: '600', color: 'var(--primary)' }}>{sub.name}</span>
-                                                        <span style={{ fontSize: '11px', color: 'var(--gray)' }}>({LEVEL_DISPLAY_NAMES[sub.level] || sub.level})</span>
+                                                    <div
+                                                        key={sub.id}
+                                                        style={{
+                                                            display: 'inline-flex',
+                                                            alignItems: 'center',
+                                                            gap: '8px',
+                                                            background: 'white',
+                                                            padding: '6px 12px',
+                                                            borderRadius: '8px',
+                                                            border: '1px solid var(--border)',
+                                                            fontSize: '13px',
+                                                        }}
+                                                    >
+                                                        <span
+                                                            style={{
+                                                                fontWeight: '600',
+                                                                color: 'var(--primary)',
+                                                            }}
+                                                        >
+                                                            {sub.name}
+                                                        </span>
+                                                        <span
+                                                            style={{ fontSize: '11px', color: 'var(--gray)' }}
+                                                        >
+                                                            ({LEVEL_DISPLAY_NAMES[sub.level] || sub.level})
+                                                        </span>
                                                         <button
                                                             type="button"
-                                                            onClick={() => setCustomSubjects(prev => prev.filter(s => s.id !== sub.id))}
-                                                            style={{ border: 'none', background: 'transparent', color: '#e74c3c', cursor: 'pointer', padding: '0 4px' }}
+                                                            onClick={() =>
+                                                                setCustomSubjects((prev) =>
+                                                                    prev.filter((s) => s.id !== sub.id)
+                                                                )
+                                                            }
+                                                            style={{
+                                                                border: 'none',
+                                                                background: 'transparent',
+                                                                color: '#e74c3c',
+                                                                cursor: 'pointer',
+                                                                padding: '0 4px',
+                                                            }}
                                                             title="Remove Subject"
                                                         >
                                                             <i className="fas fa-times"></i>
@@ -2203,7 +2943,14 @@ export default function SchoolProfile() {
                                             </div>
                                         </div>
                                     ) : (
-                                        <p style={{ fontSize: '13px', color: 'var(--gray)', fontStyle: 'italic', margin: 0 }}>
+                                        <p
+                                            style={{
+                                                fontSize: '13px',
+                                                color: 'var(--gray)',
+                                                fontStyle: 'italic',
+                                                margin: 0,
+                                            }}
+                                        >
                                             No custom subjects added yet. Add subjects above.
                                         </p>
                                     )}
@@ -2217,9 +2964,23 @@ export default function SchoolProfile() {
 
                 {activeTab === 'admins' && (
                     <div className="form-section active">
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
-                            <h3 style={{ fontSize: 16, color: 'var(--secondary)' }}>School Administrators</h3>
-                            <button className="btn btn-primary" onClick={() => setShowAdminModal(true)}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                marginBottom: 20,
+                                flexWrap: 'wrap',
+                                gap: 10,
+                            }}
+                        >
+                            <h3 style={{ fontSize: 16, color: 'var(--secondary)' }}>
+                                School Administrators
+                            </h3>
+                            <button
+                                className="btn btn-primary"
+                                onClick={() => setShowAdminModal(true)}
+                            >
                                 <i className="fas fa-user-plus"></i> Add Admin
                             </button>
                         </div>
@@ -2251,7 +3012,11 @@ export default function SchoolProfile() {
                         <div className="form-row">
                             <div className="form-group">
                                 <label>Date Format</label>
-                                <select id="dateFormat" value={formData.dateFormat} onChange={handleInputChange}>
+                                <select
+                                    id="dateFormat"
+                                    value={formData.dateFormat}
+                                    onChange={handleInputChange}
+                                >
                                     <option value="DD/MM/YYYY">DD/MM/YYYY</option>
                                     <option value="MM/DD/YYYY">MM/DD/YYYY</option>
                                     <option value="YYYY-MM-DD">YYYY-MM-DD</option>
@@ -2259,7 +3024,11 @@ export default function SchoolProfile() {
                             </div>
                             <div className="form-group">
                                 <label>Time Format</label>
-                                <select id="timeFormat" value={formData.timeFormat} onChange={handleInputChange}>
+                                <select
+                                    id="timeFormat"
+                                    value={formData.timeFormat}
+                                    onChange={handleInputChange}
+                                >
                                     <option value="12h">12-hour (AM/PM)</option>
                                     <option value="24h">24-hour</option>
                                 </select>
@@ -2267,19 +3036,34 @@ export default function SchoolProfile() {
                         </div>
                         <div className="form-group">
                             <label style={checkRowStyle}>
-                                <input type="checkbox" id="enableNotifications" checked={formData.enableNotifications} onChange={handleInputChange} />
+                                <input
+                                    type="checkbox"
+                                    id="enableNotifications"
+                                    checked={formData.enableNotifications}
+                                    onChange={handleInputChange}
+                                />
                                 Enable Email Notifications
                             </label>
                         </div>
                         <div className="form-group">
                             <label style={checkRowStyle}>
-                                <input type="checkbox" id="enableSMS" checked={formData.enableSMS} onChange={handleInputChange} />
+                                <input
+                                    type="checkbox"
+                                    id="enableSMS"
+                                    checked={formData.enableSMS}
+                                    onChange={handleInputChange}
+                                />
                                 Enable SMS Notifications
                             </label>
                         </div>
                         <div className="form-group">
                             <label style={checkRowStyle}>
-                                <input type="checkbox" id="enableBackup" checked={formData.enableBackup} onChange={handleInputChange} />
+                                <input
+                                    type="checkbox"
+                                    id="enableBackup"
+                                    checked={formData.enableBackup}
+                                    onChange={handleInputChange}
+                                />
                                 Automatic Data Backup
                             </label>
                         </div>
@@ -2287,7 +3071,15 @@ export default function SchoolProfile() {
                 )}
 
                 {activeTab !== 'finance' && (
-                    <div style={{ marginTop: 30, paddingTop: 20, borderTop: '1px solid var(--border)', display: 'flex', gap: 10 }}>
+                    <div
+                        style={{
+                            marginTop: 30,
+                            paddingTop: 20,
+                            borderTop: '1px solid var(--border)',
+                            display: 'flex',
+                            gap: 10,
+                        }}
+                    >
                         <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
                             {saving ? (
                                 <>
@@ -2304,7 +3096,6 @@ export default function SchoolProfile() {
                 )}
             </div>
 
-            {/* Admin modal — state-driven open/close */}
             <div className={`modal-overlay ${showAdminModal ? 'active' : ''}`}>
                 <div className="modal">
                     <div className="modal-header">
@@ -2316,28 +3107,42 @@ export default function SchoolProfile() {
                     <form onSubmit={handleAddAdmin}>
                         <div className="form-row">
                             <div className="form-group">
-                                <label>First Name <span className="required">*</span></label>
+                                <label>
+                                    First Name <span className="required">*</span>
+                                </label>
                                 <input type="text" name="adminFirstName" required />
                             </div>
                             <div className="form-group">
-                                <label>Last Name <span className="required">*</span></label>
+                                <label>
+                                    Last Name <span className="required">*</span>
+                                </label>
                                 <input type="text" name="adminLastName" required />
                             </div>
                         </div>
                         <div className="form-group">
-                            <label>Email <span className="required">*</span></label>
+                            <label>
+                                Email <span className="required">*</span>
+                            </label>
                             <input type="email" name="adminEmail" required />
                         </div>
                         <div className="form-group">
-                            <label>Role <span className="required">*</span></label>
+                            <label>
+                                Role <span className="required">*</span>
+                            </label>
                             <select name="adminRole" required>
                                 <option value="admin" disabled={(roleCounts.admin || 0) >= 1}>
                                     Admin ({roleCounts.admin || 0}/1)
                                 </option>
-                                <option value="headteacher" disabled={(roleCounts.headteacher || 0) >= 1}>
+                                <option
+                                    value="headteacher"
+                                    disabled={(roleCounts.headteacher || 0) >= 1}
+                                >
                                     HeadTeacher ({roleCounts.headteacher || 0}/1)
                                 </option>
-                                <option value="deputy-headteacher" disabled={(roleCounts['deputy-headteacher'] || 0) >= 2}>
+                                <option
+                                    value="deputy-headteacher"
+                                    disabled={(roleCounts['deputy-headteacher'] || 0) >= 2}
+                                >
                                     Deputy-Headteacher ({roleCounts['deputy-headteacher'] || 0}/2)
                                 </option>
                                 <option value="accountant" disabled={(roleCounts.accountant || 0) >= 2}>
@@ -2350,10 +3155,16 @@ export default function SchoolProfile() {
                             <input type="tel" name="adminPhone" />
                         </div>
                         <div className="modal-footer">
-                            <button type="button" className="btn btn-outline" onClick={() => setShowAdminModal(false)}>
+                            <button
+                                type="button"
+                                className="btn btn-outline"
+                                onClick={() => setShowAdminModal(false)}
+                            >
                                 Cancel
                             </button>
-                            <button type="submit" className="btn btn-primary">Add Admin</button>
+                            <button type="submit" className="btn btn-primary">
+                                Add Admin
+                            </button>
                         </div>
                     </form>
                 </div>
@@ -2366,25 +3177,36 @@ const disabledFieldStyle = {
     background: '#f0f0f0',
     color: '#888',
     cursor: 'not-allowed',
-    borderColor: '#ddd'
+    borderColor: '#ddd',
 };
 
 const spinnerStyle = {
-    width: 20, height: 20,
+    width: 20,
+    height: 20,
     border: '2px solid rgba(255,255,255,0.3)',
     borderTopColor: 'white',
     borderRadius: '50%',
-    animation: 'spin 1s linear infinite'
+    animation: 'spin 1s linear infinite',
 };
 
 const checkRowStyle = {
-    display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer'
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    cursor: 'pointer',
 };
 
 const cachedBannerStyle = {
-    background: '#d1ecf1', color: '#0c5460', padding: '8px 16px',
-    borderRadius: 8, marginBottom: 20, display: 'flex',
-    alignItems: 'center', gap: 10, fontSize: 13, border: '1px solid #bee5eb'
+    background: '#d1ecf1',
+    color: '#0c5460',
+    padding: '8px 16px',
+    borderRadius: 8,
+    marginBottom: 20,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    fontSize: 13,
+    border: '1px solid #bee5eb',
 };
 
 const styles = `
