@@ -17,24 +17,41 @@ import { showAppNotice } from '../utils/appNotice';
 import { AuditLogService } from '../services/auditService';
 
 // ---------------------------------------------------------------------------
-// Payment types — the shortcode/transaction-type pair depends on this choice.
+// Payment types
+//
+// PAYBILL:
+//   - BusinessShortCode (== PartyB) = the Paybill number
+//   - Passkey is for the Paybill
+//   - TransactionType = CustomerPayBillOnline
+//
+// TILL (Buy Goods):
+//   - BusinessShortCode = Store / Head Office number (NOT the till itself)
+//   - PartyB = the Till number
+//   - Passkey is for the Store / Head Office number
+//   - TransactionType = CustomerBuyGoodsOnline
+//
+// The UI therefore needs to collect BOTH the store number and the till
+// number when a school is on Till.
 // ---------------------------------------------------------------------------
 const PAYMENT_TYPES = [
     {
         value: 'paybill',
         label: 'Paybill',
+        icon: 'fa-file-invoice-dollar',
+        description: "Parents pay via the school's Paybill number",
         shortcodeLabel: 'Paybill Number',
         shortcodePlaceholder: 'e.g. 174379',
         shortcodeHelp: 'The Paybill (Business Short Code) parents pay into. 5–7 digits.',
-        transactionType: 'CustomerPayBillOnline',
     },
     {
         value: 'till',
         label: 'Till / Buy Goods',
-        shortcodeLabel: 'Till Number',
-        shortcodePlaceholder: 'e.g. 400200',
-        shortcodeHelp: 'The Buy Goods Till Number parents pay into. 5–6 digits.',
-        transactionType: 'CustomerBuyGoodsOnline',
+        icon: 'fa-cash-register',
+        description: "Parents pay at the school's Buy Goods Till",
+        shortcodeLabel: 'Store / Head Office Number',
+        shortcodePlaceholder: 'e.g. 123456',
+        shortcodeHelp:
+            'The Store / Head Office number linked to your Till. This is NOT the till number itself — it is the "parent" short code Safaricom issued for the store.',
     },
 ];
 
@@ -59,7 +76,7 @@ const DARAJA_FIELDS = [
         key: 'passkey',
         label: 'Lipa na M-Pesa Passkey',
         placeholder: 'e.g. bfb279f9...',
-        help: 'Provided by Safaricom with your Paybill/Till',
+        help: 'Provided by Safaricom with your Paybill / Till',
         secret: true,
     },
     {
@@ -115,7 +132,7 @@ async function invalidateChatbotCache({ currentUser, schoolId, prefixes = [] }) 
 }
 
 // ---------------------------------------------------------------------------
-// Cloudinary unsigned upload
+// Cloudinary unsigned upload (unchanged)
 // ---------------------------------------------------------------------------
 const CLOUDINARY_CLOUD_NAME = process.env.REACT_APP_CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_UPLOAD_PRESET = process.env.REACT_APP_CLOUDINARY_UPLOAD_PRESET;
@@ -161,7 +178,7 @@ function loadImageFromFile(file) {
 }
 
 // ---------------------------------------------------------------------------
-// Canvas-based background removal
+// Canvas-based background removal (unchanged)
 // ---------------------------------------------------------------------------
 function removeBackgroundFloodFill(canvas, options = {}) {
     const { threshold = 205, tolerance = 48, feather = true } = options;
@@ -730,8 +747,9 @@ export default function SchoolProfile() {
 
     const [darajaConfigured, setDarajaConfigured] = useState(false);
     const [darajaShortcode, setDarajaShortcode] = useState('');
+    // NEW: till number (only used when paymentType === 'till')
+    const [darajaTillNumber, setDarajaTillNumber] = useState('');
     const [darajaEnvironment, setDarajaEnvironment] = useState('sandbox');
-    // NEW: what kind of short code the school is using.
     const [darajaPaymentType, setDarajaPaymentType] = useState('paybill');
     const [darajaUpdatedAt, setDarajaUpdatedAt] = useState(null);
     const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -747,6 +765,7 @@ export default function SchoolProfile() {
             '',
         paymentType: 'paybill',
         shortcode: process.env.REACT_APP_MPESA_SHORTCODE || '',
+        tillNumber: '', // only relevant when paymentType === 'till'
         passkey: process.env.REACT_APP_MPESA_PASSKEY || '',
         initiatorName: process.env.REACT_APP_MPESA_INITIATOR_NAME || '',
         initiatorPassword: '',
@@ -861,7 +880,8 @@ export default function SchoolProfile() {
                 populateFormData(cachedSchool);
                 setDarajaConfigured(!!cachedSchool.darajaConfigured);
                 setIsReplacing(false);
-                setDarajaShortcode(cachedSchool.paybillNumber || '');
+                setDarajaShortcode(cachedSchool.paybillNumber || cachedSchool.darajaShortcode || '');
+                setDarajaTillNumber(cachedSchool.darajaTillNumber || '');
                 setDarajaPaymentType(cachedSchool.darajaPaymentType || 'paybill');
                 setDarajaEnvironment(cachedSchool.darajaEnvironment || 'sandbox');
                 setDarajaUpdatedAt(cachedSchool.darajaUpdatedAt || null);
@@ -878,7 +898,8 @@ export default function SchoolProfile() {
                     populateFormData(data);
                     setDarajaConfigured(!!data.darajaConfigured);
                     setIsReplacing(false);
-                    setDarajaShortcode(data.paybillNumber || '');
+                    setDarajaShortcode(data.paybillNumber || data.darajaShortcode || '');
+                    setDarajaTillNumber(data.darajaTillNumber || '');
                     setDarajaPaymentType(data.darajaPaymentType || 'paybill');
                     setDarajaEnvironment(data.darajaEnvironment || 'sandbox');
                     setDarajaUpdatedAt(data.darajaUpdatedAt || null);
@@ -1088,7 +1109,15 @@ export default function SchoolProfile() {
     const handleSaveDaraja = async () => {
         if (savingDaraja) return;
 
+        const paymentType = darajaForm.paymentType === 'till' ? 'till' : 'paybill';
+
+        // Required fields differ per payment type:
+        //  - Paybill: consumerKey, consumerSecret, shortcode, passkey
+        //  - Till:    consumerKey, consumerSecret, shortcode (Store/HO),
+        //             tillNumber, passkey
         const required = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
+        if (paymentType === 'till') required.push('tillNumber');
+
         for (const key of required) {
             if (!darajaForm[key]?.trim()) {
                 showNotification(`Please fill in all required fields (missing: ${key})`, 'warning');
@@ -1096,14 +1125,34 @@ export default function SchoolProfile() {
             }
         }
 
-        // Shortcode sanity check per payment type
         const trimmedShortcode = darajaForm.shortcode.trim();
+        const trimmedTillNumber = darajaForm.tillNumber?.trim() || '';
+
+        // Shortcode is always 5–7 digits (Paybill number OR Store/HO number).
         if (!/^\d{5,7}$/.test(trimmedShortcode)) {
             showNotification(
-                'Shortcode must be 5–7 digits. Double-check the Paybill/Till number.',
+                paymentType === 'till'
+                    ? 'Store / Head Office number must be 5–7 digits.'
+                    : 'Paybill number must be 5–7 digits.',
                 'warning'
             );
             return;
+        }
+
+        // Till number is 5–7 digits and MUST be different from the store number.
+        if (paymentType === 'till') {
+            if (!/^\d{5,7}$/.test(trimmedTillNumber)) {
+                showNotification('Till number must be 5–7 digits.', 'warning');
+                return;
+            }
+            if (trimmedTillNumber === trimmedShortcode) {
+                showNotification(
+                    'The Till number must be different from the Store / Head Office number. ' +
+                    'The Store number is the "parent" shortcode; the Till is where parents pay.',
+                    'warning'
+                );
+                return;
+            }
         }
 
         if (!isOnline) {
@@ -1116,31 +1165,38 @@ export default function SchoolProfile() {
             const schoolId = userData?.schoolId;
             if (!schoolId) throw new Error('No school found');
 
-            const paymentType = darajaForm.paymentType === 'till' ? 'till' : 'paybill';
-
+            // Persist to the private Daraja doc. For Paybill we explicitly
+            // clear tillNumber so a stale value can't leak into future STK
+            // pushes; for Till we store both.
+            const darajaDoc = {
+                consumerKey: darajaForm.consumerKey.trim(),
+                consumerSecret: darajaForm.consumerSecret.trim(),
+                paymentType,
+                shortcode: trimmedShortcode,
+                tillNumber: paymentType === 'till' ? trimmedTillNumber : '',
+                passkey: darajaForm.passkey.trim(),
+                initiatorName: darajaForm.initiatorName?.trim() || '',
+                initiatorPassword: darajaForm.initiatorPassword?.trim() || '',
+                callbackUrl: darajaForm.callbackUrl?.trim() || '',
+                environment: darajaForm.environment || 'sandbox',
+                updatedAt: serverTimestamp(),
+                updatedBy: currentUser?.uid || '',
+            };
             await setDoc(
                 doc(db, 'schools', schoolId, 'private', 'daraja'),
-                {
-                    consumerKey: darajaForm.consumerKey.trim(),
-                    consumerSecret: darajaForm.consumerSecret.trim(),
-                    paymentType,
-                    shortcode: trimmedShortcode,
-                    passkey: darajaForm.passkey.trim(),
-                    initiatorName: darajaForm.initiatorName?.trim() || '',
-                    initiatorPassword: darajaForm.initiatorPassword?.trim() || '',
-                    callbackUrl: darajaForm.callbackUrl?.trim() || '',
-                    environment: darajaForm.environment || 'sandbox',
-                    updatedAt: serverTimestamp(),
-                    updatedBy: currentUser?.uid || '',
-                },
+                darajaDoc,
                 { merge: true }
             );
 
+            // Public (non-secret) mirror used by the UI to render state.
             await updateDoc(doc(db, 'schools', schoolId), {
                 darajaConfigured: true,
                 darajaPaymentType: paymentType,
                 darajaEnvironment: darajaForm.environment || 'sandbox',
-                paybillNumber: trimmedShortcode,
+                darajaShortcode: trimmedShortcode,
+                darajaTillNumber: paymentType === 'till' ? trimmedTillNumber : '',
+                // Back-compat field used elsewhere in the app.
+                paybillNumber: paymentType === 'paybill' ? trimmedShortcode : '',
                 darajaUpdatedAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
             });
@@ -1155,6 +1211,7 @@ export default function SchoolProfile() {
             setIsReplacing(false);
             setDarajaPaymentType(paymentType);
             setDarajaShortcode(trimmedShortcode);
+            setDarajaTillNumber(paymentType === 'till' ? trimmedTillNumber : '');
             setDarajaEnvironment(darajaForm.environment || 'sandbox');
             setDarajaUpdatedAt(new Date().toISOString());
             setDarajaForm({
@@ -1162,6 +1219,7 @@ export default function SchoolProfile() {
                 consumerSecret: '',
                 paymentType,
                 shortcode: '',
+                tillNumber: '',
                 passkey: '',
                 initiatorName: '',
                 initiatorPassword: '',
@@ -1186,6 +1244,7 @@ export default function SchoolProfile() {
             consumerSecret: '',
             paymentType: darajaPaymentType || 'paybill',
             shortcode: darajaShortcode || '',
+            tillNumber: darajaTillNumber || '',
             passkey: '',
             initiatorName: '',
             initiatorPassword: '',
@@ -1202,7 +1261,7 @@ export default function SchoolProfile() {
     };
 
     // ============================================================
-    // Logo upload (unchanged)
+    // Logo upload
     // ============================================================
     const handleLogoUpload = () => {
         if (!isOnline) {
@@ -1241,7 +1300,7 @@ export default function SchoolProfile() {
     };
 
     // ============================================================
-    // Stamp + signature (unchanged)
+    // Stamp + signature
     // ============================================================
     const handleStampUpload = (inputRef = stampInputRef) => {
         if (!isOnline) {
@@ -1484,10 +1543,13 @@ export default function SchoolProfile() {
         const isReadOnly = isConfigured && !isReplacing;
         const isEditable = !isReadOnly;
 
-        const requiredKeys = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
-        const allRequiredFilled = requiredKeys.every((k) => (darajaForm[k] || '').trim());
+        const currentPaymentType = darajaForm.paymentType === 'till' ? 'till' : 'paybill';
+        const paymentTypeMeta = getPaymentTypeMeta(currentPaymentType);
 
-        const paymentTypeMeta = getPaymentTypeMeta(darajaForm.paymentType);
+        const requiredKeys = ['consumerKey', 'consumerSecret', 'shortcode', 'passkey'];
+        if (currentPaymentType === 'till') requiredKeys.push('tillNumber');
+
+        const allRequiredFilled = requiredKeys.every((k) => (darajaForm[k] || '').trim());
 
         const handleCancelReplace = () => {
             setIsReplacing(false);
@@ -1496,6 +1558,7 @@ export default function SchoolProfile() {
                 consumerSecret: '',
                 paymentType: darajaPaymentType || 'paybill',
                 shortcode: darajaShortcode || '',
+                tillNumber: darajaTillNumber || '',
                 passkey: '',
                 initiatorName: '',
                 initiatorPassword: '',
@@ -1534,15 +1597,30 @@ export default function SchoolProfile() {
                                     {darajaPaymentType === 'till' ? 'Till / Buy Goods' : 'Paybill'}
                                 </span>
                             </li>
-                            <li>
-                                <i className="fas fa-check-circle"></i>{' '}
-                                <span>
-                                    <strong>
-                                        {darajaPaymentType === 'till' ? 'Till Number' : 'Paybill Number'}:
-                                    </strong>{' '}
-                                    {darajaShortcode}
-                                </span>
-                            </li>
+                            {darajaPaymentType === 'till' ? (
+                                <>
+                                    <li>
+                                        <i className="fas fa-check-circle"></i>{' '}
+                                        <span>
+                                            <strong>Store / Head Office Number:</strong>{' '}
+                                            {darajaShortcode}
+                                        </span>
+                                    </li>
+                                    <li>
+                                        <i className="fas fa-check-circle"></i>{' '}
+                                        <span>
+                                            <strong>Till Number:</strong> {darajaTillNumber}
+                                        </span>
+                                    </li>
+                                </>
+                            ) : (
+                                <li>
+                                    <i className="fas fa-check-circle"></i>{' '}
+                                    <span>
+                                        <strong>Paybill Number:</strong> {darajaShortcode}
+                                    </span>
+                                </li>
+                            )}
                             <li>
                                 <i className="fas fa-check-circle"></i>{' '}
                                 <span>
@@ -1588,7 +1666,7 @@ export default function SchoolProfile() {
                     </div>
                 )}
 
-                {/* ---- Payment Type selector (NEW) ---- */}
+                {/* ---- Payment Type selector ---- */}
                 <div className="form-group" style={{ marginBottom: 18 }}>
                     <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
                         Payment Type <span className="required" style={{ color: 'var(--danger)' }}> *</span>
@@ -1596,14 +1674,19 @@ export default function SchoolProfile() {
 
                     <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                         {PAYMENT_TYPES.map((pt) => {
-                            const selected = (darajaForm.paymentType || 'paybill') === pt.value;
+                            const selected = currentPaymentType === pt.value;
                             return (
                                 <button
                                     key={pt.value}
                                     type="button"
                                     disabled={!isEditable}
                                     onClick={() =>
-                                        setDarajaForm((prev) => ({ ...prev, paymentType: pt.value }))
+                                        setDarajaForm((prev) => ({
+                                            ...prev,
+                                            paymentType: pt.value,
+                                            // Clear the irrelevant field when switching
+                                            tillNumber: pt.value === 'paybill' ? '' : prev.tillNumber,
+                                        }))
                                     }
                                     style={{
                                         flex: '1 1 180px',
@@ -1624,13 +1707,7 @@ export default function SchoolProfile() {
                                     }}
                                 >
                                     <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                        <i
-                                            className={
-                                                pt.value === 'paybill'
-                                                    ? 'fas fa-file-invoice-dollar'
-                                                    : 'fas fa-cash-register'
-                                            }
-                                        ></i>
+                                        <i className={`fas ${pt.icon}`}></i>
                                         {pt.label}
                                     </span>
                                     <span
@@ -1640,9 +1717,7 @@ export default function SchoolProfile() {
                                             color: 'var(--gray)',
                                         }}
                                     >
-                                        {pt.value === 'paybill'
-                                            ? 'Parents pay via the school\'s Paybill number'
-                                            : 'Parents pay at the school\'s Buy Goods Till'}
+                                        {pt.description}
                                     </span>
                                 </button>
                             );
@@ -1654,7 +1729,7 @@ export default function SchoolProfile() {
                     </div>
                 </div>
 
-                {/* ---- Shortcode (label changes with payment type) ---- */}
+                {/* ---- Shortcode / Store number (label changes with payment type) ---- */}
                 <div className="form-group" style={{ marginBottom: 18 }}>
                     <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
                         {paymentTypeMeta.shortcodeLabel}{' '}
@@ -1675,6 +1750,31 @@ export default function SchoolProfile() {
                         {paymentTypeMeta.shortcodeHelp}
                     </div>
                 </div>
+
+                {/* ---- Till Number (only shown for Till) ---- */}
+                {currentPaymentType === 'till' && (
+                    <div className="form-group" style={{ marginBottom: 18 }}>
+                        <label style={{ display: 'block', fontWeight: 600, marginBottom: 5 }}>
+                            Till Number{' '}
+                            <span className="required" style={{ color: 'var(--danger)' }}> *</span>
+                        </label>
+                        <input
+                            type="text"
+                            id="tillNumber"
+                            inputMode="numeric"
+                            value={darajaForm.tillNumber || ''}
+                            onChange={handleDarajaChange}
+                            placeholder={!isEditable ? '••••••••••••' : 'e.g. 400200'}
+                            disabled={!isEditable}
+                            autoComplete="new-password"
+                            style={!isEditable ? disabledFieldStyle : undefined}
+                        />
+                        <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 4 }}>
+                            The Buy Goods Till Number parents pay into. Must differ from the
+                            Store / Head Office number above. 5–7 digits.
+                        </div>
+                    </div>
+                )}
 
                 {/* ---- All other fields ---- */}
                 {DARAJA_FIELDS.map((field) => {
@@ -1744,7 +1844,7 @@ export default function SchoolProfile() {
                             disabled={savingDaraja || !isOnline || !allRequiredFilled}
                             title={
                                 !allRequiredFilled
-                                    ? 'Fill in Consumer Key, Consumer Secret, Shortcode and Passkey'
+                                    ? 'Fill in all required fields for the selected payment type'
                                     : undefined
                             }
                             style={{
