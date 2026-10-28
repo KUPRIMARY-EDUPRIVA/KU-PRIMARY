@@ -11,18 +11,6 @@ const FUNCTION_ALIASES = {
     '/.netlify/functions/': '',
 };
 
-/**
- * Build the final URL for a Netlify function.
- *
- * Accepts:
- *   'mpesa-stk-push'
- *   '/mpesa-stk-push'
- *   '/.netlify/functions/mpesa-stk-push'
- *   '/api/mpesa-stk-push'
- *
- * All of the above resolve to:
- *   `${NETLIFY_FUNCTIONS_ORIGIN}/mpesa-stk-push`
- */
 export function netlifyFunctionUrl(path) {
     const input = String(path || '').trim();
     const prefix = Object.keys(FUNCTION_ALIASES)
