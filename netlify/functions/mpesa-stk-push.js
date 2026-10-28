@@ -1,5 +1,5 @@
-const { withCors } = require('./_lib/cors');
 // netlify/functions/mpesa-stk-push.js
+const { withCors } = require('./_lib/cors');
 const axios = require('axios');
 const { initAdmin } = require('./_lib/firebaseAdmin');
 const { requireAuth } = require('./_lib/chatbotAuth');
@@ -13,6 +13,12 @@ const FEE_MANAGER_ROLES = new Set([
 const normalizeAdmissionNumber = (value) => {
     const admission = String(value || '').trim();
     return /^\d+$/.test(admission) ? admission.padStart(4, '0') : admission.toUpperCase();
+};
+
+// Daraja transaction type is derived from the school's paymentType.
+const TRANSACTION_TYPE = {
+    paybill: 'CustomerPayBillOnline',
+    till: 'CustomerBuyGoodsOnline',
 };
 
 exports.handler = async (event) => {
@@ -33,7 +39,7 @@ exports.handler = async (event) => {
 
     const {
         phoneNumber, amount, studentId, studentName, description, schoolId,
-        admissionNumber, studentClass, level, term, year, invoiceId
+        admissionNumber, studentClass, level, term, year, invoiceId,
     } = body;
 
     if (
@@ -48,7 +54,8 @@ exports.handler = async (event) => {
         || !/^[A-Za-z0-9][A-Za-z0-9/-]{0,39}$/.test(String(admissionNumber || ''))
     ) {
         return json(400, {
-            success: false, message: 'Invalid or missing phone number, student, admission number, or school.'
+            success: false,
+            message: 'Invalid or missing phone number, student, admission number, or school.',
         });
     }
 
@@ -110,8 +117,11 @@ exports.handler = async (event) => {
         ) {
             return json(400, { success: false, message: 'Student admission details do not match.' });
         }
-        const verifiedStudentName = `${verifiedStudent.firstName || ''} ${verifiedStudent.lastName || ''}`.trim()
-            || verifiedStudent.fullName || verifiedStudent.name || '';
+        const verifiedStudentName =
+            `${verifiedStudent.firstName || ''} ${verifiedStudent.lastName || ''}`.trim()
+            || verifiedStudent.fullName
+            || verifiedStudent.name
+            || '';
 
         if (invoiceId) {
             const invoiceSnap = await db.collection('invoices').doc(String(invoiceId)).get();
@@ -120,17 +130,18 @@ exports.handler = async (event) => {
                 || invoiceSnap.data().schoolId !== schoolId
                 || invoiceSnap.data().studentId !== studentId
             ) {
-                return json(400, { success: false, message: 'The selected invoice does not belong to this student and school.' });
+                return json(400, {
+                    success: false,
+                    message: 'The selected invoice does not belong to this student and school.',
+                });
             }
         }
 
-        // ---- 1. Load credentials: from school's private Daraja doc or environment variables ----
+        // ---- 1. Load credentials from the school's private Daraja doc (or env) ----
         let daraja = {};
         if (db && schoolId) {
             try {
-                const darajaDoc = await db
-                    .doc(`schools/${schoolId}/private/daraja`)
-                    .get();
+                const darajaDoc = await db.doc(`schools/${schoolId}/private/daraja`).get();
                 if (darajaDoc.exists) {
                     daraja = darajaDoc.data() || {};
                 }
@@ -140,20 +151,28 @@ exports.handler = async (event) => {
         }
 
         const consumerKey = daraja.consumerKey || process.env.MPESA_CONSUMER_KEY;
-        const consumerSecret = daraja.consumerSecret || process.env.MPESA_CONSUMER_SECRET || process.env.MPESA_SECRET_KEY;
+        const consumerSecret =
+            daraja.consumerSecret || process.env.MPESA_CONSUMER_SECRET || process.env.MPESA_SECRET_KEY;
         const shortcode = daraja.shortcode || process.env.MPESA_SHORTCODE;
         const passkey = daraja.passkey || process.env.MPESA_PASSKEY;
         const environment = daraja.environment || process.env.MPESA_ENVIRONMENT || 'sandbox';
         const schoolCallbackUrl = daraja.callbackUrl || process.env.MPESA_CALLBACK_URL;
 
+        // Payment type: paybill (default) or till. This drives the
+        // TransactionType Daraja expects.
+        const rawPaymentType = String(daraja.paymentType || 'paybill').toLowerCase();
+        const paymentType = rawPaymentType === 'till' ? 'till' : 'paybill';
+        const transactionType = TRANSACTION_TYPE[paymentType];
+
         if (!consumerKey || !consumerSecret || !shortcode || !passkey) {
             return json(400, {
                 success: false,
-                message: 'M-Pesa credentials are not configured. Please configure M-Pesa in School Settings or environment variables.'
+                message:
+                    'M-Pesa credentials are not configured. Please configure M-Pesa in School Settings or environment variables.',
             });
         }
 
-        // ---- 2. No more platform fee — the school receives the full amount ----
+        // ---- 2. Confirm the amount the school will receive (no platform fee) ----
         const totalAmount = numericAmount;
 
         // ---- 3. Normalize phone number (Safaricom expects 254XXXXXXXXX) ----
@@ -168,9 +187,10 @@ exports.handler = async (event) => {
         }
 
         // ---- 4. OAuth token ----
-        const baseUrl = environment === 'production'
-            ? 'https://api.safaricom.co.ke'
-            : 'https://sandbox.safaricom.co.ke';
+        const baseUrl =
+            environment === 'production'
+                ? 'https://api.safaricom.co.ke'
+                : 'https://sandbox.safaricom.co.ke';
 
         const auth = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
 
@@ -185,14 +205,14 @@ exports.handler = async (event) => {
             console.error('Daraja OAuth failed:', err.response?.data || err.message);
             return json(502, {
                 success: false,
-                message: 'Failed to authenticate with M-Pesa. Please try again later.'
+                message: 'Failed to authenticate with M-Pesa. Please try again later.',
             });
         }
 
         if (!accessToken) {
             return json(502, {
                 success: false,
-                message: 'M-Pesa did not return an access token.'
+                message: 'M-Pesa did not return an access token.',
             });
         }
 
@@ -204,7 +224,8 @@ exports.handler = async (event) => {
 
         const password = Buffer.from(`${shortcode}${passkey}${timestamp}`).toString('base64');
 
-        const callbackUrl = schoolCallbackUrl
+        const callbackUrl =
+            schoolCallbackUrl
             || process.env.MPESA_CALLBACK_URL
             || (process.env.URL
                 ? `${process.env.URL}/.netlify/functions/mpesa-callback`
@@ -213,20 +234,25 @@ exports.handler = async (event) => {
         const rawSchoolName = (schoolName || 'School').trim();
         const schoolFirstName = rawSchoolName.split(/\s+/)[0] || 'School';
         const cleanSchoolFirst = schoolFirstName.replace(/[^a-zA-Z0-9]/g, '');
-        const accountRef = `${admissionNumber || studentId}-${cleanSchoolFirst}`.substring(0, 12).replace(/[^a-zA-Z0-9-]/g, '');
+        const accountRef = `${admissionNumber || studentId}-${cleanSchoolFirst}`
+            .substring(0, 12)
+            .replace(/[^a-zA-Z0-9-]/g, '');
 
+        // For a till (Buy Goods) transaction Safaricom still expects both
+        // PartyA (customer) and PartyB (BusinessShortCode). The only field
+        // that changes is TransactionType.
         const payload = {
             BusinessShortCode: shortcode,
             Password: password,
             Timestamp: timestamp,
-            TransactionType: 'CustomerPayBillOnline',
+            TransactionType: transactionType,
             Amount: totalAmount,
             PartyA: formattedPhone,
             PartyB: shortcode,
             PhoneNumber: formattedPhone,
             CallBackURL: callbackUrl,
             AccountReference: accountRef,
-            TransactionDesc: description || 'School Fees Payment'
+            TransactionDesc: description || 'School Fees Payment',
         };
 
         // ---- 6. Send STK push ----
@@ -238,9 +264,9 @@ exports.handler = async (event) => {
                 {
                     headers: {
                         Authorization: `Bearer ${accessToken}`,
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
                     },
-                    timeout: 20000
+                    timeout: 20000,
                 }
             );
         } catch (err) {
@@ -250,7 +276,7 @@ exports.handler = async (event) => {
                 message:
                     err.response?.data?.errorMessage
                     || err.response?.data?.ResponseDescription
-                    || 'Failed to send STK push'
+                    || 'Failed to send STK push',
             });
         }
 
@@ -260,12 +286,11 @@ exports.handler = async (event) => {
         if (!checkoutRequestId) {
             return json(502, {
                 success: false,
-                message: 'M-Pesa did not return a CheckoutRequestID'
+                message: 'M-Pesa did not return a CheckoutRequestID',
             });
         }
 
         // ---- 7. Persist pending transaction (used by the callback) ----
-        // Written BEFORE we respond, so the chatbot's poll never misses it.
         const transactionData = {
             idempotencyKey: `MPESA_${checkoutRequestId}`,
             studentId,
@@ -283,6 +308,8 @@ exports.handler = async (event) => {
             status: 'pending',
             type: 'payment',
             paymentMethod: 'mpesa',
+            paymentType,
+            transactionType,
             checkoutRequestID: checkoutRequestId,
             merchantRequestID: merchantRequestId || '',
             shortcode,
@@ -298,8 +325,12 @@ exports.handler = async (event) => {
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
                     const batch = db.batch();
-                    const transactionRef = db.collection('fee_transactions').doc(`MPESA_${checkoutRequestId}`);
-                    const pendingRef = db.collection('mpesa_pending_transactions').doc(checkoutRequestId);
+                    const transactionRef = db
+                        .collection('fee_transactions')
+                        .doc(`MPESA_${checkoutRequestId}`);
+                    const pendingRef = db
+                        .collection('mpesa_pending_transactions')
+                        .doc(checkoutRequestId);
                     const data = {
                         ...transactionData,
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -311,7 +342,9 @@ exports.handler = async (event) => {
                     break;
                 } catch (error) {
                     persistError = error;
-                    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (2 ** attempt)));
+                    if (attempt < 2) {
+                        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+                    }
                 }
             }
             if (persistError) {
@@ -319,7 +352,8 @@ exports.handler = async (event) => {
                 return json(200, {
                     success: true,
                     trackingPersisted: false,
-                    message: 'M-Pesa accepted the request, but payment tracking could not be saved. Do not retry this payment; contact the school office with the CheckoutRequestID.',
+                    message:
+                        'M-Pesa accepted the request, but payment tracking could not be saved. Do not retry this payment; contact the school office with the CheckoutRequestID.',
                     checkoutRequestID: checkoutRequestId,
                     merchantRequestID: merchantRequestId,
                     CheckoutRequestID: checkoutRequestId,
@@ -331,7 +365,8 @@ exports.handler = async (event) => {
             return json(200, {
                 success: true,
                 trackingPersisted: false,
-                message: 'M-Pesa accepted the request, but payment tracking could not be saved. Do not retry this payment; contact the school office with the CheckoutRequestID.',
+                message:
+                    'M-Pesa accepted the request, but payment tracking could not be saved. Do not retry this payment; contact the school office with the CheckoutRequestID.',
                 checkoutRequestID: checkoutRequestId,
                 merchantRequestID: merchantRequestId,
                 CheckoutRequestID: checkoutRequestId,
@@ -340,26 +375,26 @@ exports.handler = async (event) => {
         }
 
         console.log(
-            `STK Push sent: ${checkoutRequestId} → ${studentId} (${formattedPhone}) KES ${totalAmount}`
+            `STK Push sent [${paymentType}] → ${studentId} (${formattedPhone}) KES ${totalAmount} [${checkoutRequestId}]`
         );
 
         return json(200, {
             success: true,
             message: 'STK push sent successfully',
-            // camelCase keys for the client; the old PascalCase versions
-            // are kept so any existing callers still work.
+            paymentType,
+            transactionType,
             checkoutRequestID: checkoutRequestId,
             merchantRequestID: merchantRequestId,
             CheckoutRequestID: checkoutRequestId,
             MerchantRequestID: merchantRequestId,
             ResponseCode: stkRes.data?.ResponseCode,
-            ResponseDescription: stkRes.data?.ResponseDescription
+            ResponseDescription: stkRes.data?.ResponseDescription,
         });
     } catch (err) {
         console.error('Unexpected error in mpesa-stk-push:', err);
         return json(500, {
             success: false,
-            message: 'Unexpected server error. Please try again.'
+            message: 'Unexpected server error. Please try again.',
         });
     }
 };
@@ -368,7 +403,7 @@ function json(statusCode, body) {
     return {
         statusCode,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
     };
 }
 
