@@ -1492,7 +1492,7 @@ export default function Login() {
 
                                     {!showRegister && (
                                         <div className="toggle-link" onClick={toggleRegister}>
-                                            Don't have a school account? <span>Register</span>
+                                           
                                         </div>
                                     )}
                                 </>
