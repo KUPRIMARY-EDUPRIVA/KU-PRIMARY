@@ -1349,7 +1349,13 @@ export async function downloadClassReportForms({ students, meta, subjects, term 
             subjectPapers.forEach((paper) => {
                 const p = paperScores[paper.name] || null;
                 const branchScore = p && p.score != null ? Number(p.score) : null;
-                const branchRow = [{ content: `    └ ${paper.name}`, styles: { textColor: PDF_COLORS.gray, fontStyle: 'italic' } }];
+                const branchRow = [{
+    content: `   └ ${String(paper.name || '').replace(/^%+/, '').trim()}`,
+    styles: {
+        textColor: PDF_COLORS.gray,
+        fontStyle: 'italic'
+    }
+}];
                 for (let i = 0; i < assessmentCount; i++) branchRow.push('—');
                 branchRow.push(branchScore != null ? String(branchScore) : '—', '', '', 'Branch');
                 body.push(branchRow);
