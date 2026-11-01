@@ -9,3 +9,4 @@ android/capacitor-cordova-android-plugins/
 *.jks
 *.keystore
 /SIGNED APPS/
+/.migration/
