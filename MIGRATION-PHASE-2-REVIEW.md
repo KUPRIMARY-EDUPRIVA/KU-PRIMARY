@@ -1,6 +1,6 @@
 # Phase 2 — Firestore export and data-shape review
 
-**Status:** Export and inspection only. No Supabase connection, import, schema change, or application rewrite has been performed. Firestore JSON, manifests, structural profiles, and local service configs remain under the ignored `.migration/` directory.
+**Status:** Firestore export, inspection, and approved offline hook transformation are complete. No Supabase connection, import, schema change, or application rewrite has been performed. Firestore JSON, transformed JSON, manifests, structural profiles, and local service configs remain under the ignored `.migration/` directory.
 
 ## Live collection inventories and export counts
 
@@ -70,7 +70,7 @@ RLS must be enabled on every tenant table. Policies must derive the authorized t
 1. Review the hook files in [`migration/phase-2/hooks`](migration/phase-2/hooks). They are proposals and have not been executed.
 2. Keep the two paper-configuration collections separate and apply only the student foreign-key relationships verified from the current exports; review any additional relationships before adding constraints.
 3. Implement and review an additive composite-key schema/importer. Create staging tables first; never drop/truncate tables, disable RLS, or overwrite pre-existing target data.
-4. Run hook transformations against the already-exported local JSON (not Firestore) after hook approval; compare parent and child row counts to source manifests and check every foreign key before importing.
+4. Complete: run hook transformations against the already-exported local JSON (not Firestore); compare parent counts to source manifests and check child/tenant foreign keys. Child rows are stored under the ignored `processed/` directory.
 5. Present the exact SQL/schema, table mapping, RLS policies, rollback plan, and validation commands for approval before any Supabase write.
 6. Only after approval, import in a transaction-safe, source-scoped manner and report per-table count parity.
 
@@ -80,4 +80,6 @@ The helper's `limit=0` path stopped after the first 1,000 records, and empty col
 
 `migration/phase-2/run-hooks.js` is the offline processor for the reviewed hooks. It reads only the existing ignored dumps, refuses to overwrite a prior processed output, verifies parent and student foreign keys and tenant propagation, preserves the source JSON, and publishes output only after validation. It does not initialize Firebase or connect to Supabase.
 
-Validated locally: both manifests match their respective live collection lists; all canonical JSON files parse; record counts match their manifests; source IDs are present and unique within each collection; the shared-source overlap report found no current ID collisions. All 21 per-collection hook files pass syntax-only checks and cover every live collection. No hook has been executed yet. No record values, IDs, emails, or credentials are included in this report.
+The approved offline transformation completed successfully. It produced 3,208 parent rows and 17,073 child rows across 33 child tables for KU, and 1,992 parent rows and 15,544 child rows across 37 child tables for Kiwanja. Persisted-output validation confirmed that every source document is preserved unchanged except for the added `source_project` tag, parent counts match the export manifests, every child has a resolvable parent, and every student reference resolves within its source project. The raw dumps remain unchanged.
+
+Validated locally: both manifests match their respective live collection lists; all canonical JSON files parse; record counts match their manifests; source IDs are present and unique within each collection; the shared-source overlap report found no current ID collisions; all 21 per-collection hook files pass syntax checks and cover every live collection. No record values, IDs, emails, or credentials are included in this report.
