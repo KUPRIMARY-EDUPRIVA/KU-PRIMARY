@@ -9,6 +9,7 @@ const {
   SCHOOL_ADMIN_CRUD,
   SCHOOL_MEMBER_CRUD,
   STUDENT_REFERENCE_TABLES,
+  rootCollection,
 } = require("./schema-spec");
 
 function sortChildTables() {
@@ -163,9 +164,7 @@ function generateSql() {
   FOR SELECT TO authenticated
   USING (auth_user_id = (SELECT auth.uid()));`,
     ...PARENT_TABLES.concat(Object.keys(CHILD_PARENTS)).flatMap((table) => {
-      const parent = PARENT_TABLES.includes(table)
-        ? table
-        : CHILD_PARENTS[table];
+      const parent = rootCollection(table);
       if (SCHOOL_MEMBER_CRUD.includes(parent)) {
         return [policyDdl(table, "member")];
       }
@@ -183,10 +182,8 @@ function generateSql() {
     "GRANT SELECT ON TABLE public.user_tenant_memberships TO authenticated;",
     "GRANT SELECT ON TABLE public.platform_admins TO authenticated;",
     ...PARENT_TABLES.concat(Object.keys(CHILD_PARENTS))
-      .filter((table) => {
-        const parent = PARENT_TABLES.includes(table)
-          ? table
-          : CHILD_PARENTS[table];
+      .filter(      (table) => {
+        const parent = rootCollection(table);
         return (
           SCHOOL_MEMBER_CRUD.includes(parent) ||
           SCHOOL_ADMIN_CRUD.includes(parent)

@@ -100,6 +100,7 @@ Database commands exist but were not run; each requires an explicit `--apply` or
 
 ```sh
 node migration/phase-2/apply-schema.js --apply
+node migration/phase-2/validate-schema.js --database
 node migration/phase-2/import.js --source ku --apply
 node migration/phase-2/import.js --source kiwanja --apply
 node migration/phase-2/validate-import.js --source ku --database

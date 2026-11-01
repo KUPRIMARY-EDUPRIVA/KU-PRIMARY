@@ -98,6 +98,19 @@ const CONTROL_TABLES = [
   "platform_admins",
 ];
 
+function rootCollection(table) {
+  let current = table;
+  const visited = new Set();
+  while (CHILD_PARENTS[current]) {
+    if (visited.has(current)) {
+      throw new Error(`Child-table dependency cycle at ${current}`);
+    }
+    visited.add(current);
+    current = CHILD_PARENTS[current];
+  }
+  return current;
+}
+
 module.exports = {
   CHILD_PARENTS,
   CONTROL_TABLES,
@@ -105,4 +118,5 @@ module.exports = {
   SCHOOL_ADMIN_CRUD,
   SCHOOL_MEMBER_CRUD,
   STUDENT_REFERENCE_TABLES,
+  rootCollection,
 };

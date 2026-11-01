@@ -5,6 +5,7 @@
     "generate-schema": "node generate-schema.js",
     "apply-schema": "node apply-schema.js",
     "import": "node import.js",
+    "validate-schema": "node validate-schema.js",
     "validate-import": "node validate-import.js",
     "test": "node --test"
   },

@@ -1349,6 +1349,24 @@ CREATE POLICY subject_paper_configs_nested_values_tenant_member ON public.subjec
       AND membership.source_project = subject_paper_configs_nested_values.source_project
       AND membership.school_id = subject_paper_configs_nested_values.school_id
   ));
+CREATE POLICY user_role_assignment_classes_tenant_admin ON public.user_role_assignment_classes
+  FOR ALL TO authenticated
+  USING (EXISTS (
+    SELECT 1
+    FROM public.user_tenant_memberships AS membership
+    WHERE membership.auth_user_id = (SELECT auth.uid())
+      AND membership.source_project = user_role_assignment_classes.source_project
+      AND membership.school_id = user_role_assignment_classes.school_id
+      AND membership.role = 'admin'
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1
+    FROM public.user_tenant_memberships AS membership
+    WHERE membership.auth_user_id = (SELECT auth.uid())
+      AND membership.source_project = user_role_assignment_classes.source_project
+      AND membership.school_id = user_role_assignment_classes.school_id
+      AND membership.role = 'admin'
+  ));
 CREATE POLICY user_role_assignments_tenant_admin ON public.user_role_assignments
   FOR ALL TO authenticated
   USING (EXISTS (
@@ -1489,6 +1507,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.sms_jobs_nested_values TO a
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.sms_outbox_nested_values TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.subject_paper_config_items TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.subject_paper_configs_nested_values TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.user_role_assignment_classes TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.user_role_assignments TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.user_role_scopes TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.user_roles_nested_values TO authenticated;

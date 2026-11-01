@@ -13,6 +13,7 @@ const {
 const { allTables, generateSql } = require("./generate-schema");
 const { rowValues } = require("./load-source");
 const { parseArgs } = require("./import");
+const { expectedPolicyTables, parseArgs: parseSchemaValidationArgs } = require("./validate-schema");
 
 test("schema contains all reviewed parent and child tables exactly once", () => {
   assert.equal(PARENT_TABLES.length, 21);
@@ -57,7 +58,11 @@ test("schema is additive, enables RLS, and grants only the approved collections"
   assert.match(sql, /ON UPDATE RESTRICT ON DELETE RESTRICT/);
   assert.match(sql, /_tenant_parent_fk/);
   assert.match(sql, /student_scores_student_fk/);
-  assert.equal((sql.match(/CREATE POLICY .*_tenant_/g) || []).length, 22);
+  assert.equal(
+    (sql.match(/CREATE POLICY [^\s]+_tenant_(?:member|admin) ON public\./g) || [])
+      .length,
+    22,
+  );
   assert.doesNotMatch(sql, /GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public\.students TO authenticated/);
 });
 
@@ -100,6 +105,13 @@ test("import requires an explicit source and mode", () => {
   assert.deepEqual(parseArgs(["--source", "ku", "--dry-run"]), {
     source: "ku",
     apply: false,
+  });
+
+  test("schema validation expects policies only on the approved table groups", () => {
+    assert.equal(expectedPolicyTables().size, 22);
+    assert.ok(expectedPolicyTables().has("user_roles_nested_values"));
+    assert.ok(!expectedPolicyTables().has("students"));
+    assert.throws(() => parseSchemaValidationArgs([]), /--database/);
   });
   assert.deepEqual(parseArgs(["--source", "kiwanja", "--apply"]), {
     source: "kiwanja",
