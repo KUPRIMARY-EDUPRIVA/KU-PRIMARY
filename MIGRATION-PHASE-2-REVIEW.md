@@ -65,9 +65,34 @@ Every exported non-empty collection has a `schoolId` field, with exactly one dis
 
 RLS must be enabled on every tenant table. Policies must derive the authorized tenant from a trusted authenticated-user-to-tenant membership relation, not from a client-supplied `schoolId`. The two unassigned user rows receive no tenant membership and therefore no tenant access.
 
+## Firestore rules → proposed RLS mapping
+
+The mapping below is based on the checked-in `firestore.rules`, whose global fallback denies access. It is a proposal only; no policy has been applied.
+
+| Live collection | Checked-in Firestore access | Proposed Supabase policy behavior |
+|---|---|---|
+| `schools` | Tenant members get; platform admins list/create/delete; admin/headteacher manage profile with protected fields. | Tenant-scoped select; trusted platform-admin list/create/delete; profile-manager update with protected-column checks. |
+| `users` | Self and authorized school/platform admins read; self profile updates are field-limited; admins cannot change protected role/tenant assignments; platform-admin deletion is restricted. | Self/tenant/platform reads; self-update allowlist; admin updates constrained to same tenant and unchanged role; privileged deletion mirrors managed-role restriction. |
+| `teachers` | Same-school admin or self reads; school admin creates/deletes; self updates are limited to contact/assignment fields. | Tenant-scoped reads and role-checked writes; self-update allowlist; no client role/tenant changes. |
+| `students` | School/fee/communications admins read; teachers are class-scoped; student self-read compares `studentId` to Auth UID; school admins write. | Tenant/role reads plus class-membership predicate; admin writes preserve school/admission identity. Student-self access remains denied until an explicit Auth-to-student mapping is verified. |
+| `school_timetables`, `timetable_settings` | School members read; lifecycle managers create/update; deletes denied. | Tenant-member select; manager insert/update; no delete. |
+| `mpesa_pending_transactions` | Fee managers or the matching student read; all client writes denied. | Fee-manager/verified-self read; writes only through an authenticated server webhook/function. |
+| `fee_transactions` | Fee managers or matching student read; valid idempotent inserts; only constrained void updates; deletes denied. | Role/self read; append-only inserts with idempotency checks; restricted void RPC/update; no delete. |
+| `student_balances` | Communications/fee managers or matching student read; fee manager create/update; deletes denied. | Tenant/role/self read; server or fee-manager writes; no delete. |
+| `fee_structures` | School members read; fee managers write. | Tenant-member read; fee-manager write. |
+| `fee_audit_log` | Fee managers read/append; update/delete denied. | Fee-manager select/insert; immutable after insert. |
+| `student_scores` | Communications users, teachers, or matching students read; teachers create/update; school admins delete. | Tenant/role/self read, class-aware teacher predicate; teacher writes; admin-only delete. |
+| `exams` | School members read; teachers write. | Tenant-member read; teacher write. |
+| `audit_logs` | Listed same-school roles and platform admins read; signed same-school/platform users append; update/delete denied. | Role-scoped tenant read/append; immutable after insert. |
+| `attendance`, `level_permissions`, `paper_configs`, `subject_paper_configs`, `user_roles`, `sms_jobs`, `sms_outbox` | No explicit match; the checked-in global fallback denies all client access. | Keep direct client access denied until server-side authorization or an explicitly approved role policy is defined. |
+
+The checked-in rules do not explicitly grant the seven default-denied collections above, while the React client has direct Firestore call sites for `attendance`, `level_permissions`, both paper-config collections, and `user_roles`. If these checked-in rules are deployed, those calls are denied today; if production uses different rules, the repository file is not a sufficient source of truth for migration. The `students` rules also use `studentId == request.auth.uid`, but no exported student `studentId` matched an exported user UID. These are explicit compatibility/security questions; do not broaden RLS to compensate without verifying the deployed rules and intended access.
+
+The planned policy helper uses a trusted membership row keyed by Supabase `auth.uid()`, `source_project`, and `school_id`; class-limited teacher access uses a separate membership-class relation. Platform-admin status must come from trusted claims or a server-managed table, never client input. The null-school user rows remain without membership and default-denied.
+
 ## Proposed next import plan — requires separate approval
 
-1. Review the hook files in [`migration/phase-2/hooks`](migration/phase-2/hooks). They are proposals and have not been executed.
+1. Review the hook files in [`migration/phase-2/hooks`](migration/phase-2/hooks). They have only been executed against local ignored JSON dumps; no Supabase operation was performed.
 2. Keep the two paper-configuration collections separate and apply only the student foreign-key relationships verified from the current exports; review any additional relationships before adding constraints.
 3. Implement and review an additive composite-key schema/importer. Create staging tables first; never drop/truncate tables, disable RLS, or overwrite pre-existing target data.
 4. Complete: run hook transformations against the already-exported local JSON (not Firestore); compare parent counts to source manifests and check child/tenant foreign keys. Child rows are stored under the ignored `processed/` directory.
