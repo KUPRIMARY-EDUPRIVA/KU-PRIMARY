@@ -51,6 +51,10 @@ Parent documents retain their complete original nested fields as `jsonb`; child 
 
 The hooks cover all 21 live collection names across both sources, including nested audit metadata, fee-audit actor/metadata, fee-transaction student snapshots, SMS recipient details, user permissions, and configuration maps. The original source fields remain intact as `jsonb` for lossless recovery, while the path/value child rows prevent those nested structures from being available only as opaque blobs. Firestore timestamp objects are also captured leafwise; conversion to typed `timestamptz` columns remains a separate reviewed schema decision.
 
+The exported fee, score, attendance, balance, pending-payment, and SMS student references were checked against each source's student document IDs: 23 KU references and 963 Kiwanja references matched, with no unmatched reference in these live collections. The schema proposal can therefore add composite foreign keys from these `studentId`/`studentIds` columns to `students(source_project, firestore_id)`, plus a tenant-consistency validation. The student profiles' own `studentId` business identifier is not treated as a foreign key.
+
+`paper_configs` and `subject_paper_configs` are used through distinct application APIs (query-by-level versus deterministic document lookup); they will remain separate during migration rather than being merged.
+
 ## Shared-project identity and tenant plan
 
 The selected key design is the composite primary key `(source_project, firestore_id)`, preserving each exact Firestore document ID while preventing future collisions between the distinct Firebase projects. `source_project` is the fixed value `ku` or `kiwanja`; the importer will add it to every parent row from its source manifest, including collections with no nested data. Child tables use the same composite key and foreign keys `(source_project, parent_firestore_id)` to their parent table's `(source_project, firestore_id)`. Assignment-class rows reference the composite key of the assignment child row.
@@ -64,7 +68,7 @@ RLS must be enabled on every tenant table. Policies must derive the authorized t
 ## Proposed next import plan — requires separate approval
 
 1. Review the hook files in [`migration/phase-2/hooks`](migration/phase-2/hooks). They are proposals and have not been executed.
-2. Resolve remaining relationship questions (notably whether `studentId` is always a Firestore document ID and whether `paper_configs` and `subject_paper_configs` are separate active stores).
+2. Keep the two paper-configuration collections separate and apply only the student foreign-key relationships verified from the current exports; review any additional relationships before adding constraints.
 3. Implement and review an additive composite-key schema/importer. Create staging tables first; never drop/truncate tables, disable RLS, or overwrite pre-existing target data.
 4. Run hook transformations against the already-exported local JSON (not Firestore) after hook approval; compare parent and child row counts to source manifests and check every foreign key before importing.
 5. Present the exact SQL/schema, table mapping, RLS policies, rollback plan, and validation commands for approval before any Supabase write.
