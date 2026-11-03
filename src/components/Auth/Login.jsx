@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { useSync } from '../../context/SyncContext';
 import { AuditLogService } from '../../services/auditService';
+import { signInToSupabase } from '../../services/supabaseAuth';
 import {
     authenticateWithBiometrics, getBiometricLoginStatus, isDeviceBiometricAvailable,
     enableBiometricUnlock,
@@ -677,6 +678,7 @@ export default function Login() {
             return;
         }
         setLoading(true);
+        let supabaseLinkWarning = '';
         try {
             if (!isOnline) {
                 showMessage(
@@ -696,6 +698,13 @@ export default function Login() {
                 await sendVerificationEmail(user);
                 setLoading(false);
                 return;
+            }
+
+            try {
+                await signInToSupabase(email, password);
+            } catch (supabaseError) {
+                console.warn('Supabase account linking is pending:', supabaseError);
+                supabaseLinkWarning = 'Signed in to the current app, but Supabase account linking is pending.';
             }
 
             const userData = await findUserDocument(user.uid, email);
@@ -733,7 +742,10 @@ export default function Login() {
                     setLoading(false);
                     return;
                 }
-                showMessage(`Welcome! Redirecting to dashboard...`, 'success');
+                showMessage(
+                    supabaseLinkWarning || 'Welcome! Redirecting to dashboard...',
+                    supabaseLinkWarning ? 'warning' : 'success'
+                );
                 setTimeout(() => navigateToDashboard(collection), 2000);
             } else {
                 if (isOnline) {
@@ -757,7 +769,10 @@ export default function Login() {
                     setLoading(false);
                     return;
                 }
-                showMessage('Welcome! Redirecting to dashboard...', 'success');
+                showMessage(
+                    supabaseLinkWarning || 'Welcome! Redirecting to dashboard...',
+                    supabaseLinkWarning ? 'warning' : 'success'
+                );
                 setTimeout(() => navigateToDashboard('users'), 2000);
             }
         } catch (error) {

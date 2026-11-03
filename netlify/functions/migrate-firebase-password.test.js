@@ -14,10 +14,11 @@ const validEnv = {
 };
 
 test("legacy password request validates inputs without trimming passwords", () => {
-  assert.equal(_test.validBody({ email: " user@example.test ", password: " pass " }), true);
-  assert.equal(_test.validBody({ email: " ", password: "pass" }), false);
-  assert.equal(_test.validBody({ email: "user@example.test", password: "" }), false);
-  assert.equal(_test.validBody({ email: "user@example.test", password: "x".repeat(1025) }), false);
+  assert.equal(_test.validBody({ source: "ku", email: " user@example.test ", password: " pass " }), true);
+  assert.equal(_test.validBody({ source: "other", email: "user@example.test", password: "pass" }), false);
+  assert.equal(_test.validBody({ source: "ku", email: " ", password: "pass" }), false);
+  assert.equal(_test.validBody({ source: "ku", email: "user@example.test", password: "" }), false);
+  assert.equal(_test.validBody({ source: "ku", email: "user@example.test", password: "x".repeat(1025) }), false);
   assert.equal(_test.validBody([]), false);
 });
 
@@ -36,6 +37,11 @@ test("server configuration is source-scoped and normalizes the Supabase URL", ()
     () => _test.sourceConfig({ ...validEnv, FIREBASE_SCRYPT_SIGNER_KEY: "not-base64!" }),
     /configuration/,
   );
+});
+
+test("legacy password requests cannot select a different source than the deployment", () => {
+  assert.equal(_test.sourceMatches("ku", "ku"), true);
+  assert.equal(_test.sourceMatches("kiwanja", "ku"), false);
 });
 
 test("Supabase requests carry the service key in both required headers", () => {
@@ -113,6 +119,12 @@ test("handler rejects methods and malformed requests before external calls", asy
     body: "{",
   });
   assert.equal(malformed.statusCode, 400);
+  const missingSource = await handler({
+    httpMethod: "POST",
+    headers: {},
+    body: JSON.stringify({ email: "user@example.test", password: "password" }),
+  });
+  assert.equal(missingSource.statusCode, 400);
 });
 
 test("legacy verifier accepts the firebase-scrypt test vector and rejects a wrong password", async () => {

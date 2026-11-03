@@ -69,6 +69,32 @@ Services plugin when `android/app/google-services.json` exists and notes that
 push notifications depend on it. Remove these only after their active app and
 native-plugin use has been replaced and tested.
 
+## Transitional Auth bridge
+
+The current branch adds a **staff/admin login shadow session**: after Firebase
+validates the login, the client signs into Supabase with the same credentials.
+If Supabase rejects the password as an invalid credential, the client calls
+the source-pinned Netlify migration function and retries Supabase Auth. It
+then requires a self-readable membership for the configured source before
+retaining the Supabase session. Firebase remains the app's primary identity
+for profile hydration and Firestore access. The Supabase UUID is exposed
+separately as `supabaseUserId`; it does not replace the Firebase UID.
+
+Configure these public build variables per source deployment:
+
+```text
+REACT_APP_SUPABASE_URL
+REACT_APP_SUPABASE_ANON_KEY
+REACT_APP_AUTH_MIGRATION_SOURCE=ku|kiwanja
+```
+
+The Netlify function independently pins `AUTH_MIGRATION_SOURCE` and rejects a
+request whose source does not match that deployment. The service-role key and
+Firebase scrypt parameters remain server-only. With the source variable
+unset, the transitional Supabase session is disabled and the existing
+Firebase login behavior remains unchanged. Student login, account creation,
+biometric/offline entry, and any data repository are not yet cut over.
+
 ## Remaining cutover work
 
 1. Provision/link each source-specific identity through the trusted server

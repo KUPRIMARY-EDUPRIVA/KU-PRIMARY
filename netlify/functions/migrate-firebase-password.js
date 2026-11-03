@@ -23,11 +23,16 @@ function normalizedEmail(email) {
   return typeof email === "string" ? email.trim().toLowerCase() : "";
 }
 
+function sourceMatches(requestSource, configuredSource) {
+  return requestSource === configuredSource;
+}
+
 function validBody(body) {
   return (
     body &&
     typeof body === "object" &&
     !Array.isArray(body) &&
+    ["ku", "kiwanja"].includes(body.source) &&
     typeof body.email === "string" &&
     body.email.length <= 320 &&
     normalizedEmail(body.email).includes("@") &&
@@ -268,6 +273,9 @@ async function handler(event) {
     console.error("[migrate-firebase-password] server configuration invalid");
     return response(503, { success: false, message: "Password migration is unavailable." });
   }
+  if (!sourceMatches(body.source, config.source)) {
+    return response(400, { success: false, message: "Invalid request." });
+  }
 
   const email = normalizedEmail(body.email);
   const ip = requestIp(event);
@@ -319,6 +327,7 @@ exports._test = {
   markPasswordMigrated,
   normalizedEmail,
   rateBucket,
+  sourceMatches,
   sourceConfig,
   validBody,
   validBase64Url,
