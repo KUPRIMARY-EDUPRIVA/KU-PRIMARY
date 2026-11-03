@@ -2,15 +2,15 @@
 
 **Status: active-flow inventory complete; app cutover remains blocked.** The
 user confirmed the current app is functioning and some Firebase callsites are
-dead code. Accordingly, the Phase 4 scope is now limited to flows reachable
-from the shipped router/shared providers; likely dead routes/helpers are
-excluded from migration and will remain untouched unless runtime evidence
-proves they are used. The approved preparation includes a dedicated
-source-scoped Netlify account-provisioning function. No application code,
-Firebase configuration, exports for the newly identified collections, or
-database objects were changed. Supabase Auth and Phase 2 data remain live,
-but current client grants/RLS and Phase 2 inventory are not sufficient for a
-safe app cutover.
+dead code. Accordingly, the Phase 4 scope is limited to flows reachable from
+the shipped router/shared providers; likely dead routes/helpers remain
+untouched unless runtime evidence proves they are used. The user approved a
+source-scoped Auth prerequisite; that additive schema change is applied and
+verified. The user also approved the fail-closed schema for 38 active-flow
+relations, followed by a reviewed RLS step for a 27-relation subset. The
+policies and authenticated grants are applied and verified; the other 11
+relations remain denied. No application data path or Firebase configuration
+has been switched.
 
 ## Approved scope and remaining gates
 
@@ -28,11 +28,67 @@ Schema details for future records must therefore come from app payload
 constructors and remain conservative where those constructors do not
 establish field or ID semantics.
 
-The remaining gates are: (1) complete the static app-payload contract for
-future records and resolve the documented identity/rule ambiguities; and (2)
-separate approval of the exact generated schema/RLS plan before any DDL,
-client grants, or app cutover. No permissions have been widened and no
-application flow has been partially switched.
+The remaining gates are: (1) resolve the documented identity, provisioning,
+and rule ambiguities; (2) review Phase 2 imported-table RLS separately; and
+(3) migrate and test app flows, offline queueing, and source-scoped account
+provisioning. No Phase 2 table grants were changed and no application flow
+has been partially switched.
+
+The typed schema registry and default-deny RLS plan is in
+`MIGRATION-PHASE-4-SCHEMA-PROPOSAL.md`; the policy/grant matrix is in
+`MIGRATION-PHASE-4-RLS-PLAN.md`. The typed schema for 38 relations is applied.
+The approved 27-relation policy scope has 60 policies, authenticated grants,
+and immutable-key triggers. The other 11 remain default-denied.
+
+Follow-up tracing found transfer requests are initially written without a
+single `schoolId` or verified student ID; they carry both school IDs in
+`schools[]`, then fill verification/release/admission fields through later
+workflow steps. The applied schema currently over-constrains those columns.
+A forward-only, empty-table-guarded correction in
+`migration/phase-4/transfer-contract-correction.sql` was applied and verified.
+The transfer relation remains empty and policy-free. Transfer access remains
+denied until the cross-school authorization model is resolved.
+
+## Completed Phase 4 Auth prerequisite
+
+The user approved replacing global uniqueness on
+`firebase_migration_auth_user_map` with per-source uniqueness and adding a
+source-scoped platform-admin membership relation. The additive,
+transaction-bounded script `migration/phase-4/auth-source-scope.sql` was
+applied after checking that no within-source email or Auth-ID collisions
+would violate the new constraints. It drops only the two old global indexes,
+creates `(source_project, auth_user_id)` and
+`(source_project, lower(email))` unique indexes, and adds
+`firebase_migration_platform_admin_memberships` with RLS enabled, self-read
+only for authenticated users, and server-only insert/delete grants.
+
+Post-apply verification found 62 Auth mappings and 54 tenant memberships
+(unchanged), zero rows in both the former global-admin table and the new
+source-scoped admin table, authenticated SELECT but no INSERT on the new
+relation, and only the self-read policy. No memberships or admin assignments
+were backfilled. The source-pinned legacy password migration now refuses to
+change the password when the mapped Auth identity has any mapping in another
+source, and marks completion by exact source plus Firebase UID. This prevents
+one source's legacy credential from overwriting a password already shared
+across sources.
+
+The separately approved `migration/phase-4/active-app-schema.sql` created 38
+empty typed relations, including nine source-scoped child foreign keys. The
+approved `migration/phase-4/active-app-rls.sql` then applied 60 policies to
+27 relations, authenticated grants on those 27 only, and immutable-key
+triggers on all 27. The remaining 11 relations have no client grants or
+policies. `node migration/phase-4/verify-active-app-rls.js` verified all 38
+relations have RLS enabled, all remain empty, no `anon`/`service_role` table
+access exists, six invoice checks and the control version are present, and
+the role-scoped helper allows a real same-school membership but rejects an
+unrelated school. The Auth baseline remains 62 mappings and 54 tenant
+memberships. No collection data was imported.
+
+These schema steps do not implement duplicate-account linking,
+provisioning, policy broadening, or Auth/app cutover. Future linking must
+require a verified Supabase email and proof of the second source's legacy
+password, then set the user's explicitly chosen shared password; client email
+matching alone is insufficient.
 
 ## App Firestore collection → Phase 2 mapping
 
@@ -100,6 +156,39 @@ schema/policy work: `_usage_stats`, `activities`, `allergies`,
 `sms_gateway`, `sms_history`, `sms_templates`, `student_archives`,
 `student_promotion_operations`, `student_transfers`, `term_locks`,
 `timetable_events`, `transfer_packages`, `transport_payments`, and `visits`.
+
+The active-flow trace found these client contracts (fields described as
+"form spread" remain subject to the actual form definitions, not assumed
+column lists):
+
+| Reachable flow | Observed app contract and evidence |
+|---|---|
+| `assessment_configs` | Tenant/level/class/subject-filtered reads; merge writes use school, level, class, subject, assessment type, term, deadline, creator, timestamps, and active flag. The document ID is a normalized tuple of the scope fields. `src/services/firestore.js:68-92`, `src/utils/scoreId.js:30-35`. |
+| Health records (`health_records`, `prescriptions`, `allergies`, `immunizations`, `medical_staff`) | School-filtered reads and realtime listeners. `health_records` form fields: student ID (required), visit date/type, symptoms, diagnosis, treatment, severity/status, temperature, blood pressure, weight/height, notes, referral fields and follow-up date; adds student name/class, tenant and timestamps. Numeric-looking measurements remain strings. `prescriptions`: required student, medication, dosage and frequency; optional record/route/duration/type/prescriber/date/notes. `allergies`: required student, allergen and severity; optional type/reaction/diagnosis date/notes. `immunizations`: required student, vaccine, dose and date; optional next-due/administered-by/batch/notes. `medical_staff`: required name/email/phone/role; optional qualification/license/status/notes. Each adds tenant/timestamps; form IDs are not validated against relational targets. `src/pages/HealthRecords.jsx:121-184,420-610,1235-1839`. |
+| Health reads (`visits`, `medical_inventory`) | School-filtered reads/listeners only; no write found in the routed page. `src/pages/HealthRecords.jsx:237-336`. |
+| Transportation (`buses`, `routes`, `drivers`, `assignments`, `transport_payments`, `maintenance`, `fuel_records`) | School-filtered reads/listeners. Required fields: buses (registration/model/capacity); routes (name/start/end/distance/fee); drivers (name/email/phone/license/expiry); assignments (student/route/bus/status); payments (student/route/amount); maintenance (bus/type/description); fuel (bus/amount/cost). Optional fields include each form's status, dates, notes, stops/days, pickup/dropoff and payment reference fields. Builders add tenant/timestamps; only payment amount, maintenance cost, fuel amount and cost are parsed as numbers. Other numeric-looking input values remain strings. Updates spread form plus timestamp; delete uses Firestore document ID. ID reference semantics are not validated. `src/pages/Transportation.jsx:89-168,416-609,1500-2260`. |
+| Boarding (`dormitories`, `dorm_assignments`, `dorm_patrons`, `dorm_maintenance`, `dorm_rules`, `dorm_inventory`) | Required fields: dormitory (name/code/gender/capacity); assignment (student/dorm); patron (teacher/dorm); maintenance (dorm/type/description/priority); rule (dorm/title/description); inventory (dorm/item/quantity). Optional fields include occupancy/status/location, room/bed/date, role/date, maintenance status/cost, rule priority/category, and inventory condition/check date. Create adds tenant/timestamps; capacity, inventory quantity, and maintenance cost are converted to integer/integer/number; assignments denormalize student name/class and adjust dorm occupancy/status; patrons denormalize teacher/dorm names. ID references are used as document IDs but are not validated against source records. Updates spread form plus timestamp; deletes use document IDs, with a local guard against deleting occupied dormitories. `src/pages/Boarding.jsx:104-168,393-835,1634-2253`. |
+| `discipline_records` | Tenant query, capped at 2,000, then sorted by incident date. Create uses generated ID and explicit student/document reference, denormalized identity, incident/category/severity/summary/action/follow-up, status/parent notification, recorder and timestamp fields. Updates change notification/status fields; no delete found. `src/pages/Discipline.jsx:58-80,132-230`. |
+| Inventory (`school_inventory`, `inventory_logs`) | Inventory reads are school-filtered. `school_inventory` create/update has explicit tenant, name/category/SKU, quantity/minimum, price, condition/status/location/assignee/notes and timestamps; quantity adjustments update quantity/time; delete uses document ID. `inventory_logs` has no Firestore write in the routed page (logs are local only). `src/pages/Inventory.jsx:88-99,175-300`. |
+| `archived_students` | Create copies selected student details plus `fullSnapshot`, reason, archive time and actor; list filters tenant, sorts by archive time, and restore updates the student then deletes the archive. One separate `setDoc` writer needs review with the main create path. `src/pages/Students.jsx:712-848,1125-…`. |
+| Promotion (`student_promotion_operations`, `student_archives`) | Both use deterministic SHA-256 IDs over school/student/year. Operation stores request, before/after snapshots, `changedFields[]`, actor/action/status/timestamps; archive stores a full student snapshot and reason/actor/time. Student history entries have type/decision/year/academic year/date/from-level/from-class, with target/destination/reason/notes depending on action. Rollback updates operation/archive status and timestamps rather than deleting the archive. `src/pages/StudentPromotion.jsx:62-77`, `src/services/studentPromotionService.js:29-36,76-145,268-…`. |
+| Transfers (`student_transfers`, `transfer_packages`, `notifications`) | Transfer listener uses `schools array-contains schoolId`; another lookup filters releasing/receiving school IDs and admission number. Transfer stores school IDs/names, stages/status, reason/notes, actor/timestamps and `history[]` entries (`stage`, `status`, `timestamp`, `note`, `user`). Package ID equals transfer ID and stores student document ID/object plus `scores[]` (score document ID and score fields). Admission creates a new student document and copies scores using the new student document ID, target/source school IDs, transfer ID and time, then deletes the package. Transfer notifications include school, type/title/message and transfer ID. `src/pages/Transfer.jsx:124-140,340-425,500-655,608-690,870-1005,1040-1205`. |
+| `invoices` | Deterministic scoped ID from school/student/term/year plus optional suffix. Payload includes student identity, item list (description/amount/quantity/unit price), subtotal/tax/discount/total, paid/balance, term/year/due/status/notes, an empty `payments: []`, tenant, creator and timestamps. No invoice-payment append writer was found. The invoice form's `studentIds[]` is only a UI selection list; batch submit creates one invoice per selected student and does not persist that array. Batch writes also update deterministic student balances; cancellation reconciles balances. Queries are tenant-filtered, optionally by term/year/status/student, and paginated. `src/pages/Fees.jsx:867-933`, `src/services/feeService.js:23-28,834-960`. |
+| `term_locks`, `invoice_summaries` | Point reads use a deterministic school/term/year ID. Term-lock writes include tenant, term/year, lock flag, actor and time. `invoice_summaries` is only read; the returned object has no observed field access or client writer. `src/services/feeService.js:1052-1105`, `src/context/FeeContext.jsx:392-400`. |
+| `fee_invoices` | Read-only tenant/status query in mounted navigation/platform-admin views; consumers use count only. No invoice fields, ordering, or write found. `src/components/Layout/Sidebar.jsx:145-175`, `src/pages/PlatformAdmin/SchoolDetails.jsx:160-184`. |
+| `activities`, `exam_submissions` | Dashboard reads/realtime: activities filter tenant/order timestamp/limit 5; pending submissions filter tenant/status and teacher dashboard additionally filters class/level client-side. No reachable client write found. `src/pages/Dashboard.jsx:1040-1088`, `src/pages/Teacher/Dashboard.jsx:122-…`. |
+| `notifications` | Dashboard realtime read filters tenant/unread, orders newest and limits 10. Transfer flow also creates notification records. Recipient identity is not checked by the current Firestore rules. `src/pages/Dashboard.jsx:1055-1070`, `src/pages/Transfer.jsx:…`. |
+| `sms_history`, `sms_templates`, `sms_gateway` | Mounted Communications reads history/templates by school and gateway by document ID equal to school ID. Gateway fields consumed by the client are `status`, `apiUrl`, `apiKey`, `deviceId`, and `defaultSender`; `apiKey` must remain server-only in Supabase, so the client call must be replaced with a trusted function before cutover. History write has actor/transport/recipient-kind/message/count/status/`outcomes[]` fields. Template reads consume `name`, `category`, `audience`, and `body` or `content`; mounted Communications has no template write, while writes are in unmounted legacy/BulkSMS pages. `src/pages/Communications.jsx:230-247,288-300,780-830`, `src/pages/BulkSMS.jsx:194-216`. |
+| `school_exits` | Routed service writes generated-ID exit audit rows with student/teacher identity, reason/date/notes/destination, actor and timestamp; lists filter by school then sort/slice locally. A separate routed page listens to status-bearing exit documents whose relation to the audit payload is not established. `src/services/SchoolExitService.js:60-205`, `src/pages/SchoolExit.jsx:20-55`. |
+| Timetable (`duty_rosters`, `timetable_events`) | Duty roster point read/write uses deterministic school/term/year ID and a map keyed by weekday then duty-area ID; each generated assignment contains teacher ID/initials/full name and area ID/label/start/end. Events filter by tenant/term/year; write merges title/description/location/color/days/period IDs/level/classes/teacher name/initials plus tenant/actor/time; ID is supplied or derived from school/title/time. Normalize roster entries and event `days[]`, `periodIds[]`, and `classes[]` into typed children. `src/services/timetableService.js:318-343,402-442,981-1021`, `src/pages/Timetable.jsx:650-690`. |
+| `_usage_stats` | Platform-admin dashboard reads fixed `daily_usage` and `storage` documents and updates dynamic dotted operation/date counters. This is system telemetry, not tenant CRUD; keep writes server-only unless separately reviewed. `src/pages/PlatformAdmin/Dashboard.jsx:80-100,235-350`. |
+
+Across routed features, offline writes are queued through generic
+`addToSyncQueue(collection, operation, payload)` calls. That establishes
+neither a stable Postgres document-ID mapping nor nested-child replay
+semantics; do not point the queue at Supabase until each active collection
+has an explicit, tested serializer. Realtime listeners also need to preserve
+the current cache invalidation behavior.
 
 These 10 statically referenced names are likely dead/unreachable in the
 shipped app and are excluded from Phase 4 migration scope: `communications`
@@ -230,26 +319,27 @@ be cast to UUID.
 |---|---|---|
 | Academic/configuration | `firebase_migration_assessment_configs` | Assessment config has scoped school/level/class/subject/term keys; confirm uniqueness before a compound unique constraint. The `class_summaries` helper is likely dead and excluded. |
 | Exams/activity | `firebase_migration_exam_submissions`, `firebase_migration_activities` | `exam_submissions` should FK `exam_id` to `firebase_migration_exams` only if callers store the Firestore exam document ID; FK `student_id` to the source-scoped student row only after confirming whether it is document ID or Auth UID. Activities have a school FK. Any submission answers/attachments arrays require separate children after payload review. |
-| Student lifecycle | `firebase_migration_archived_students`, `firebase_migration_student_archives`, `firebase_migration_student_promotion_operations` | Keep `archived_students` distinct from `student_archives`; their equivalence is unverified. `student_archives` has an observed `studentSnapshot` map: model a typed immutable snapshot relation/table linked to the archive and student rather than opaque JSON, but derive its typed columns from real snapshots. Both archive kinds and promotion operations need same-source student FKs after validating `studentId`; promotion operations carry school, student, academic year, status and rollback audit fields. |
-| Finance | `firebase_migration_fee_invoices`, `firebase_migration_invoices`, `firebase_migration_invoice_summaries`, `firebase_migration_term_locks` | Active collections stay distinct from imported `fee_transactions`/`student_balances`. `invoices` has observed `studentId`, `term`, `academicYear`, `total`, `status`; `items[]` written by `Fees.jsx` must become `invoice_items(invoice source, invoice id, ordinal, description, amount, typed tax/discount fields after review)`. The UI also writes `studentIds[]`; normalize to `invoice_students` with source/invoice/student FKs after checking whether each ID is a document ID. `invoice_summaries` and `term_locks` need their active payload contracts and financial RLS reviewed. `feeBalances` and `receipts` are excluded as likely dead. |
-| Messaging/communications | `firebase_migration_sms_gateway`, `firebase_migration_sms_history`, `firebase_migration_sms_templates` | Keep `sms_history` and `sms_templates` separate from imported `sms_jobs`/`sms_outbox`. Gateway config is server-only if it contains credentials; keep secret columns unavailable to app clients. `sms_queue`, `communications`, and `message_templates` are excluded as likely dead. |
-| Notifications | `firebase_migration_notifications` | School/recipient relation: FK to school; add auth-recipient link to `auth.users` only after deciding whether target IDs are Firebase UIDs, profile IDs, or emails. A notification child/audience table is needed if the source stores recipient arrays; validate actual field shape. Preserve only read/readAt update for recipients and same-school delete behavior from rules. |
+| Student lifecycle | `firebase_migration_archived_students`, `firebase_migration_student_archives`, `firebase_migration_student_promotion_operations` | Keep `archived_students` distinct from `student_archives`; their equivalence is unverified. `student_archives` stores a student snapshot map; model a typed immutable snapshot relation/table linked to the archive rather than opaque JSON, with columns based on the app's student shape. Promotion operations store before/after snapshots, `changedFields[]`, actor/action/status/timestamps; student history is also an array of typed events. Normalize both arrays to child relations, and add same-source student FKs only after validating IDs. |
+| Finance | `firebase_migration_fee_invoices`, `firebase_migration_invoices`, `firebase_migration_invoice_summaries`, `firebase_migration_term_locks` | Active collections stay distinct from imported `fee_transactions`/`student_balances`. Invoices use a deterministic school/student/term/year ID and contain student identity, item list, totals, status, due date, notes, creator and timestamps. `items[]` becomes invoice-item children. `payments` is only initialized empty and has no append writer; `studentIds[]` is UI selection state and is not persisted. The per-invoice `studentId` is the selected student's `id`; preserve it as a source Firestore document ID. `invoice_summaries` is only read and no field contract is established; term locks use a deterministic ID and store school/term/year/lock/actor/time. `feeBalances` and `receipts` are excluded as likely dead. |
+| Messaging/communications | `firebase_migration_sms_gateway`, `firebase_migration_sms_history`, `firebase_migration_sms_templates` | Keep `sms_history` and `sms_templates` separate from imported `sms_jobs`/`sms_outbox`. History stores actor/transport/recipient-kind/message/count/status and `outcomes[]`; outcomes need a typed child relation keyed by history and ordinal. Gateway config is server-only if it contains credentials; keep secret columns unavailable to app clients. `sms_queue`, `communications`, and `message_templates` are excluded as likely dead. |
+| Notifications | `firebase_migration_notifications` | School/recipient relation: FK to school; add auth-recipient link to `auth.users` only after deciding whether target IDs are Firebase UIDs, profile IDs, or emails. The exact recipient field shape is unresolved; do not assume an audience array. Preserve only read/readAt update for recipients and same-school delete behavior from rules. |
 | Discipline | `firebase_migration_discipline_records` | Typed school, student, recorded-by Auth mapping, incident date/category/severity/summary/action fields as constrained by Firestore validation. Student FK requires confirming `studentId` document-ID semantics; `recorded_by_auth_user_id` must map the source UID and match caller on insert. Append/update policy follows the discipline role rule; delete denied. |
 | Health | `firebase_migration_allergies`, `firebase_migration_health_records`, `firebase_migration_immunizations`, `firebase_migration_medical_staff`, `firebase_migration_prescriptions`, `firebase_migration_medical_inventory` | Model each as a separate school-scoped root. Patient/student FK and provider/staff FK only after source IDs are confirmed. Medication/allergy lists, vital arrays, and visit notes need typed child relations if present; exact child table names/keys require a read-only source shape profile. The Firestore rules have no `medical_inventory` match, so that app call is currently denied by the global fallback. |
 | Inventory | `firebase_migration_inventory_logs`, `firebase_migration_school_inventory` | `school_inventory` is a root item; `inventory_logs` references an item only if the source field is verified. For nested stock movements/adjustments, use one movement child per event with a parent FK and typed quantity/actor/time fields; exact field evidence is required. No explicit Firestore matches exist for these collection names. |
-| School exit/transfers | `firebase_migration_school_exits`, `firebase_migration_student_transfers`, `firebase_migration_transfer_packages` | School exit references a student; transfer references the student and source/target school; transfer package should have `transfer_package_students` junction rows if it contains multiple student IDs. Validate whether a cross-school transfer is intentionally allowed: the current Firestore rule confines a transfer row to the caller's `schoolId`, but destination tenant semantics are not described. |
+| School exit/transfers | `firebase_migration_school_exits`, `firebase_migration_student_transfers`, `firebase_migration_transfer_packages` | School exit references a student; transfer references the student and source/target school. Transfer package contains one student snapshot and `scores[]`, so model typed snapshot data and score child rows keyed by package and ordinal, with FKs after source ID semantics are confirmed. Validate whether a cross-school transfer is intentionally allowed: the current Firestore rule confines a transfer row to the caller's `schoolId`, but destination tenant semantics are not described. |
 | Boarding | `firebase_migration_dormitories`, `firebase_migration_dorm_assignments`, `firebase_migration_dorm_patrons`, `firebase_migration_dorm_maintenance`, `firebase_migration_dorm_rules`, `firebase_migration_dorm_inventory` | Proposed FKs: assignments → dormitory and student; patrons → student/guardian only if source keys establish those identities; maintenance/rules/inventory → dormitory where present. All need same-source school consistency. Any assigned-student arrays become a junction table. Keep each root separate; roles differ for maintenance (member write) versus other dorm records (school-admin write). |
 | Transport | `firebase_migration_assignments`, `firebase_migration_buses`, `firebase_migration_routes`, `firebase_migration_drivers`, `firebase_migration_fuel_records`, `firebase_migration_maintenance`, `firebase_migration_transport_payments` | Keep generic transport `assignments` separate from imported teacher/user assignment children. Proposed FKs: assignments → student, route, bus; routes → bus/driver only if fields demonstrate; fuel/maintenance → bus; payments → student and transport assignment. Transport payments preserve student self-read, school-admin write, no delete. Verify all IDs/field semantics before adding constraints. |
 | Timetable/system | `firebase_migration_duty_rosters`, `firebase_migration_timetable_events`, `firebase_migration__usage_stats` | Duty rosters/events reference school and, if observed, teacher. Timetable event recurrence/participant lists become child rows. `_usage_stats` must not inherit unconstrained client writes. `report_latest`, `report_snapshots`, callback error/orphan records, and `receipts` are excluded as likely dead or server-only. |
 | Miscellaneous | `firebase_migration_visits` | The generic loader includes `visits`, but there is no explicit domain/rule evidence to determine if this means medical visits or school visits. Confirm intended meaning before schema/FK design; do not combine it with health visit records by name alone. |
 
 The rows above propose relationship direction, not approved constraints or
-DDL. Before import, profile each collection's exported records and all
-app-side payload constructors; derive required/nullable columns, cardinality,
-source IDs, nested child tables, uniqueness, and referential integrity from
-that evidence. For an array/object not evidenced here, the concrete blocker
-is the missing source shape and identity semantics; do not guess a child
-schema or preserve it only as an ad-hoc JSON blob. Parent rows and every
+DDL. Read-only aggregate profiling already found zero source documents in
+these additional collections for both tenants, so there are no existing
+records to export/profile and no source shape to infer. Future-write columns
+and known nested cardinalities below are derived from reachable app
+constructors; unresolved fields and identity semantics remain explicit
+blockers. Do not guess a child schema or preserve a known nested relation only
+as an ad-hoc JSON blob. Parent rows and every
 child must use `(source_project, firestore_id)`-style keys and composite
 same-source foreign keys, with school consistency enforced wherever both
 records are tenant-scoped.
@@ -269,22 +359,20 @@ element/key; do not use a generic JSON path/value table or one opaque JSON
 blob as the app's relational model. Preservation-only source snapshots, if
 needed for rollback, must be separately reviewed and not exposed to clients.
 
-Proposed preparation order:
+Original preparation order and current completion:
 
-1. Produce read-only source inventories and per-collection shape profiles for
-   both Firebase projects, recording row counts, field/type presence,
-   candidate IDs, nested cardinality, and source-specific differences. Do not
-   copy personal data or credentials into the repository.
+1. Reuse the completed read-only source inventories and aggregate counts:
+   all 53 additional collection names have zero documents in each Firebase
+   source. Do not read/export document bodies solely for these empty
+   collections. Record future-write fields from reachable app constructors;
+   any shape not established there remains a blocker.
 2. Resolve names with no explicit production Firestore rule (currently
    default-denied) and the ambiguity decisions above. The app callsite alone
    does not authorize data access.
-3. Generate an additive, ownership-prefixed schema plan only for active-flow
-   collections in the reviewed scope and their reviewed normalized children.
-   All new tables
-   start with RLS enabled, no `anon`/`authenticated` grants or policies; keep
-   callback error/orphan, gateway-secret, and usage/system data server-only
-   unless separately approved. Add explicit RLS and grants only after the
-   per-role map is approved.
+3. Generate the additive ownership-prefixed schema. **Complete:** 38 empty
+   relations exist; 27 have separately approved policies and authenticated
+   grants, with the remaining 11 default-denied. Gateway secrets and
+   unresolved collections remain server-only/denied.
 4. Validate schema names, constraints, FKs, and fail-closed RLS offline;
    preflight database names/read-only catalogs only when separately
    authorized. No Phase 2 relation is altered, renamed, truncated, or
@@ -297,18 +385,20 @@ Proposed preparation order:
    unscoped document ID.
 6. Prepare offline parity tests for every parent and child relation, role
    policy tests for tenant/source/role/self boundaries, and migration dry
-   runs. Live schema apply, any row import, and subsequent RLS grants require
-   separate explicit approval.
+   runs. **Complete for the approved Phase 4 RLS scope:** static contract
+   tests, dry run, post-apply checks, and a live same-school/unrelated-school
+   helper check passed. Phase 2 grants, data imports, and app-flow cutovers
+   remain separate approvals.
 
-No phase-4 DDL, exports, imports, service-role calls, or database preflights
-were performed for this planning update.
+No Firebase documents were read/exported for this work and no application
+code or Firebase configuration was switched.
 
 ## Firestore role intents for unimported app collections
 
-All proposed active-flow relations start with RLS enabled and no client grants.
-Firestore's global fallback denies all unlisted collections. The following
-rules are the complete per-role intents found for the app-referenced names;
-they are not database policies yet.
+The relations started with RLS enabled and no client grants. Firestore's
+global fallback denies all unlisted collections. The following records the
+per-role intents found for app-referenced names and whether the reviewed
+subset is now applied in Postgres.
 
 | Collections | Existing explicit Firestore intent |
 |---|---|
@@ -376,6 +466,32 @@ and tested with source-mismatch requests.
 
 ## User decisions required before implementation/import
 
+### Decisions received
+
+- Public school registration is disabled. New school provisioning remains a
+  trusted administrative action.
+- School-admin invitations use a verified email invitation/password-setup
+  link; no administrator-set shared temporary passwords.
+- The target is one Supabase Auth identity with separately authorized
+  source-project memberships for a person present in both Firebase sources.
+  The Phase 3 Auth mapping now enforces per-source uniqueness. Linking still
+  requires proof of the second source's legacy password and resetting the
+  shared password.
+- Platform-admin authority is source-scoped, not a cross-source global
+  override. The source-scoped membership relation is applied and empty; no
+  global admin assignments were backfilled.
+- For a duplicate email across sources, require proof of the second source's
+  legacy password and a verified Supabase email, then set a new shared
+  password. Never link based on email alone. This also means a source's
+  legacy password must not silently overwrite an already shared password.
+
+The uniqueness and password-migration scope follow-up is applied. A
+source-link flow is still unimplemented; it must require an authenticated,
+email-verified Supabase user, verify the pinned source's legacy password
+server-side, record only the matching source membership, and set the
+explicitly supplied new shared password. The function must not accept source
+selection from the client.
+
 1. Resolve ambiguous identities and policy behavior before enabling an
    affected collection: teacher-list rule's
    tautological `isUser(request.auth.uid)`; whether `students.studentId` is
@@ -393,18 +509,18 @@ and tested with source-mismatch requests.
    and `student_archives`). No live rows exist in the additional collections
    to establish that they are aliases. Likely dead references remain out of
    scope.
-3. Decide whether public school registration is permitted on each source
-   deployment, the allowed admin invite mechanism, role-limit behavior,
-   account deletion/rollback semantics, and how a single Supabase email
-   identity behaves if the same email later appears in both source projects.
+3. Confirm role-limit behavior and account deletion/rollback semantics for
+   trusted school-admin provisioning. Public signup and invitation mechanism
+   are resolved above; implement neither until the profile/membership write
+   and Firebase coexistence behavior are specified.
 4. Confirm the trusted source membership/role feed for Supabase app sessions,
-   plus the controlled procedure for populating platform-admin membership.
+   plus the controlled procedure for populating source-scoped platform-admin
+   membership.
    The existing Phase 3 user map/memberships are server-only or read-self only;
-   this plan does not expose them or add client mutation grants.
-   The applied `firebase_migration_platform_admins` table is keyed only by
-   Auth UUID (not `source_project`); decide whether that global override is
-   acceptable or whether a source-scoped admin relation is required before
-   translating platform-admin rules.
+   this    plan does not expose them or add client mutation grants. The old global
+   `firebase_migration_platform_admins` table is not an authorization source;
+   the new source-scoped relation remains empty until a trusted, reviewed
+   population procedure is defined.
 
 ## Auth, profile, and offline blockers
 
