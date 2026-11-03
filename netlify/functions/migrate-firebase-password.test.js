@@ -1,0 +1,79 @@
+const assert = require("node:assert/strict");
+const test = require("node:test");
+const { _test, handler } = require("./migrate-firebase-password");
+
+const validEnv = {
+  AUTH_MIGRATION_SOURCE: "ku",
+  SUPABASE_URL: "https://example.supabase.co/",
+  SUPABASE_SERVICE_ROLE_KEY: "x".repeat(40),
+  AUTH_MIGRATION_RATE_LIMIT_SECRET: "y".repeat(32),
+  FIREBASE_SCRYPT_SIGNER_KEY: "a".repeat(44),
+  FIREBASE_SCRYPT_SALT_SEPARATOR: "Bw==",
+  FIREBASE_SCRYPT_ROUNDS: "8",
+  FIREBASE_SCRYPT_MEM_COST: "14",
+};
+
+test("legacy password request validates inputs without trimming passwords", () => {
+  assert.equal(_test.validBody({ email: " user@example.test ", password: " pass " }), true);
+  assert.equal(_test.validBody({ email: " ", password: "pass" }), false);
+  assert.equal(_test.validBody({ email: "user@example.test", password: "" }), false);
+  assert.equal(_test.validBody({ email: "user@example.test", password: "x".repeat(1025) }), false);
+  assert.equal(_test.validBody([]), false);
+});
+
+test("server configuration is source-scoped and normalizes the Supabase URL", () => {
+  assert.equal(_test.sourceConfig(validEnv).source, "ku");
+  assert.equal(_test.sourceConfig(validEnv).supabaseUrl, "https://example.supabase.co");
+  assert.throws(
+    () => _test.sourceConfig({ ...validEnv, AUTH_MIGRATION_SOURCE: "other" }),
+    /configuration/,
+  );
+  assert.throws(
+    () => _test.sourceConfig({ ...validEnv, AUTH_MIGRATION_RATE_LIMIT_SECRET: "short" }),
+    /configuration/,
+  );
+  assert.throws(
+    () => _test.sourceConfig({ ...validEnv, FIREBASE_SCRYPT_SIGNER_KEY: "not-base64!" }),
+    /configuration/,
+  );
+});
+
+test("Supabase requests carry the service key in both required headers", () => {
+  assert.deepEqual(_test.apiHeaders("service-key"), {
+    apikey: "service-key",
+    Authorization: "Bearer service-key",
+    "Content-Type": "application/json",
+  });
+});
+
+test("rate buckets are opaque and separated by source and purpose", () => {
+  const first = _test.rateBucket("s".repeat(32), "email", "ku", "user@example.test");
+  assert.equal(first.length, 64);
+  assert.ok(!first.includes("user@example.test"));
+  assert.notEqual(first, _test.rateBucket("s".repeat(32), "email", "kiwanja", "user@example.test"));
+  assert.notEqual(first, _test.rateBucket("s".repeat(32), "ip", "ku", "user@example.test"));
+});
+
+test("handler rejects methods and malformed requests before external calls", async () => {
+  const method = await handler({ httpMethod: "GET", headers: {} });
+  assert.equal(method.statusCode, 405);
+  const malformed = await handler({
+    httpMethod: "POST",
+    headers: {},
+    body: "{",
+  });
+  assert.equal(malformed.statusCode, 400);
+});
+
+test("legacy verifier accepts the firebase-scrypt test vector and rejects a wrong password", async () => {
+  const config = {
+    scrypt: {
+      memCost: 1,
+      rounds: 1,
+      saltSeparator: "separator",
+      signerKey: "superlongkey",
+    },
+  };
+  assert.equal(await _test.verifyLegacyPassword(config, "test", "salt", "PrZI5nfqjOEk"), true);
+  assert.equal(await _test.verifyLegacyPassword(config, "wrong", "salt", "PrZI5nfqjOEk"), false);
+});
