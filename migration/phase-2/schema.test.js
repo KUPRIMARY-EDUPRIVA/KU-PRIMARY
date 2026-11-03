@@ -13,13 +13,18 @@ const {
 const { allTables, generateSql } = require("./generate-schema");
 const { rowValues } = require("./load-source");
 const { parseArgs } = require("./import");
-const { expectedPolicyTables, parseArgs: parseSchemaValidationArgs } = require("./validate-schema");
+const {
+  expectedPolicyTables,
+  parseArgs: parseSchemaValidationArgs,
+} = require("./validate-schema");
+const { physicalTableName } = require("./schema-spec");
 
 test("schema contains all reviewed parent and child tables exactly once", () => {
   assert.equal(PARENT_TABLES.length, 21);
   assert.equal(Object.keys(CHILD_PARENTS).length, 42);
   assert.equal(allTables.length, 63);
   assert.equal(new Set(allTables).size, 63);
+  assert.notEqual(physicalTableName("students"), "students");
 });
 
 test("committed SQL artifacts are reproducible from the schema specification", () => {
@@ -46,24 +51,43 @@ test("schema is additive, enables RLS, and grants only the approved collections"
   assert.doesNotMatch(sql, /DISABLE ROW LEVEL SECURITY/i);
   assert.doesNotMatch(rollbackAccess, /\b(DROP|TRUNCATE)\b/i);
   for (const table of allTables) {
-    assert.match(sql, new RegExp(`ALTER TABLE public\\.${table} ENABLE ROW LEVEL SECURITY`));
+    assert.match(
+      sql,
+      new RegExp(
+        `ALTER TABLE public\\.${physicalTableName(table)} ENABLE ROW LEVEL SECURITY`,
+      ),
+    );
   }
   for (const table of [...SCHOOL_MEMBER_CRUD, ...SCHOOL_ADMIN_CRUD]) {
-    assert.match(sql, new RegExp(`CREATE POLICY ${table}_tenant_`));
-    assert.match(sql, new RegExp(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public\\.${table}`));
+    assert.match(
+      sql,
+      new RegExp(
+        `CREATE POLICY tenant_(?:member|admin) ON public\\.${physicalTableName(table)}`,
+      ),
+    );
+    assert.match(
+      sql,
+      new RegExp(
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public\\.${physicalTableName(table)}`,
+      ),
+    );
   }
   assert.match(sql, /membership\.role = 'admin'/);
   assert.match(sql, /membership\.source_project = /);
   assert.match(sql, /membership\.school_id = /);
   assert.match(sql, /ON UPDATE RESTRICT ON DELETE RESTRICT/);
-  assert.match(sql, /_tenant_parent_fk/);
-  assert.match(sql, /student_scores_student_fk/);
+  assert.match(sql, /CONSTRAINT tenant_parent_fk FOREIGN KEY/);
+  assert.match(sql, /CONSTRAINT student_fk FOREIGN KEY/);
+  assert.match(sql, /CREATE TABLE public\.firebase_migration_students/);
   assert.equal(
-    (sql.match(/CREATE POLICY [^\s]+_tenant_(?:member|admin) ON public\./g) || [])
-      .length,
+    (
+      sql.match(
+        /CREATE POLICY tenant_(?:member|admin) ON public\.firebase_migration_/g,
+      ) || []
+    ).length,
     22,
   );
-  assert.doesNotMatch(sql, /GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public\.students TO authenticated/);
+  assert.doesNotMatch(sql, /CREATE TABLE public\.students\s*\(/);
 });
 
 test("parent and child rows map to lossless database payloads", () => {
@@ -106,13 +130,6 @@ test("import requires an explicit source and mode", () => {
     source: "ku",
     apply: false,
   });
-
-  test("schema validation expects policies only on the approved table groups", () => {
-    assert.equal(expectedPolicyTables().size, 22);
-    assert.ok(expectedPolicyTables().has("user_roles_nested_values"));
-    assert.ok(!expectedPolicyTables().has("students"));
-    assert.throws(() => parseSchemaValidationArgs([]), /--database/);
-  });
   assert.deepEqual(parseArgs(["--source", "kiwanja", "--apply"]), {
     source: "kiwanja",
     apply: true,
@@ -122,4 +139,11 @@ test("import requires an explicit source and mode", () => {
     () => parseArgs(["--source", "ku", "--apply", "--dry-run"]),
     /exactly one/,
   );
+});
+
+test("schema validation expects policies only on the approved table groups", () => {
+  assert.equal(expectedPolicyTables().size, 22);
+  assert.ok(expectedPolicyTables().has("user_roles_nested_values"));
+  assert.ok(!expectedPolicyTables().has("students"));
+  assert.throws(() => parseSchemaValidationArgs([]), /--database/);
 });

@@ -8,6 +8,8 @@ const {
   PARENT_TABLES,
   SCHOOL_ADMIN_CRUD,
   SCHOOL_MEMBER_CRUD,
+  TABLE_PREFIX,
+  physicalTableName,
   rootCollection,
 } = require("./schema-spec");
 
@@ -23,6 +25,10 @@ function expectedPolicyTables() {
   );
 }
 
+function expectedPhysicalPolicyTables() {
+  return new Set([...expectedPolicyTables()].map(physicalTableName));
+}
+
 function parseArgs(args) {
   if (args.length !== 1 || args[0] !== "--database") {
     throw new Error("Usage: node validate-schema.js --database");
@@ -33,14 +39,15 @@ async function validate() {
   const client = await connectDatabase();
   try {
     const version = await client.query(
-      "SELECT value FROM public.migration_control WHERE key = $1",
+      `SELECT value FROM public.${TABLE_PREFIX}control WHERE key = $1`,
       ["phase2_schema_version"],
     );
     if (version.rowCount !== 1 || version.rows[0].value !== "1") {
       throw new Error("Phase 2 schema version 1 is missing");
     }
 
-    const relations = [...CONTROL_TABLES, ...allTables];
+    const dataTables = allTables.map(physicalTableName);
+    const relations = [...CONTROL_TABLES, ...dataTables];
     const tableResult = await client.query(
       `SELECT c.relname, c.relrowsecurity
        FROM pg_class AS c
@@ -66,13 +73,13 @@ async function validate() {
     );
     const expected = expectedPolicyTables();
     const expectedNames = new Set([
-      "user_tenant_memberships:user_tenant_memberships_select_self",
-      "platform_admins:platform_admins_select_self",
+      `${TABLE_PREFIX}user_tenant_memberships:select_self`,
+      `${TABLE_PREFIX}platform_admins:select_self`,
       ...[...expected].map((table) => {
         const type = SCHOOL_ADMIN_CRUD.includes(rootCollection(table))
           ? "admin"
           : "member";
-        return `${table}:${table}_tenant_${type}`;
+        return `${physicalTableName(table)}:tenant_${type}`;
       }),
     ]);
     const actualNames = new Set(
@@ -85,8 +92,8 @@ async function validate() {
       throw new Error("RLS policies differ from the approved Phase 2 policy set");
     }
     for (const policy of policies.rows) {
-      if (policy.tablename === "user_tenant_memberships") continue;
-      if (policy.tablename === "platform_admins") continue;
+      if (policy.tablename === `${TABLE_PREFIX}user_tenant_memberships`) continue;
+      if (policy.tablename === `${TABLE_PREFIX}platform_admins`) continue;
       if (
         !policy.qual?.includes("user_tenant_memberships") ||
         !policy.qual.includes("auth.uid()") ||
@@ -98,7 +105,13 @@ async function validate() {
       ) {
         throw new Error(`Tenant policy check failed for ${policy.tablename}`);
       }
-      const parent = rootCollection(policy.tablename);
+      const logicalTable = allTables.find(
+        (table) => physicalTableName(table) === policy.tablename,
+      );
+      if (!logicalTable) {
+        throw new Error(`Unexpected policy table ${policy.tablename}`);
+      }
+      const parent = rootCollection(logicalTable);
       if (
         SCHOOL_ADMIN_CRUD.includes(parent) &&
         !policy.qual.includes("role = 'admin'")
@@ -114,9 +127,9 @@ async function validate() {
               has_table_privilege('authenticated', format('public.%I', table_name), 'UPDATE') AS can_update,
               has_table_privilege('authenticated', format('public.%I', table_name), 'DELETE') AS can_delete
        FROM unnest($1::text[]) AS t(table_name)`,
-      [allTables],
+      [dataTables],
     );
-    const allowed = expectedPolicyTables();
+    const allowed = expectedPhysicalPolicyTables();
     for (const privilege of privileges.rows) {
       const shouldHave = allowed.has(privilege.table_name);
       if (
@@ -149,7 +162,7 @@ async function validate() {
        FROM (${allTables
          .map(
            (table) =>
-             `SELECT count(*)::bigint AS row_count FROM public."${table}"`,
+             `SELECT count(*)::bigint AS row_count FROM public."${physicalTableName(table)}"`,
          )
          .join(" UNION ALL ")}) AS table_counts`,
     );
@@ -176,4 +189,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { expectedPolicyTables, parseArgs, run, validate };
+module.exports = {
+  expectedPhysicalPolicyTables,
+  expectedPolicyTables,
+  parseArgs,
+  run,
+  validate,
+};

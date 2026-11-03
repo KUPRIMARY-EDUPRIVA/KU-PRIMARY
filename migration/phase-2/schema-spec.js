@@ -82,6 +82,8 @@ const SCHOOL_ADMIN_CRUD = [
   "user_roles",
 ];
 
+const TABLE_PREFIX = "firebase_migration_";
+
 const STUDENT_REFERENCE_TABLES = [
   "attendance_entries",
   "fee_audit_log",
@@ -93,10 +95,17 @@ const STUDENT_REFERENCE_TABLES = [
 ];
 
 const CONTROL_TABLES = [
-  "migration_control",
-  "user_tenant_memberships",
-  "platform_admins",
+  `${TABLE_PREFIX}control`,
+  `${TABLE_PREFIX}user_tenant_memberships`,
+  `${TABLE_PREFIX}platform_admins`,
 ];
+
+function physicalTableName(table) {
+  if (!PARENT_TABLES.includes(table) && !CHILD_PARENTS[table]) {
+    throw new Error(`Unknown migration table ${table}`);
+  }
+  return `${TABLE_PREFIX}${table}`;
+}
 
 function rootCollection(table) {
   let current = table;
@@ -118,5 +127,7 @@ module.exports = {
   SCHOOL_ADMIN_CRUD,
   SCHOOL_MEMBER_CRUD,
   STUDENT_REFERENCE_TABLES,
+  TABLE_PREFIX,
+  physicalTableName,
   rootCollection,
 };

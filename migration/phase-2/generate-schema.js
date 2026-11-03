@@ -9,6 +9,8 @@ const {
   SCHOOL_ADMIN_CRUD,
   SCHOOL_MEMBER_CRUD,
   STUDENT_REFERENCE_TABLES,
+  TABLE_PREFIX,
+  physicalTableName,
   rootCollection,
 } = require("./schema-spec");
 
@@ -37,7 +39,8 @@ const allTables = [
   ...PARENT_TABLES.filter((table) => table !== "students"),
   ...sortChildTables(),
 ];
-const allObjects = [...CONTROL_TABLES, ...allTables];
+const allObjects = [...CONTROL_TABLES, ...allTables.map(physicalTableName)];
+const indexNames = allTables.map((table) => `idx_fm_${table}_tenant`);
 
 function assertSpec() {
   if (new Set(PARENT_TABLES).size !== PARENT_TABLES.length) {
@@ -52,10 +55,17 @@ function assertSpec() {
   if (allObjects.length !== new Set(allObjects).size) {
     throw new Error("Duplicate migration object name");
   }
+  if (new Set(indexNames).size !== indexNames.length) {
+    throw new Error("Duplicate migration index name");
+  }
+  if (indexNames.some((name) => name.length > 63)) {
+    throw new Error("Generated PostgreSQL index identifier exceeds 63 characters");
+  }
 }
 
 function tableDdl(table) {
   const studentReference = STUDENT_REFERENCE_TABLES.includes(table);
+  const physicalName = physicalTableName(table);
   const columns = [
     "source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja'))",
     "firestore_id text NOT NULL",
@@ -63,7 +73,7 @@ function tableDdl(table) {
   ];
   const constraints = [
     "PRIMARY KEY (source_project, firestore_id)",
-    `CONSTRAINT ${table}_tenant_key UNIQUE (source_project, firestore_id, school_id)`,
+    "CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)",
   ];
 
   if (PARENT_TABLES.includes(table)) {
@@ -71,7 +81,7 @@ function tableDdl(table) {
     columns.push("document jsonb NOT NULL");
     if (studentReference) {
       constraints.push(
-        `CONSTRAINT ${table}_student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
+        `CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.${physicalTableName("students")} (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
       );
     }
   } else {
@@ -83,40 +93,41 @@ function tableDdl(table) {
       "payload jsonb NOT NULL",
     );
     constraints.push(
-      `CONSTRAINT ${table}_parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.${parent} (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
-      `CONSTRAINT ${table}_tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.${parent} (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
+      `CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.${physicalTableName(parent)} (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
+      `CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.${physicalTableName(parent)} (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
     );
     if (studentReference) {
       constraints.push(
-        `CONSTRAINT ${table}_student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
+        `CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.${physicalTableName("students")} (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT`,
       );
     }
   }
 
-  return `CREATE TABLE public.${table} (\n  ${[
+  return `CREATE TABLE public.${physicalName} (\n  ${[
     ...columns,
     ...constraints,
   ].join(",\n  ")}\n);`;
 }
 
 function membershipPredicate(table, adminOnly = false) {
+  const physicalName = physicalTableName(table);
   const conditions = [
     "membership.auth_user_id = (SELECT auth.uid())",
-    `membership.source_project = ${table}.source_project`,
-    `membership.school_id = ${table}.school_id`,
+    `membership.source_project = ${physicalName}.source_project`,
+    `membership.school_id = ${physicalName}.school_id`,
   ];
   if (adminOnly) conditions.push("membership.role = 'admin'");
   return `EXISTS (
     SELECT 1
-    FROM public.user_tenant_memberships AS membership
+    FROM public.${TABLE_PREFIX}user_tenant_memberships AS membership
     WHERE ${conditions.join("\n      AND ")}
   )`;
 }
 
 function policyDdl(table, policyType) {
   const predicate = membershipPredicate(table, policyType === "admin");
-  const prefix = `CREATE POLICY ${table}_tenant_${policyType}`;
-  return `${prefix} ON public.${table}
+  const physicalName = physicalTableName(table);
+  return `CREATE POLICY tenant_${policyType} ON public.${physicalName}
   FOR ALL TO authenticated
   USING (${predicate})
   WITH CHECK (${predicate});`;
@@ -124,7 +135,7 @@ function policyDdl(table, policyType) {
 
 function generateSql() {
   assertSpec();
-  const preflightObjects = allObjects
+  const preflightObjects = [...allObjects, ...indexNames]
     .map(
       (name) =>
         `  IF to_regclass('public.${name}') IS NOT NULL THEN\n` +
@@ -133,19 +144,19 @@ function generateSql() {
     )
     .join("\n");
   const tableStatements = [
-    `CREATE TABLE public.migration_control (
+    `CREATE TABLE public.${TABLE_PREFIX}control (
   key text PRIMARY KEY,
   value text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );`,
-    `CREATE TABLE public.user_tenant_memberships (
+    `CREATE TABLE public.${TABLE_PREFIX}user_tenant_memberships (
   auth_user_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE RESTRICT,
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
   school_id text NOT NULL,
   role text NOT NULL,
   PRIMARY KEY (auth_user_id, source_project)
 );`,
-    `CREATE TABLE public.platform_admins (
+    `CREATE TABLE public.${TABLE_PREFIX}platform_admins (
   auth_user_id uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE RESTRICT,
   created_at timestamptz NOT NULL DEFAULT now()
 );`,
@@ -155,12 +166,12 @@ function generateSql() {
     ...allObjects.map(
       (table) => `ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY;`,
     ),
-    `CREATE POLICY user_tenant_memberships_select_self
-  ON public.user_tenant_memberships
+    `CREATE POLICY select_self
+  ON public.${TABLE_PREFIX}user_tenant_memberships
   FOR SELECT TO authenticated
   USING (auth_user_id = (SELECT auth.uid()));`,
-    `CREATE POLICY platform_admins_select_self
-  ON public.platform_admins
+    `CREATE POLICY select_self
+  ON public.${TABLE_PREFIX}platform_admins
   FOR SELECT TO authenticated
   USING (auth_user_id = (SELECT auth.uid()));`,
     ...PARENT_TABLES.concat(Object.keys(CHILD_PARENTS)).flatMap((table) => {
@@ -179,10 +190,10 @@ function generateSql() {
       (table) =>
         `REVOKE ALL ON TABLE public.${table} FROM PUBLIC, anon, authenticated;`,
     ),
-    "GRANT SELECT ON TABLE public.user_tenant_memberships TO authenticated;",
-    "GRANT SELECT ON TABLE public.platform_admins TO authenticated;",
+    `GRANT SELECT ON TABLE public.${TABLE_PREFIX}user_tenant_memberships TO authenticated;`,
+    `GRANT SELECT ON TABLE public.${TABLE_PREFIX}platform_admins TO authenticated;`,
     ...PARENT_TABLES.concat(Object.keys(CHILD_PARENTS))
-      .filter(      (table) => {
+      .filter((table) => {
         const parent = rootCollection(table);
         return (
           SCHOOL_MEMBER_CRUD.includes(parent) ||
@@ -191,7 +202,7 @@ function generateSql() {
       })
       .map(
         (table) =>
-          `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.${table} TO authenticated;`,
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.${physicalTableName(table)} TO authenticated;`,
       ),
   ];
   const rollbackAccess = [
@@ -222,12 +233,12 @@ function generateSql() {
     "$migration_preflight$;",
     ...tableStatements,
     ...allTables.map(
-      (table) =>
-        `CREATE INDEX ${table}_tenant_idx ON public.${table} (source_project, school_id);`,
+      (table, index) =>
+        `CREATE INDEX ${indexNames[index]} ON public.${physicalTableName(table)} (source_project, school_id);`,
     ),
     ...rlsStatements,
     ...grantStatements,
-    "INSERT INTO public.migration_control (key, value)",
+    `INSERT INTO public.${TABLE_PREFIX}control (key, value)`,
     "VALUES ('phase2_schema_version', '1');",
     "COMMIT;",
     "",

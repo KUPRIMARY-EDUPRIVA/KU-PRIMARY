@@ -4,6 +4,7 @@ const { connectDatabase } = require("./db");
 const { allTables } = require("./generate-schema");
 const { loadSource } = require("./load-source");
 const { assertParity } = require("./import");
+const { TABLE_PREFIX } = require("./schema-spec");
 
 function parseArgs(args) {
   const sourceIndex = args.indexOf("--source");
@@ -23,7 +24,7 @@ async function validateDatabase(sourceData) {
   const client = await connectDatabase();
   try {
     const schema = await client.query(
-      "SELECT value FROM public.migration_control WHERE key = $1",
+      `SELECT value FROM public.${TABLE_PREFIX}control WHERE key = $1`,
       ["phase2_schema_version"],
     );
     if (schema.rowCount !== 1 || schema.rows[0].value !== "1") {

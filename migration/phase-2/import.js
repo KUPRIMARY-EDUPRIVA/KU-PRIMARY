@@ -3,7 +3,11 @@
 const { connectDatabase } = require("./db");
 const { allTables } = require("./generate-schema");
 const { loadSource, rowValues, sameValue } = require("./load-source");
-const { STUDENT_REFERENCE_TABLES } = require("./schema-spec");
+const {
+  STUDENT_REFERENCE_TABLES,
+  physicalTableName,
+  TABLE_PREFIX,
+} = require("./schema-spec");
 
 const BATCH_SIZE = 100;
 const PARENT_COLUMNS = [
@@ -70,7 +74,7 @@ function tableEntries(sourceData) {
 
 async function assertSchema(client) {
   const version = await client.query(
-    "SELECT value FROM public.migration_control WHERE key = $1",
+    `SELECT value FROM public.${TABLE_PREFIX}control WHERE key = $1`,
     ["phase2_schema_version"],
   );
   if (version.rowCount !== 1 || version.rows[0].value !== "1") {
@@ -101,7 +105,7 @@ async function insertRows(client, table, rows, source) {
     const quotedColumns = columns.map((column) => `"${column}"`).join(", ");
     const conflictColumns = `"source_project", "firestore_id"`;
     await client.query(
-      `INSERT INTO public."${table}" (${quotedColumns}) VALUES ${tuples.join(", ")} ` +
+      `INSERT INTO public."${physicalTableName(table)}" (${quotedColumns}) VALUES ${tuples.join(", ")} ` +
         `ON CONFLICT (${conflictColumns}) DO NOTHING`,
       params,
     );
@@ -113,7 +117,7 @@ async function verifyRows(client, table, rows, columns, source) {
   const ids = rows.map((row) => row.firestore_id);
   const result = await client.query(
     `SELECT ${columns.map((column) => `"${column}"`).join(", ")} ` +
-      `FROM public."${table}" WHERE source_project = $1 AND firestore_id = ANY($2::text[])`,
+      `FROM public."${physicalTableName(table)}" WHERE source_project = $1 AND firestore_id = ANY($2::text[])`,
     [source, ids],
   );
   const actualById = new Map(
@@ -136,7 +140,7 @@ async function verifyRows(client, table, rows, columns, source) {
 async function assertParity(client, entries, source) {
   for (const { table, expectedCount } of entries) {
     const result = await client.query(
-      `SELECT count(*)::integer AS count FROM public."${table}" WHERE source_project = $1`,
+      `SELECT count(*)::integer AS count FROM public."${physicalTableName(table)}" WHERE source_project = $1`,
       [source],
     );
     const actualCount = result.rows[0].count;
