@@ -1,6 +1,6 @@
 # Phase 3 — Auth bridge review
 
-**Status:** Auth exports and offline validation are complete. The additive Auth schema and first-login function are prepared and tested, but the schema has not been applied and no user has been imported into Supabase Auth. The exported Firebase Auth records remain in the ignored `.migration/dumps/auth/` directory with mode `0600`.
+**Status:** The approved additive Auth schema is applied and verified. The approved KU Auth import passed parity validation (49 accounts, 49 retained legacy credentials, and 43 memberships). Kiwanja Auth users have not been imported; that source still requires separate approval. The exported Firebase Auth records remain in the ignored `.migration/dumps/auth/` directory with mode `0600`.
 
 ## Export and identity validation
 
@@ -23,7 +23,7 @@ The stock migration repo's Auth scripts are not used: inspection found that its 
 
 ## Proposed additive Auth schema
 
-The proposed `migration/phase-3/auth-schema.sql` adds three public relations:
+The approved and applied `migration/phase-3/auth-schema.sql` adds three public relations:
 
 | Relation | Purpose | Client access |
 |---|---|---|
@@ -31,7 +31,7 @@ The proposed `migration/phase-3/auth-schema.sql` adds three public relations:
 | `firebase_migration_auth_credentials` | Firebase password hash and salt, retained for rollback after first login | RLS enabled; only the server-side `service_role` can read |
 | `firebase_migration_auth_rate_limits` | Opaque HMAC buckets used to rate-limit first-login attempts | RLS enabled; access through a security-definer RPC executable only by `service_role` |
 
-The script is additive, transaction-bounded, and aborts if its target relations, indexes, or function already exist. It adds a schema-version marker to the existing control table. No existing table is altered or dropped. A post-apply check will verify RLS, grants, function privileges, and that no client-readable password material exists.
+The script is additive, transaction-bounded, and aborts if its target relations, indexes, or function already exist. It adds a schema-version marker to the existing control table. No existing table is altered or dropped. Post-apply verification passed for RLS, the restricted service-role grants, function privileges, and absence of client-readable password material.
 
 ## First-login function configuration
 
@@ -52,7 +52,7 @@ Configure these independently for each Netlify deployment; `AUTH_MIGRATION_SOURC
 
 ## Validation and approval gates
 
-Offline checks:
+Validation completed:
 
 ```sh
 node --test migration/phase-3/*.test.js netlify/functions/migrate-firebase-password.test.js
@@ -62,4 +62,4 @@ node migration/phase-3/import-auth.js --source kiwanja --dry-run
 node migration/phase-3/apply-auth-schema.js --dry-run
 ```
 
-The proposed schema has not been applied. Applying it requires separate approval. KU and Kiwanja Auth imports will each require their own approval and will run as separate serializable transactions. After each import, `validate-auth-import.js --source <source> --database` checks Auth users, identities, retained legacy credentials, first-login migrations, and tenant memberships against the export.
+The 17 Phase 3/function tests, targeted ESLint, export validation, schema dry-run, and both source import dry-runs passed. The approved schema is live. KU import is complete and `validate-auth-import.js --source ku --database` passed parity checks (49 accounts, 49 retained credentials, 0 first-login migrations, 43 memberships). Supabase Auth contains only the imported KU accounts; no Kiwanja accounts have been imported. Kiwanja import still requires separate approval and will run as its own serializable transaction. After approval, `validate-auth-import.js --source kiwanja --database` will check Auth users, identities, retained legacy credentials, first-login migrations, and tenant memberships against the export.
