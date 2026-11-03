@@ -14,6 +14,7 @@
     "fast-uri": "^4.1.5",
     "firebase": "^9.22.0",
     "firebase-admin": "^11.10.1",
+    "firebase-scrypt": "^2.2.0",
     "html2canvas": "^1.4.1",
     "html2pdf.js": "^0.10.1",
     "idb": "^7.1.1",
