@@ -1,6 +1,6 @@
 # Phase 3 — Auth bridge review
 
-**Status:** The approved additive Auth schema is applied and verified. The approved KU Auth import passed parity validation (49 accounts, 49 retained legacy credentials, and 43 memberships). Kiwanja Auth users have not been imported; that source still requires separate approval. The exported Firebase Auth records remain in the ignored `.migration/dumps/auth/` directory with mode `0600`.
+**Status:** The approved additive Auth schema is applied and verified. Both separately approved Auth imports passed parity validation: KU (49 accounts, 49 retained legacy credentials, 43 memberships) and Kiwanja (13 accounts, 13 retained legacy credentials, 11 memberships). The exported Firebase Auth records remain in the ignored `.migration/dumps/auth/` directory with mode `0600`.
 
 ## Export and identity validation
 
@@ -11,7 +11,7 @@ The Firebase Admin user exports were read-only and use separate KU and Kiwanja s
 | KU | 49 | 49 | 37 | 44 | 43 | 5 | 1 |
 | Kiwanja | 13 | 13 | 4 | 12 | 11 | 1 | 1 |
 
-Every profile matched an Auth account by Firebase UID and normalized email. There were no duplicate normalized emails within or across the two sources and no overlapping Firebase UIDs. The 6 accounts with no profile and 2 profiles without a school will be imported without a tenant membership; RLS therefore denies them school data access until a trusted profile/membership is resolved. Firebase reported 12 KU and 9 Kiwanja accounts as not email-verified. Their verification state remains false; the app rewrite must retain the verification gate and provide a Supabase email-verification flow rather than silently confirming them.
+Every profile matched an Auth account by Firebase UID and normalized email. There were no duplicate normalized emails within or across the two sources and no overlapping Firebase UIDs. The 6 accounts with no profile and 2 profiles without a school were imported without a tenant membership; RLS therefore denies them school data access until a trusted profile/membership is resolved. Firebase reported 12 KU and 9 Kiwanja accounts as not email-verified. Their verification state remains false; the app rewrite must retain the verification gate and provide a Supabase email-verification flow rather than silently confirming them.
 
 ## Identity and password compatibility
 
@@ -62,4 +62,11 @@ node migration/phase-3/import-auth.js --source kiwanja --dry-run
 node migration/phase-3/apply-auth-schema.js --dry-run
 ```
 
-The 17 Phase 3/function tests, targeted ESLint, export validation, schema dry-run, and both source import dry-runs passed. The approved schema is live. KU import is complete and `validate-auth-import.js --source ku --database` passed parity checks (49 accounts, 49 retained credentials, 0 first-login migrations, 43 memberships). Supabase Auth contains only the imported KU accounts; no Kiwanja accounts have been imported. Kiwanja import still requires separate approval and will run as its own serializable transaction. After approval, `validate-auth-import.js --source kiwanja --database` will check Auth users, identities, retained legacy credentials, first-login migrations, and tenant memberships against the export.
+The 17 Phase 3/function tests, targeted ESLint, export validation, schema dry-run, and both source import dry-runs passed. The approved schema is live. Both source imports ran as separate serializable transactions and `validate-auth-import.js --source <source> --database` passed parity checks:
+
+| Source | Auth accounts | Retained legacy credentials | First-login migrations | Tenant memberships |
+|---|---:|---:|---:|---:|
+| KU | 49 | 49 | 0 | 43 |
+| Kiwanja | 13 | 13 | 0 | 11 |
+
+Supabase Auth contains 62 imported users in total. The first-login function is ready, but deploying its source-specific Netlify environment and integrating the app login fallback are Phase 4 work. A live password test requires the app integration and a Firebase-era user's actual password; no plaintext test password was available during this phase.
