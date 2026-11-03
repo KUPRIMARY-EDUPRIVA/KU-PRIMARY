@@ -40,7 +40,11 @@ const allTables = [
   ...sortChildTables(),
 ];
 const allObjects = [...CONTROL_TABLES, ...allTables.map(physicalTableName)];
-const indexNames = allTables.map((table) => `idx_fm_${table}_tenant`);
+const secondaryIndexNames = allTables.map((table) => `idx_fm_${table}_tenant`);
+const indexNames = allTables.flatMap((table, index) => [
+  `fm_tenant_${table}`,
+  secondaryIndexNames[index],
+]);
 
 function assertSpec() {
   if (new Set(PARENT_TABLES).size !== PARENT_TABLES.length) {
@@ -73,7 +77,7 @@ function tableDdl(table) {
   ];
   const constraints = [
     "PRIMARY KEY (source_project, firestore_id)",
-    "CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)",
+    `CONSTRAINT fm_tenant_${table} UNIQUE (source_project, firestore_id, school_id)`,
   ];
 
   if (PARENT_TABLES.includes(table)) {
@@ -234,7 +238,7 @@ function generateSql() {
     ...tableStatements,
     ...allTables.map(
       (table, index) =>
-        `CREATE INDEX ${indexNames[index]} ON public.${physicalTableName(table)} (source_project, school_id);`,
+        `CREATE INDEX ${secondaryIndexNames[index]} ON public.${physicalTableName(table)} (source_project, school_id);`,
     ),
     ...rlsStatements,
     ...grantStatements,

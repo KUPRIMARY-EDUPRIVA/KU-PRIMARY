@@ -25,6 +25,10 @@ test("schema contains all reviewed parent and child tables exactly once", () => 
   assert.equal(allTables.length, 63);
   assert.equal(new Set(allTables).size, 63);
   assert.notEqual(physicalTableName("students"), "students");
+  const { schemaSql } = generateSql();
+  assert.ok(allTables.every((table) =>
+    schemaSql.includes(`CONSTRAINT fm_tenant_${table} UNIQUE`),
+  ));
 });
 
 test("committed SQL artifacts are reproducible from the schema specification", () => {

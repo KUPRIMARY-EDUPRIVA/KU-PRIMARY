@@ -208,191 +208,380 @@ BEGIN
   IF to_regclass('public.firebase_migration_user_role_assignment_classes') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.firebase_migration_user_role_assignment_classes';
   END IF;
+  IF to_regclass('public.fm_tenant_students') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_students';
+  END IF;
   IF to_regclass('public.idx_fm_students_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_students_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_audit_logs') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_audit_logs';
   END IF;
   IF to_regclass('public.idx_fm_audit_logs_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_audit_logs_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_attendance') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_attendance';
+  END IF;
   IF to_regclass('public.idx_fm_attendance_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_attendance_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_exams') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_exams';
   END IF;
   IF to_regclass('public.idx_fm_exams_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_exams_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_fee_audit_log') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_audit_log';
+  END IF;
   IF to_regclass('public.idx_fm_fee_audit_log_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_audit_log_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_fee_structures') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_structures';
   END IF;
   IF to_regclass('public.idx_fm_fee_structures_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_structures_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_fee_transactions') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_transactions';
+  END IF;
   IF to_regclass('public.idx_fm_fee_transactions_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_transactions_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_level_permissions') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_level_permissions';
   END IF;
   IF to_regclass('public.idx_fm_level_permissions_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_level_permissions_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_mpesa_pending_transactions') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_mpesa_pending_transactions';
+  END IF;
   IF to_regclass('public.idx_fm_mpesa_pending_transactions_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_mpesa_pending_transactions_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_paper_configs') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_paper_configs';
   END IF;
   IF to_regclass('public.idx_fm_paper_configs_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_paper_configs_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_school_timetables') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_school_timetables';
+  END IF;
   IF to_regclass('public.idx_fm_school_timetables_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_school_timetables_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_schools') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_schools';
   END IF;
   IF to_regclass('public.idx_fm_schools_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_schools_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_sms_jobs') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_sms_jobs';
+  END IF;
   IF to_regclass('public.idx_fm_sms_jobs_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_sms_jobs_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_sms_outbox') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_sms_outbox';
   END IF;
   IF to_regclass('public.idx_fm_sms_outbox_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_sms_outbox_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_student_balances') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_student_balances';
+  END IF;
   IF to_regclass('public.idx_fm_student_balances_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_student_balances_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_student_scores') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_student_scores';
   END IF;
   IF to_regclass('public.idx_fm_student_scores_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_student_scores_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_subject_paper_configs') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_subject_paper_configs';
+  END IF;
   IF to_regclass('public.idx_fm_subject_paper_configs_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_subject_paper_configs_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_teachers') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_teachers';
   END IF;
   IF to_regclass('public.idx_fm_teachers_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_teachers_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_timetable_settings') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_timetable_settings';
+  END IF;
   IF to_regclass('public.idx_fm_timetable_settings_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_timetable_settings_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_user_roles') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_roles';
   END IF;
   IF to_regclass('public.idx_fm_user_roles_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_roles_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_users') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_users';
+  END IF;
   IF to_regclass('public.idx_fm_users_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_users_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_attendance_counts') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_attendance_counts';
   END IF;
   IF to_regclass('public.idx_fm_attendance_counts_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_attendance_counts_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_attendance_entries') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_attendance_entries';
+  END IF;
   IF to_regclass('public.idx_fm_attendance_entries_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_attendance_entries_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_attendance_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_attendance_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_attendance_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_attendance_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_audit_logs_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_audit_logs_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_audit_logs_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_audit_logs_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_exams_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_exams_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_exams_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_exams_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_fee_audit_log_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_audit_log_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_fee_audit_log_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_audit_log_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_fee_structure_items') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_structure_items';
   END IF;
   IF to_regclass('public.idx_fm_fee_structure_items_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_structure_items_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_fee_structures_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_structures_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_fee_structures_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_structures_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_fee_transactions_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_fee_transactions_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_fee_transactions_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_fee_transactions_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_level_permissions_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_level_permissions_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_level_permissions_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_level_permissions_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_mpesa_pending_transactions_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_mpesa_pending_transactions_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_mpesa_pending_transactions_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_mpesa_pending_transactions_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_paper_config_items') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_paper_config_items';
+  END IF;
   IF to_regclass('public.idx_fm_paper_config_items_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_paper_config_items_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_paper_configs_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_paper_configs_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_paper_configs_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_paper_configs_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_school_class_teachers') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_school_class_teachers';
+  END IF;
   IF to_regclass('public.idx_fm_school_class_teachers_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_school_class_teachers_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_school_custom_classes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_school_custom_classes';
   END IF;
   IF to_regclass('public.idx_fm_school_custom_classes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_school_custom_classes_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_school_subject_options') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_school_subject_options';
+  END IF;
   IF to_regclass('public.idx_fm_school_subject_options_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_school_subject_options_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_school_timetable_slots') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_school_timetable_slots';
   END IF;
   IF to_regclass('public.idx_fm_school_timetable_slots_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_school_timetable_slots_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_school_timetables_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_school_timetables_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_school_timetables_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_school_timetables_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_schools_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_schools_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_schools_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_schools_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_sms_job_students') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_sms_job_students';
+  END IF;
   IF to_regclass('public.idx_fm_sms_job_students_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_sms_job_students_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_sms_jobs_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_sms_jobs_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_sms_jobs_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_sms_jobs_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_sms_outbox_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_sms_outbox_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_sms_outbox_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_sms_outbox_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_student_balances_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_student_balances_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_student_balances_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_student_balances_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_student_score_papers') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_student_score_papers';
+  END IF;
   IF to_regclass('public.idx_fm_student_score_papers_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_student_score_papers_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_student_scores_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_student_scores_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_student_scores_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_student_scores_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_students_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_students_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_students_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_students_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_subject_paper_config_items') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_subject_paper_config_items';
   END IF;
   IF to_regclass('public.idx_fm_subject_paper_config_items_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_subject_paper_config_items_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_subject_paper_configs_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_subject_paper_configs_nested_values';
+  END IF;
   IF to_regclass('public.idx_fm_subject_paper_configs_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_subject_paper_configs_nested_values_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_teacher_assignments') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_teacher_assignments';
   END IF;
   IF to_regclass('public.idx_fm_teacher_assignments_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_teacher_assignments_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_teacher_scopes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_teacher_scopes';
+  END IF;
   IF to_regclass('public.idx_fm_teacher_scopes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_teacher_scopes_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_teachers_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_teachers_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_teachers_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_teachers_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_timetable_setting_periods') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_timetable_setting_periods';
+  END IF;
   IF to_regclass('public.idx_fm_timetable_setting_periods_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_timetable_setting_periods_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_timetable_settings_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_timetable_settings_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_timetable_settings_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_timetable_settings_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_user_assignments') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_assignments';
+  END IF;
   IF to_regclass('public.idx_fm_user_assignments_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_assignments_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_user_role_assignments') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_role_assignments';
   END IF;
   IF to_regclass('public.idx_fm_user_role_assignments_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_role_assignments_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_user_role_scopes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_role_scopes';
+  END IF;
   IF to_regclass('public.idx_fm_user_role_scopes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_role_scopes_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_user_roles_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_roles_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_user_roles_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_roles_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_user_scopes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_scopes';
+  END IF;
   IF to_regclass('public.idx_fm_user_scopes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_scopes_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_users_nested_values') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_users_nested_values';
   END IF;
   IF to_regclass('public.idx_fm_users_nested_values_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_users_nested_values_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_teacher_assignment_classes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_teacher_assignment_classes';
+  END IF;
   IF to_regclass('public.idx_fm_teacher_assignment_classes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_teacher_assignment_classes_tenant';
   END IF;
+  IF to_regclass('public.fm_tenant_user_assignment_classes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_assignment_classes';
+  END IF;
   IF to_regclass('public.idx_fm_user_assignment_classes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_assignment_classes_tenant';
+  END IF;
+  IF to_regclass('public.fm_tenant_user_role_assignment_classes') IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to overwrite existing relation public.fm_tenant_user_role_assignment_classes';
   END IF;
   IF to_regclass('public.idx_fm_user_role_assignment_classes_tenant') IS NOT NULL THEN
     RAISE EXCEPTION 'Refusing to overwrite existing relation public.idx_fm_user_role_assignment_classes_tenant';
@@ -421,7 +610,7 @@ CREATE TABLE public.firebase_migration_students (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_students UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_audit_logs (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -429,7 +618,7 @@ CREATE TABLE public.firebase_migration_audit_logs (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_audit_logs UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_attendance (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -437,7 +626,7 @@ CREATE TABLE public.firebase_migration_attendance (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_attendance UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_exams (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -445,7 +634,7 @@ CREATE TABLE public.firebase_migration_exams (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_exams UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_fee_audit_log (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -454,7 +643,7 @@ CREATE TABLE public.firebase_migration_fee_audit_log (
   student_firestore_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_fee_audit_log UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 CREATE TABLE public.firebase_migration_fee_structures (
@@ -463,7 +652,7 @@ CREATE TABLE public.firebase_migration_fee_structures (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_fee_structures UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_fee_transactions (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -472,7 +661,7 @@ CREATE TABLE public.firebase_migration_fee_transactions (
   student_firestore_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_fee_transactions UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 CREATE TABLE public.firebase_migration_level_permissions (
@@ -481,7 +670,7 @@ CREATE TABLE public.firebase_migration_level_permissions (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_level_permissions UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_mpesa_pending_transactions (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -490,7 +679,7 @@ CREATE TABLE public.firebase_migration_mpesa_pending_transactions (
   student_firestore_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_mpesa_pending_transactions UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 CREATE TABLE public.firebase_migration_paper_configs (
@@ -499,7 +688,7 @@ CREATE TABLE public.firebase_migration_paper_configs (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_paper_configs UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_school_timetables (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -507,7 +696,7 @@ CREATE TABLE public.firebase_migration_school_timetables (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_school_timetables UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_schools (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -515,7 +704,7 @@ CREATE TABLE public.firebase_migration_schools (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_schools UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_sms_jobs (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -523,7 +712,7 @@ CREATE TABLE public.firebase_migration_sms_jobs (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_sms_jobs UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_sms_outbox (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -531,7 +720,7 @@ CREATE TABLE public.firebase_migration_sms_outbox (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_sms_outbox UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_student_balances (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -540,7 +729,7 @@ CREATE TABLE public.firebase_migration_student_balances (
   student_firestore_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_student_balances UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 CREATE TABLE public.firebase_migration_student_scores (
@@ -550,7 +739,7 @@ CREATE TABLE public.firebase_migration_student_scores (
   student_firestore_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_student_scores UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 CREATE TABLE public.firebase_migration_subject_paper_configs (
@@ -559,7 +748,7 @@ CREATE TABLE public.firebase_migration_subject_paper_configs (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_subject_paper_configs UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_teachers (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -567,7 +756,7 @@ CREATE TABLE public.firebase_migration_teachers (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_teachers UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_timetable_settings (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -575,7 +764,7 @@ CREATE TABLE public.firebase_migration_timetable_settings (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_timetable_settings UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_user_roles (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -583,7 +772,7 @@ CREATE TABLE public.firebase_migration_user_roles (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_user_roles UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_users (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -591,7 +780,7 @@ CREATE TABLE public.firebase_migration_users (
   school_id text,
   document jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id)
+  CONSTRAINT fm_tenant_users UNIQUE (source_project, firestore_id, school_id)
 );
 CREATE TABLE public.firebase_migration_attendance_counts (
   source_project text NOT NULL CHECK (source_project IN ('ku', 'kiwanja')),
@@ -601,7 +790,7 @@ CREATE TABLE public.firebase_migration_attendance_counts (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_attendance_counts UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_attendance (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_attendance (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -614,7 +803,7 @@ CREATE TABLE public.firebase_migration_attendance_entries (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_attendance_entries UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_attendance (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_attendance (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
@@ -627,7 +816,7 @@ CREATE TABLE public.firebase_migration_attendance_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_attendance_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_attendance (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_attendance (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -639,7 +828,7 @@ CREATE TABLE public.firebase_migration_audit_logs_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_audit_logs_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_audit_logs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_audit_logs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -651,7 +840,7 @@ CREATE TABLE public.firebase_migration_exams_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_exams_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_exams (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_exams (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -663,7 +852,7 @@ CREATE TABLE public.firebase_migration_fee_audit_log_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_fee_audit_log_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_fee_audit_log (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_fee_audit_log (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -675,7 +864,7 @@ CREATE TABLE public.firebase_migration_fee_structure_items (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_fee_structure_items UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_fee_structures (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_fee_structures (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -687,7 +876,7 @@ CREATE TABLE public.firebase_migration_fee_structures_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_fee_structures_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_fee_structures (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_fee_structures (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -699,7 +888,7 @@ CREATE TABLE public.firebase_migration_fee_transactions_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_fee_transactions_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_fee_transactions (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_fee_transactions (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -711,7 +900,7 @@ CREATE TABLE public.firebase_migration_level_permissions_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_level_permissions_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_level_permissions (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_level_permissions (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -723,7 +912,7 @@ CREATE TABLE public.firebase_migration_mpesa_pending_transactions_nested_values 
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_mpesa_pending_transactions_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_mpesa_pending_transactions (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_mpesa_pending_transactions (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -735,7 +924,7 @@ CREATE TABLE public.firebase_migration_paper_config_items (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_paper_config_items UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_paper_configs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_paper_configs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -747,7 +936,7 @@ CREATE TABLE public.firebase_migration_paper_configs_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_paper_configs_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_paper_configs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_paper_configs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -759,7 +948,7 @@ CREATE TABLE public.firebase_migration_school_class_teachers (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_school_class_teachers UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -771,7 +960,7 @@ CREATE TABLE public.firebase_migration_school_custom_classes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_school_custom_classes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -783,7 +972,7 @@ CREATE TABLE public.firebase_migration_school_subject_options (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_school_subject_options UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -795,7 +984,7 @@ CREATE TABLE public.firebase_migration_school_timetable_slots (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_school_timetable_slots UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_school_timetables (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_school_timetables (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -807,7 +996,7 @@ CREATE TABLE public.firebase_migration_school_timetables_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_school_timetables_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_school_timetables (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_school_timetables (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -819,7 +1008,7 @@ CREATE TABLE public.firebase_migration_schools_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_schools_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_schools (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -832,7 +1021,7 @@ CREATE TABLE public.firebase_migration_sms_job_students (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_sms_job_students UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_sms_jobs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_sms_jobs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT student_fk FOREIGN KEY (source_project, student_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
@@ -845,7 +1034,7 @@ CREATE TABLE public.firebase_migration_sms_jobs_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_sms_jobs_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_sms_jobs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_sms_jobs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -857,7 +1046,7 @@ CREATE TABLE public.firebase_migration_sms_outbox_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_sms_outbox_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_sms_outbox (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_sms_outbox (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -869,7 +1058,7 @@ CREATE TABLE public.firebase_migration_student_balances_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_student_balances_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_student_balances (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_student_balances (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -881,7 +1070,7 @@ CREATE TABLE public.firebase_migration_student_score_papers (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_student_score_papers UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_student_scores (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_student_scores (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -893,7 +1082,7 @@ CREATE TABLE public.firebase_migration_student_scores_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_student_scores_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_student_scores (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_student_scores (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -905,7 +1094,7 @@ CREATE TABLE public.firebase_migration_students_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_students_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_students (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_students (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -917,7 +1106,7 @@ CREATE TABLE public.firebase_migration_subject_paper_config_items (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_subject_paper_config_items UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_subject_paper_configs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_subject_paper_configs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -929,7 +1118,7 @@ CREATE TABLE public.firebase_migration_subject_paper_configs_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_subject_paper_configs_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_subject_paper_configs (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_subject_paper_configs (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -941,7 +1130,7 @@ CREATE TABLE public.firebase_migration_teacher_assignments (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_teacher_assignments UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_teachers (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_teachers (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -953,7 +1142,7 @@ CREATE TABLE public.firebase_migration_teacher_scopes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_teacher_scopes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_teachers (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_teachers (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -965,7 +1154,7 @@ CREATE TABLE public.firebase_migration_teachers_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_teachers_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_teachers (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_teachers (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -977,7 +1166,7 @@ CREATE TABLE public.firebase_migration_timetable_setting_periods (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_timetable_setting_periods UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_timetable_settings (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_timetable_settings (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -989,7 +1178,7 @@ CREATE TABLE public.firebase_migration_timetable_settings_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_timetable_settings_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_timetable_settings (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_timetable_settings (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1001,7 +1190,7 @@ CREATE TABLE public.firebase_migration_user_assignments (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_assignments UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_users (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_users (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1013,7 +1202,7 @@ CREATE TABLE public.firebase_migration_user_role_assignments (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_role_assignments UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_user_roles (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_user_roles (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1025,7 +1214,7 @@ CREATE TABLE public.firebase_migration_user_role_scopes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_role_scopes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_user_roles (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_user_roles (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1037,7 +1226,7 @@ CREATE TABLE public.firebase_migration_user_roles_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_roles_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_user_roles (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_user_roles (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1049,7 +1238,7 @@ CREATE TABLE public.firebase_migration_user_scopes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_scopes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_users (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_users (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1061,7 +1250,7 @@ CREATE TABLE public.firebase_migration_users_nested_values (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_users_nested_values UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_users (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_users (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1073,7 +1262,7 @@ CREATE TABLE public.firebase_migration_teacher_assignment_classes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_teacher_assignment_classes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_teacher_assignments (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_teacher_assignments (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1085,7 +1274,7 @@ CREATE TABLE public.firebase_migration_user_assignment_classes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_assignment_classes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_user_assignments (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_user_assignments (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
@@ -1097,7 +1286,7 @@ CREATE TABLE public.firebase_migration_user_role_assignment_classes (
   ordinal integer NOT NULL CHECK (ordinal >= 0),
   payload jsonb NOT NULL,
   PRIMARY KEY (source_project, firestore_id),
-  CONSTRAINT tenant_key UNIQUE (source_project, firestore_id, school_id),
+  CONSTRAINT fm_tenant_user_role_assignment_classes UNIQUE (source_project, firestore_id, school_id),
   CONSTRAINT parent_fk FOREIGN KEY (source_project, parent_firestore_id) REFERENCES public.firebase_migration_user_role_assignments (source_project, firestore_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT tenant_parent_fk FOREIGN KEY (source_project, parent_firestore_id, school_id) REFERENCES public.firebase_migration_user_role_assignments (source_project, firestore_id, school_id) ON UPDATE RESTRICT ON DELETE RESTRICT
 );
