@@ -189,6 +189,23 @@ async function findCredentials(config, firebaseUid) {
   return Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
 }
 
+async function hasOtherSourceMapping(config, user) {
+  const query = new URLSearchParams({
+    select: "source_project",
+    auth_user_id: `eq.${user.auth_user_id}`,
+    source_project: `neq.${config.source}`,
+    limit: "1",
+  });
+  const rows = await fetchJson(
+    `${config.supabaseUrl}/rest/v1/firebase_migration_auth_user_map?${query}`,
+    { headers: apiHeaders(config.serviceRoleKey) },
+  );
+  if (!Array.isArray(rows)) {
+    throw new Error("Supabase returned an invalid Auth mapping response");
+  }
+  return rows.length > 0;
+}
+
 async function updateSupabasePassword(config, authUserId, password) {
   const url = `${config.supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(authUserId)}`;
   await fetchJson(url, {
@@ -201,6 +218,8 @@ async function updateSupabasePassword(config, authUserId, password) {
 async function markPasswordMigrated(config, user) {
   const query = new URLSearchParams({
     select: "auth_user_id,password_migrated_at",
+    source_project: `eq.${config.source}`,
+    firebase_uid: `eq.${user.firebase_uid}`,
     auth_user_id: `eq.${user.auth_user_id}`,
   });
   const updated = await fetchJson(
@@ -267,6 +286,9 @@ async function handler(event) {
 
     const user = await findUser(config, email);
     if (!user || user.disabled) return response(401, GENERIC_AUTH_ERROR);
+    if (await hasOtherSourceMapping(config, user)) {
+      return response(401, GENERIC_AUTH_ERROR);
+    }
     const credentials = await findCredentials(config, user.firebase_uid);
     if (!credentials) return response(401, GENERIC_AUTH_ERROR);
 
@@ -293,6 +315,8 @@ async function handler(event) {
 exports.handler = withCors(handler);
 exports._test = {
   apiHeaders,
+  hasOtherSourceMapping,
+  markPasswordMigrated,
   normalizedEmail,
   rateBucket,
   sourceConfig,

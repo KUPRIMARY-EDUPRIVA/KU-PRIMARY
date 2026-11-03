@@ -54,6 +54,56 @@ test("rate buckets are opaque and separated by source and purpose", () => {
   assert.notEqual(first, _test.rateBucket("s".repeat(32), "ip", "ku", "user@example.test"));
 });
 
+test("mapping completion is scoped to the source Firebase UID", async () => {
+  const originalFetch = global.fetch;
+  let requestUrl = "";
+  global.fetch = async (url) => {
+    requestUrl = String(url);
+    return {
+      ok: true,
+      text: async () => JSON.stringify([{
+        auth_user_id: "auth-uuid",
+        password_migrated_at: "2025-01-01T00:00:00.000Z",
+      }]),
+    };
+  };
+  try {
+    await _test.markPasswordMigrated(
+      { source: "ku", supabaseUrl: "https://example.supabase.co", serviceRoleKey: "key" },
+      { auth_user_id: "auth-uuid", firebase_uid: "firebase-uid" },
+    );
+    const query = new URL(requestUrl).searchParams;
+    assert.equal(query.get("source_project"), "eq.ku");
+    assert.equal(query.get("firebase_uid"), "eq.firebase-uid");
+    assert.equal(query.get("auth_user_id"), "eq.auth-uuid");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("legacy password migration refuses to change a password shared across sources", async () => {
+  const originalFetch = global.fetch;
+  let requestUrl = "";
+  global.fetch = async (url) => {
+    requestUrl = String(url);
+    return { ok: true, text: async () => JSON.stringify([{ source_project: "kiwanja" }]) };
+  };
+  try {
+    assert.equal(
+      await _test.hasOtherSourceMapping(
+        { source: "ku", supabaseUrl: "https://example.supabase.co", serviceRoleKey: "key" },
+        { auth_user_id: "auth-uuid" },
+      ),
+      true,
+    );
+    const query = new URL(requestUrl).searchParams;
+    assert.equal(query.get("auth_user_id"), "eq.auth-uuid");
+    assert.equal(query.get("source_project"), "neq.ku");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("handler rejects methods and malformed requests before external calls", async () => {
   const method = await handler({ httpMethod: "GET", headers: {} });
   assert.equal(method.statusCode, 405);
