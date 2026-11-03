@@ -43,7 +43,13 @@ self.addEventListener('fetch', (event) => {
     if (url.origin !== self.location.origin || request.method !== 'GET') return;
 
     if (request.mode === 'navigate') {
-        event.respondWith(fetch(request).catch(() => caches.match('/index.html')));
+        event.respondWith(fetch(request).catch(async () => {
+            const cachedPage = await caches.match('/index.html');
+            return cachedPage || new Response('You are offline. Please reconnect and try again.', {
+                status: 503,
+                headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+            });
+        }));
         return;
     }
 

@@ -125,7 +125,6 @@
     
     <!-- ✅ FAVICON & WEB APP MANIFEST -->
     <link rel="icon" type="image/png" href="/Logo.png" />
-    <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#1a237e" />
     
     <!-- ✅ FONTS & ICONS -->
@@ -144,33 +143,7 @@
 <body>
     <div id="root"></div>
     
-    <!-- ============================================ -->
-    <!-- ✅ OFFLINE-FIRST SERVICE WORKER REGISTRATION -->
-    <!-- ============================================ -->
     <script>
-        // Register Service Worker for offline support
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', function() {
-                navigator.serviceWorker.register('/service-worker.js')
-                    .then(function(registration) {
-                        console.log('✅ Service Worker registered successfully:', registration.scope);
-                        
-                        // Check for updates
-                        registration.addEventListener('updatefound', function() {
-                            const newWorker = registration.installing;
-                            newWorker.addEventListener('statechange', function() {
-                                if (newWorker.state === 'activated') {
-                                    console.log('✅ Service Worker updated');
-                                }
-                            });
-                        });
-                    })
-                    .catch(function(error) {
-                        console.log('❌ Service Worker registration failed:', error);
-                    });
-            });
-        }
-
         // Register beforeinstallprompt for PWA
         let deferredPrompt;
         window.addEventListener('beforeinstallprompt', function(e) {
