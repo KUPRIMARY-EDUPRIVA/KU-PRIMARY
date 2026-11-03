@@ -138,7 +138,7 @@ business function rather than an LLM-generated action.
   on them. Keep any still-required server integrations until their replacement
   is validated.
 
-## Current blockers and next gate
+## Current status and next phase
 
 The existing migration branch has only a transitional staff-login shadow
 session. It still signs into Firebase first; Firebase remains the app's
@@ -148,7 +148,13 @@ session to `ku`; the shared-login design must remove that app-level source
 pin. The Phase 2 relation grants, profile/session migration, provisioning,
 and data repositories still need implementation.
 
-The next step is **5A schema preparation only**: author an additive,
-transactional, tested SQL proposal and verification script; do not apply it
-until the exact DDL is reviewed and approved. No imports, data changes, new
-policies, or Firebase cutover are authorized by this planning document.
+Phase 5A has been applied after review and explicit approval. Verification
+confirmed 54 memberships and 2 schools remain, all 105 source checks now allow
+`platform`, the membership key includes `school_id`, and school IDs are
+non-null and unique. This changed schema only: no data was imported and no app
+grants, RLS policies, or Firebase cutover were added.
+
+The next phase is **5B unified Auth and school context**. It must replace the
+source-pinned shadow session with one Supabase identity and membership-based
+school selection while preserving the current app until profile hydration,
+feature repositories, RLS, and offline replay are ready for a safe cutover.

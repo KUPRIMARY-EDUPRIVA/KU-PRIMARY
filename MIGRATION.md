@@ -2,11 +2,11 @@
 
 ## Current status
 
-The database preparation is complete for the reviewed Phase 4 schema and RLS
-scope, but the application has **not** been cut over. The production app must
-continue using Firebase until Supabase Auth provisioning, profile/session
-hydration, each feature's data access, and offline behavior are migrated and
-validated together.
+The reviewed Phase 4 schema/RLS and additive Phase 5A shared-tenant schema
+have been applied, but the application has **not** been cut over. The
+production app must continue using Firebase until Supabase Auth provisioning,
+profile/session hydration, each feature's data access, and offline behavior
+are migrated and validated together.
 
 This repository is a **Create React App application wrapped with Capacitor**,
 not a Dart/Flutter application. There is no `pubspec.yaml` or Flutter
@@ -28,6 +28,12 @@ not a Dart/Flutter application. There is no `pubspec.yaml` or Flutter
   below remain default-denied.
 - Phase 4 relations remain empty; this is schema preparation, not a transfer
   of app data. Firebase remains the app's active backend.
+- Phase 5A added the `platform` provenance value, changed tenant memberships
+  to the `(auth_user_id, source_project, school_id)` key, and enforced
+  non-null, globally unique school IDs. Post-apply verification found 54
+  memberships, 2 schools, 105 platform-aware provenance checks, and the
+  recorded Phase 5A schema version. No rows were imported and no grants or
+  policies were added.
 
 ## Phase 4 relations still default-denied
 
