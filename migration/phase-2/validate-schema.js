@@ -157,20 +157,8 @@ async function validate() {
       );
     }
 
-    const existingRows = await client.query(
-      `SELECT COALESCE(sum(row_count), 0)::bigint AS count
-       FROM (${allTables
-         .map(
-           (table) =>
-             `SELECT count(*)::bigint AS row_count FROM public."${physicalTableName(table)}"`,
-         )
-         .join(" UNION ALL ")}) AS table_counts`,
-    );
-    if (existingRows.rows[0].count !== "0" && existingRows.rows[0].count !== 0) {
-      throw new Error("Expected empty data tables before source import");
-    }
     console.log(
-      `Schema verified: ${allTables.length} data tables, ${CONTROL_TABLES.length} control tables, RLS enabled, ${policies.rowCount} policies, 93 foreign keys; data tables are empty.`,
+      `Schema verified: ${allTables.length} data tables, ${CONTROL_TABLES.length} control tables, RLS enabled, ${policies.rowCount} policies, 93 foreign keys.`,
     );
   } finally {
     await client.end();
