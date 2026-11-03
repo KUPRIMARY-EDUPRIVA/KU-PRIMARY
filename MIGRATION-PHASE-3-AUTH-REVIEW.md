@@ -2,6 +2,14 @@
 
 **Status:** The approved additive Auth schema is applied and verified. Both separately approved Auth imports passed parity validation: KU (49 accounts, 49 retained legacy credentials, 43 memberships) and Kiwanja (13 accounts, 13 retained legacy credentials, 11 memberships). The exported Firebase Auth records remain in the ignored `.migration/dumps/auth/` directory with mode `0600`.
 
+**Phase 4 amendment:** the approved source-scope prerequisite replaced the
+global unique indexes on the Auth mapping with per-source unique indexes and
+added an empty source-scoped platform-admin membership table. See
+`MIGRATION-PHASE-4-APP-REVIEW.md` and `migration/phase-4/auth-source-scope.sql`
+for current uniqueness, RLS, and verification details. No existing Auth or
+tenant membership rows were changed, and no global platform-admin rows were
+backfilled.
+
 ## Export and identity validation
 
 The Firebase Admin user exports were read-only and use separate KU and Kiwanja service accounts. The signer parameters are not stored in the repository or included in these exports' summary output.

@@ -11,6 +11,7 @@ import {
 import { useSync } from './SyncContext';
 import { getBiometricLoginStatus, isDeviceBiometricAvailable } from '../services/deviceSecurity';
 import { AuditLogService } from '../services/auditService';
+import { getSupabaseClient } from '../services/supabaseAuth';
 
 const AuthContext = createContext();
 
@@ -84,6 +85,7 @@ export function AuthProvider({ children }) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [sessionLocked, setSessionLocked] = useState(false);
+    const [supabaseSession, setSupabaseSession] = useState(null);
 
     const { isOnline, saveToIndexedDB, getFromIndexedDB, addToSyncQueue } = useSync();
 
@@ -350,6 +352,23 @@ export function AuthProvider({ children }) {
     }, []);
 
     useEffect(() => {
+        let client;
+        try {
+            client = getSupabaseClient();
+        } catch (clientError) {
+            console.error('Supabase Auth configuration error:', clientError);
+            if (mountedRef.current) setError(clientError.message);
+            return undefined;
+        }
+        if (!client) return undefined;
+
+        const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
+            if (mountedRef.current) setSupabaseSession(session);
+        });
+        return () => subscription.unsubscribe();
+    }, []);
+
+    useEffect(() => {
         if (!isDeviceBiometricAvailable()) return undefined;
         let active = true;
         let listener;
@@ -478,6 +497,12 @@ export function AuthProvider({ children }) {
             setUserCollection(null);
             setClaims({});
             setSessionLocked(false);
+            setSupabaseSession(null);
+            const supabaseClient = getSupabaseClient();
+            if (supabaseClient) {
+                const { error: supabaseSignOutError } = await supabaseClient.auth.signOut({ scope: 'local' });
+                if (supabaseSignOutError) throw supabaseSignOutError;
+            }
         } catch (e) {
             console.error('Logout error:', e);
             throw e;
@@ -486,6 +511,8 @@ export function AuthProvider({ children }) {
 
     const value = {
         currentUser,
+        supabaseSession,
+        supabaseUserId: supabaseSession?.user?.id || null,
         userData,
         userRole,
         userCollection,
