@@ -84,6 +84,10 @@ REVOKE ALL ON TABLE public.firebase_migration_auth_credentials
 REVOKE ALL ON TABLE public.firebase_migration_auth_rate_limits
   FROM PUBLIC, anon, authenticated;
 
+REVOKE ALL ON TABLE public.firebase_migration_auth_user_map FROM service_role;
+REVOKE ALL ON TABLE public.firebase_migration_auth_credentials FROM service_role;
+REVOKE ALL ON TABLE public.firebase_migration_auth_rate_limits FROM service_role;
+
 GRANT SELECT, INSERT, UPDATE ON TABLE public.firebase_migration_auth_user_map
   TO service_role;
 GRANT SELECT ON TABLE public.firebase_migration_auth_credentials

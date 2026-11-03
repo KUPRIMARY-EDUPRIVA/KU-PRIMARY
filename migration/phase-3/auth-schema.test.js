@@ -24,6 +24,13 @@ test("Auth identity and credential tables are RLS protected and server only", ()
   }
   assert.match(sql, /GRANT SELECT, INSERT, UPDATE ON TABLE public\.firebase_migration_auth_user_map\s+TO service_role/);
   assert.match(sql, /GRANT SELECT ON TABLE public\.firebase_migration_auth_credentials\s+TO service_role/);
+  for (const table of [
+    "firebase_migration_auth_user_map",
+    "firebase_migration_auth_credentials",
+    "firebase_migration_auth_rate_limits",
+  ]) {
+    assert.match(sql, new RegExp(`REVOKE ALL ON TABLE public\\.${table} FROM service_role`));
+  }
   assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.firebase_migration_check_auth_rate_limit[\s\S]*?TO service_role/);
 });
 
