@@ -49,7 +49,7 @@ must preserve that scope.
 | `paper_configs` | `firebase_migration_paper_configs`; items in `paper_config_items` | Member select and admin writes are granted. |
 | `subject_paper_configs` | `firebase_migration_subject_paper_configs`; items in `subject_paper_config_items` | Member CRUD is granted. |
 | `user_roles` | `firebase_migration_user_roles`; assignments/scopes in `user_role_assignments`, `user_role_scopes`, and `user_role_assignment_classes` | Member select and admin writes are granted. |
-| `sms_jobs`, `sms_outbox` | `firebase_migration_sms_jobs`, `firebase_migration_sms_outbox`; recipients in `sms_job_students` | Imported and policy-enabled per the earlier explicit Phase 2 decision. No direct app `collection()`/`doc()` callsite was found in the static inventory below; keep these Phase 2 grants until separately reviewed, but do not count them as migrated app flows. |
+| `level_permissions` | `firebase_migration_level_permissions` | Active settings flow; school-member reads and trusted school-admin writes are granted by the explicit Phase 2 exception. |
 | `audit_logs` | `firebase_migration_audit_logs` | Imported, but no client grant/policy. |
 | `exams` | `firebase_migration_exams` | Imported, but no client grant/policy. |
 | `fee_audit_log`, `fee_structures`, `fee_transactions` | `firebase_migration_fee_audit_log`, `firebase_migration_fee_structures`, `firebase_migration_fee_transactions`; fee items in `fee_structure_items` | Imported, but no client grant/policy. |
@@ -65,10 +65,11 @@ must preserve that scope.
 | `sms_templates`, `sms_queue`, `sms_gateway`, `sms_history` | No Phase 2 relation | Active: `sms_templates`, `sms_gateway`, `sms_history`. `sms_queue` is referenced only by unmounted `BulkSMS.jsx`; it is not assumed to be either `sms_jobs` or `sms_outbox`. |
 | `communications`, `message_templates`, `notifications`, `activities`, `exam_submissions` | No Phase 2 relation | Active: `notifications`, `activities`, `exam_submissions`. `communications` and `message_templates` are referenced only by the unmounted legacy `Communication.jsx`. |
 | `discipline_records` | No Phase 2 relation | Not exported/imported. |
-| `allergies`, `health_records`, `immunizations`, `medical_staff`, `prescriptions` | No Phase 2 relation | Not exported/imported. |
+| `allergies`, `health_records`, `immunizations`, `medical_inventory`, `medical_staff`, `prescriptions` | No Phase 2 relation | Active Health Records route; source shape profile found no historical rows. The Firestore rules have no explicit match for `medical_inventory`. |
 | `inventory_logs`, `school_inventory` | No Phase 2 relation | Not exported/imported. |
 | `school_exits` | No Phase 2 relation | Not exported/imported; includes realtime subscriptions. |
 | `student_transfers`, `transfer_packages` | No Phase 2 relation | Not exported/imported. |
+| `visits` | No Phase 2 relation | Active Health Records route; source shape profile found no historical rows. Preserve the collection as distinct until its domain fields are confirmed. |
 | `dorm_assignments`, `dorm_inventory`, `dorm_maintenance`, `dorm_patrons`, `dorm_rules`, `dormitories` | No Phase 2 relation | Not exported/imported. |
 | `assignments`, `buses`, `drivers`, `fuel_records`, `maintenance`, `routes`, `transport_payments` | No Phase 2 relation | Not exported/imported. `assignments` is not assumed to mean teacher/user assignment child rows. |
 | `report_latest`, `report_snapshots`, `duty_rosters`, `timetable_events`, `mpesa_callback_errors`, `mpesa_orphan_callbacks`, `receipts`, `_usage_stats` | No Phase 2 relation | Active: `duty_rosters`, `timetable_events`, `_usage_stats`. Report/reconciliation names are referenced only by uncalled services or an unregistered page. `_usage_stats` and payment collections also have server-side callers, outside app cutover scope. |
