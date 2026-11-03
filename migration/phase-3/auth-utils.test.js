@@ -7,6 +7,7 @@ const {
 } = require("./auth-utils");
 const {
   assertProfilesMatch,
+  insertAccount,
   parseArgs,
   providerMetadata,
 } = require("./import-auth");
@@ -102,6 +103,30 @@ test("Firebase auth provider identifiers are translated to Supabase providers", 
     provider: "email",
     providers: ["email", "google"],
   });
+});
+
+test("Auth identity insert omits Supabase's generated email column", async () => {
+  const statements = [];
+  const account = {
+    source: "ku",
+    email: "teacher@example.test",
+    user: authUser("firebase-uid", "teacher@example.test"),
+  };
+  await insertAccount({
+    query: async (sql, params) => {
+      statements.push({ sql, params });
+      return { rowCount: 1 };
+    },
+  }, account, true);
+  const identity = statements.find(({ sql }) => sql.includes("INSERT INTO auth.identities"));
+  assert.ok(identity);
+  assert.match(identity.sql, /created_at,\s*updated_at\s*\)\s*VALUES/);
+  assert.doesNotMatch(identity.sql, /updated_at,\s*email/);
+  const identityData = JSON.parse(identity.params[2]);
+  assert.match(identityData.sub, /^[0-9a-f-]{36}$/);
+  assert.equal(identityData.email, "teacher@example.test");
+  assert.equal(identityData.email_verified, true);
+  assert.equal(identityData.phone_verified, false);
 });
 
 test("Auth import compares trusted membership fields with imported Firestore profiles", async () => {

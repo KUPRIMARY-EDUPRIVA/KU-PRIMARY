@@ -149,8 +149,8 @@ async function insertAccount(client, account, profileFound) {
   await client.query(
     `INSERT INTO auth.identities (
        provider_id, user_id, identity_data, provider, last_sign_in_at,
-       created_at, updated_at, email
-     ) VALUES ($1, $2, $3::jsonb, 'email', $4, $5, now(), $1)`,
+       created_at, updated_at
+     ) VALUES ($1, $2, $3::jsonb, 'email', $4, $5, now())`,
     [
       email,
       authUserId,
@@ -193,30 +193,28 @@ async function insertAccount(client, account, profileFound) {
 }
 
 async function verifyCounts(client, plan, insertedMembershipCount) {
-  const [accounts, credentials, memberships, identities] = await Promise.all([
-    client.query(
-      "SELECT count(*)::int AS count FROM public.firebase_migration_auth_user_map WHERE source_project = $1",
-      [plan.source],
-    ),
-    client.query(
-      "SELECT count(*)::int AS count FROM public.firebase_migration_auth_credentials WHERE source_project = $1",
-      [plan.source],
-    ),
-    client.query(
-      "SELECT count(*)::int AS count FROM public.firebase_migration_user_tenant_memberships WHERE source_project = $1",
-      [plan.source],
-    ),
-    client.query(
-      `SELECT count(*)::int AS count
-       FROM auth.identities
-       WHERE user_id IN (
-         SELECT auth_user_id
-         FROM public.firebase_migration_auth_user_map
-         WHERE source_project = $1
-       ) AND provider = 'email'`,
-      [plan.source],
-    ),
-  ]);
+  const accounts = await client.query(
+    "SELECT count(*)::int AS count FROM public.firebase_migration_auth_user_map WHERE source_project = $1",
+    [plan.source],
+  );
+  const credentials = await client.query(
+    "SELECT count(*)::int AS count FROM public.firebase_migration_auth_credentials WHERE source_project = $1",
+    [plan.source],
+  );
+  const memberships = await client.query(
+    "SELECT count(*)::int AS count FROM public.firebase_migration_user_tenant_memberships WHERE source_project = $1",
+    [plan.source],
+  );
+  const identities = await client.query(
+    `SELECT count(*)::int AS count
+     FROM auth.identities
+     WHERE user_id IN (
+       SELECT auth_user_id
+       FROM public.firebase_migration_auth_user_map
+       WHERE source_project = $1
+     ) AND provider = 'email'`,
+    [plan.source],
+  );
   if (
     accounts.rows[0].count !== plan.accounts.length ||
     credentials.rows[0].count !== plan.credentialCount ||
@@ -311,6 +309,7 @@ module.exports = {
   assertNoExistingAccounts,
   assertProfilesMatch,
   importPlan,
+  insertAccount,
   parseArgs,
   providerMetadata,
   run,
